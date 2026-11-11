@@ -88,7 +88,7 @@ except NameError:
 _qmt_injected = capture_qmt_injected_funcs(globals())
 if _qmt_injected:
     bind_qmt_api(extra_funcs=_qmt_injected)
-    print("[bigqmt_runtime] bound QMT-injected globals: %s" % sorted(_qmt_injected))
+    print("[bigqmt_runtime] 已绑定 QMT 注入的全局函数：%s" % sorted(_qmt_injected))
 
 
 ACCOUNT_ID = ""
@@ -104,7 +104,7 @@ ACCOUNT_TYPE = "STOCK"
 # 各自的 `if not redis_config: return None` 自然生效，一次都不会去连。
 #
 # 用在 redis 根本不可用的环境：券商 QMT 的 import 白名单不含 redis（issue #145），
-# 或者纯 zmq 部署本来就没打算装 redis。transport=redis 时这个开关被忽略 ——
+# transport=redis 时这个开关被忽略 ——
 # 那种部署没有 redis 就没有 RPC。
 REDIS_ENABLED = True
 REDIS_HOST = "127.0.0.1"
@@ -121,12 +121,9 @@ RPC_BACKGROUND_THREADS = False
 # "*" expands to read-only RPC methods only. Order/cancel/sync methods still go
 # through the queue fallback and require schedule_adjust=True when enabled.
 RPC_LISTENER_METHODS = ("*",)
-# Transport selection. Default "redis" (zero behavior change). Set to "zmq" /
-# "mysql" / "shm" in the local config to switch the wire. zmq/mysql sub-config
-# (bind/connect address, pool sizing, ...) is forwarded verbatim to the factory.
+# Transport selection: redis, pipe, or shm.
+# Backend-specific configuration is forwarded to the factory.
 RPC_TRANSPORT = "redis"
-RPC_ZMQ_CONFIG = {}
-RPC_MYSQL_CONFIG = {}
 RPC_PIPE_CONFIG = {}
 # None = 跟随 transport（pipe 关、其它开）；显式 True/False 覆盖。
 RPC_NATIVE_XTDATA_ENABLED = None
@@ -255,10 +252,10 @@ def _report_deployment():
         from bigqmt_signal_trader.version import deployment_report
 
         version, directory = deployment_report()
-        print("[bigqmt_shell] bigqmt_signal_trader %s loaded from %s"
+        print("[bigqmt_shell] bigqmt_signal_trader %s 已从 %s 加载"
               % (version, directory))
     except Exception as exc:
-        print("[bigqmt_shell] version report unavailable: %s" % exc)
+        print("[bigqmt_shell] 无法获取版本信息：%s" % exc)
 
 
 def _report_account_type():
@@ -267,7 +264,8 @@ def _report_account_type():
     if isinstance(BIGQMT_ACCOUNT_TYPE, (list, tuple)) and len(BIGQMT_ACCOUNT_TYPE) > 1:
         extra = " also answers as %s per request" % "/".join(
             str(v).strip().upper() for v in BIGQMT_ACCOUNT_TYPE[1:] if str(v or "").strip())
-    print("[bigqmt_shell] account_type=%s (from %s)%s" % (ACCOUNT_TYPE, ACCOUNT_TYPE_SOURCE, extra))
+    print("[bigqmt_shell] account_type=%s（来源：%s）%s"
+          % (ACCOUNT_TYPE, ACCOUNT_TYPE_SOURCE, extra))
 
     def _first(value):
         if isinstance(value, (list, tuple)):
@@ -279,7 +277,7 @@ def _report_account_type():
         if _first(value) and _first(value) != ACCOUNT_TYPE
     ]
     if conflicting:
-        print("[bigqmt_shell] ignored conflicting account_type from: %s"
+        print("[bigqmt_shell] 已忽略以下来源中冲突的 account_type：%s"
               % ", ".join(conflicting))
 
 
@@ -293,8 +291,6 @@ REDIS_ENABLED_EXPLICIT = "redis_enabled" in BIGQMT_REDIS_CONFIG
 # 在这里读配置，漏掉 transport 就是「配了 pipe 实际还在跑 redis」——
 # 实盘被券商沙箱杀的 socket 连接就是这么来的（2026-09-24）。
 RPC_TRANSPORT = str(BIGQMT_REDIS_CONFIG.get("transport", RPC_TRANSPORT)).lower()
-RPC_ZMQ_CONFIG = dict(BIGQMT_REDIS_CONFIG.get("zmq", RPC_ZMQ_CONFIG))
-RPC_MYSQL_CONFIG = dict(BIGQMT_REDIS_CONFIG.get("mysql", RPC_MYSQL_CONFIG))
 RPC_PIPE_CONFIG = dict(BIGQMT_REDIS_CONFIG.get("pipe", RPC_PIPE_CONFIG))
 if BIGQMT_REDIS_CONFIG.get("native_xtdata_enabled") is not None:
     RPC_NATIVE_XTDATA_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("native_xtdata_enabled"))
@@ -411,10 +407,8 @@ def _apply_config(account_id):
         "process_in_listener": RPC_PROCESS_IN_LISTENER,
         "listener_methods": RPC_LISTENER_METHODS,
         # Transport selection (default redis). Forwarded from the local
-        # config so the factory can pick zmq/mysql/pipe.
+        # config so the factory can pick mysql/pipe.
         "transport": RPC_TRANSPORT,
-        "zmq": RPC_ZMQ_CONFIG,
-        "mysql": RPC_MYSQL_CONFIG,
         "pipe": RPC_PIPE_CONFIG,
         # native xtdata SDK 调用会拨 58610；pipe（外连即杀的沙箱）默认关，
         # 显式 native_xtdata_enabled=True 才开。
@@ -477,7 +471,7 @@ def configure_runtime_account(account_id):
 
 
 def configure_runtime_redis(redis_config):
-    global REDIS_ENABLED, REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_USERNAME, REDIS_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, RPC_ZMQ_CONFIG, RPC_MYSQL_CONFIG, RPC_PIPE_CONFIG, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, REDIS_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
+    global REDIS_ENABLED, REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_USERNAME, REDIS_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, RPC_PIPE_CONFIG, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, REDIS_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
     redis_config = dict(redis_config or {})
     RPC_BACKGROUND_THREADS_EXPLICIT = "rpc_background_threads" in redis_config
     REDIS_ENABLED_EXPLICIT = "redis_enabled" in redis_config
@@ -498,14 +492,12 @@ def configure_runtime_redis(redis_config):
     RPC_BACKGROUND_THREADS = bool(redis_config.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
     RPC_LISTENER_METHODS = tuple(redis_config.get("rpc_listener_methods", RPC_LISTENER_METHODS))
     RPC_TRANSPORT = str(redis_config.get("transport", RPC_TRANSPORT)).lower()
-    RPC_ZMQ_CONFIG = dict(redis_config.get("zmq", RPC_ZMQ_CONFIG))
-    RPC_MYSQL_CONFIG = dict(redis_config.get("mysql", RPC_MYSQL_CONFIG))
     RPC_PIPE_CONFIG = dict(redis_config.get("pipe", RPC_PIPE_CONFIG))
     QUOTE_PUSH_CONFIG = dict(redis_config.get("quote_push", QUOTE_PUSH_CONFIG))
-    # schedule_adjust must stay ON for ALL transports — including zmq.
+    # schedule_adjust must stay ON for all transports.
     # run_time("adjust", interval) is what THROTTLES QMT's strategy callback: with
     # it, adjust fires on the configured cadence (e.g. 500ms); WITHOUT it QMT calls
-    # adjust in a hot loop (~2500/s) that pegs the GIL and starves the zmq ROUTER
+    # adjust in a hot loop (~2500/s) that pegs the GIL and starves the
     # background thread (RPC then times out entirely). It also sets the GIL-release
     # rhythm the background transport threads rely on. So keep the original rule:
     # honor an explicit value, default on, and force on when not background-threaded.

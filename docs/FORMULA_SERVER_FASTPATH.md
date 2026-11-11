@@ -25,19 +25,13 @@ QMT 自带 Python 里就有它的官方客户端：`bin.x64/Lib/site-packages/qm
 
 原来所有只读请求都要绕一整圈：
 
-```
-客户端 → redis/zmq → QMT python 策略线程 → ContextInfo → 原路返回
-```
 
-这不只是慢，还要和策略自己抢 QMT 主线程的 GIL —— zmq 传输约 30% 的请求会撞上 ~500ms 的
-调度尖峰，就是这么来的。
 
 直连 FormulaServer 完全绕开策略进程：
 
 | 路径 | p50 |
 |------|-----|
 | redis RPC | ~13ms |
-| zmq RPC | ~0.7ms（30% 撞 500ms GIL 尖峰）|
 | **FormulaServer 直连** | **0.07ms**，无 GIL 竞争 |
 
 穿过完整客户端栈（`BigQmtRpcClient.call`）实测 **0.145ms/次**，比 redis 快约 90 倍。

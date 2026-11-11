@@ -138,7 +138,7 @@ are embedded into this file and loaded in-memory at runtime:
     * bigqmt_signal_trader_local_config  (generated from the config block below)
 
 This file never imports any other custom module from disk. It only uses the
-standard library plus third-party libraries (redis, zmq, pandas, ...). The
+standard library plus third-party libraries (redis, pandas, ...). The
 embedded loader below resolves relative imports against the in-memory sources,
 so you can copy this one file to a QMT python directory and run it as a
 strategy without shipping the package alongside.

@@ -183,8 +183,7 @@ class QuoteSubscriptionManager(object):
         # Optional callable(topic, data) invoked when big QMT pushes a tick batch.
         # Wired to the QuotePushChannel in a later stage; None keeps dispatch inert.
         self._on_push_publisher = on_push_publisher
-        # Advertised to clients in subscribe responses so a zmq subscriber knows
-        # where to connect (redis subscribers derive the channel locally instead).
+        # Advertise a transport-specific endpoint to subscribers when needed.
         self._push_endpoint = str(push_endpoint or "")
         self._lock = threading.RLock()
         self._combos = {}            # combo_key -> _Combo
@@ -392,7 +391,6 @@ def build_quote_subscription_service(
     transport_name="redis",
     account_id="",
     redis_client=None,
-    zmq_bind_address=None,
     enabled=True,
     heartbeat_timeout_seconds=30.0,
     time_func=None,
@@ -411,18 +409,13 @@ def build_quote_subscription_service(
     if not enabled:
         return None
     from .quote_push_channel import (
-        NullQuotePushChannel, RedisQuotePushChannel, ZmqQuotePushChannel,
+        NullQuotePushChannel, RedisQuotePushChannel,
     )
 
     source = ContextInfoQuoteSource(context_info)
     transport_name = str(transport_name or "redis").lower()
     served = _served_account_ids(account_id, account_ids)
-    if transport_name == "zmq":
-        bind_address = zmq_bind_address or _default_quote_push_zmq_bind(account_id)
-        extra = [_default_quote_push_zmq_bind(other) for other in served if other != str(account_id or "")]
-        channel = ZmqQuotePushChannel(bind_address=bind_address, extra_bind_addresses=extra)
-        push_endpoint = bind_address
-    elif transport_name == "pipe":
+    if transport_name == "pipe":
         # #408: pipe deployments get a real push wire -- a dedicated events
         # pipe (server writes, clients read), not the RPC request/response
         # pipe. The exec-event sink falls through to _push_channel_sink, so
@@ -468,11 +461,3 @@ def _served_account_ids(primary_account_id, account_ids=None):
         if text and text not in served:
             served.append(text)
     return served
-
-
-def _default_quote_push_zmq_bind(account_id):
-    """Default server PUB bind address: loopback, RPC zmq port + 1 (client side
-    derives the same host/port + 1 to connect)."""
-    from .transports.zmq_transport import _default_zmq_port
-
-    return "tcp://0.0.0.0:%d" % (_default_zmq_port(account_id) + 1)

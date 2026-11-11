@@ -2,7 +2,7 @@
 
 ``build_transport(name, config, ...)`` returns a ready transport instance.
 ``name`` is the ``rpc.transport`` config value (default ``"redis"``). Unknown
-names raise :class:`ValueError`. Optional dependencies (``zmq``, a mysql
+names raise :class:`ValueError`. Optional dependencies (a mysql
 driver) are imported lazily; a missing dependency surfaces as a clear
 ``ImportError`` only when that transport is actually selected.
 """
@@ -11,7 +11,7 @@ from .base import RpcTransport
 from .redis_transport import RedisTransport
 
 
-KNOWN_TRANSPORTS = ("redis", "zmq", "mysql", "shm", "pipe")
+KNOWN_TRANSPORTS = ("redis", "shm", "pipe")
 
 
 def transport_supports_drain(name):
@@ -30,18 +30,12 @@ def transport_supports_drain(name):
     try:
         if name in ("redis", "", "default"):
             from .redis_transport import RedisTransport as cls
-        elif name == "zmq":
-            from .zmq_transport import ZmqTransport as cls
-        elif name == "mysql":
-            from .mysql_transport import MysqlTransport as cls
         elif name == "pipe":
             from .pipe_transport import NamedPipeTransport as cls
         else:
             return False
     except ImportError:
-        # 缺依赖（没装 pyzmq / mysql 驱动）是合法的「不支持」。但类名写错也会
-        # 走到这里 —— MySqlTransport / MysqlTransport 就错过一次，被静默吞成
-        # False。所以只吞 ImportError，AttributeError 之类必须炸出来。
+        # 只吞 ImportError，AttributeError 之类必须炸出来。
         return False
     own = getattr(cls, "drain_request_queue", None)
     return own is not None and own is not getattr(RpcTransport, "drain_request_queue", None)
@@ -56,7 +50,7 @@ def build_transport(
     """Construct a transport by name.
 
     ``config`` is the ``rpc`` config dict. Each backend reads its own sub-keys
-    (``config["zmq"]``, ``config["mysql"]``); Redis reads the legacy keys
+    Redis reads the legacy keys
     (``request_channel_template`` etc.) plus ``redis_client``/
     ``response_redis_client`` that the caller may inject.
     """
@@ -65,10 +59,6 @@ def build_transport(
 
     if name in ("redis", "", "default"):
         return _build_redis(config, account_id, print_prefix)
-    if name == "zmq":
-        return _build_zmq(config, account_id, print_prefix)
-    if name == "mysql":
-        return _build_mysql(config, account_id, print_prefix)
     if name == "pipe":
         # Windows named pipe: no third-party package, no socket. The only wire
         # that works on a terminal whose import whitelist rejects socket and
@@ -122,43 +112,6 @@ def _build_redis(config, account_id, print_prefix):
         response_ttl_seconds=int(config.get("response_ttl_seconds", 60)),
         queue_poll_interval_seconds=float(config.get("queue_poll_interval_seconds", 0.02)),
         debug_log_limit=int(config.get("debug_log_limit", 0)),
-        print_prefix=print_prefix,
-    )
-
-
-def _build_zmq(config, account_id, print_prefix):
-    from .zmq_transport import ZmqTransport
-
-    zmq_config = dict(config.get("zmq") or {})
-    # Wire up service discovery: if the caller injected a redis_client (server
-    # side) or provided redis connection settings, the ZMQ transport can
-    # publish/look up the actual bound port when the default port is taken.
-    discovery_client = zmq_config.get("discovery_redis_client")
-    if discovery_client is None and config.get("redis_client") is not None:
-        discovery_client = config.get("redis_client")
-        zmq_config["discovery_redis_client"] = discovery_client
-    if discovery_client is None and config.get("redis"):
-        # Build a small client just for discovery from the redis config block.
-        try:
-            from ..adapters.redis_common import build_redis_client
-
-            discovery_client = build_redis_client(dict(config.get("redis") or {}))
-            zmq_config["discovery_redis_client"] = discovery_client
-        except Exception:
-            pass
-    return ZmqTransport.from_config(
-        zmq_config,
-        account_id=account_id,
-        print_prefix=print_prefix,
-    )
-
-
-def _build_mysql(config, account_id, print_prefix):
-    from .mysql_transport import MysqlTransport
-
-    return MysqlTransport.from_config(
-        config.get("mysql") or {},
-        account_id=account_id,
         print_prefix=print_prefix,
     )
 

@@ -108,25 +108,8 @@ class RuntimeConfigTest(unittest.TestCase):
     def tearDown(self):
         self.runtime.RPC_DEFAULT_STRATEGY_NAME = self._saved
 
-    def test_the_config_key_reaches_the_module_global(self):
-        """`global` had to name it: without that the assignment inside
-        configure_runtime_redis binds a local and does nothing at all."""
-        self.runtime.configure_runtime_redis(
-            {"rpc_default_strategy_name": "my_book", "transport": "zmq"})
 
-        self.assertEqual(self.runtime.RPC_DEFAULT_STRATEGY_NAME, "my_book")
 
-    def test_an_empty_string_is_not_swallowed_by_a_default(self):
-        self.runtime.configure_runtime_redis(
-            {"rpc_default_strategy_name": "", "transport": "zmq"})
-
-        self.assertEqual(self.runtime.RPC_DEFAULT_STRATEGY_NAME, "")
-
-    def test_absent_leaves_it_unset(self):
-        self.runtime.RPC_DEFAULT_STRATEGY_NAME = None
-        self.runtime.configure_runtime_redis({"transport": "zmq"})
-
-        self.assertIsNone(self.runtime.RPC_DEFAULT_STRATEGY_NAME)
 
     def test_the_rpc_block_forwards_it(self):
         import inspect

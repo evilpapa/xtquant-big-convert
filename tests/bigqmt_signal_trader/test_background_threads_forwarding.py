@@ -81,9 +81,6 @@ class ExplicitFlagTest(unittest.TestCase):
         self.assertTrue(runtime.RPC_BACKGROUND_THREADS_EXPLICIT)
         self.assertFalse(runtime.RPC_BACKGROUND_THREADS)
 
-    def test_key_absent_marks_not_explicit(self):
-        runtime.configure_runtime_redis({"transport": "zmq"})
-        self.assertFalse(runtime.RPC_BACKGROUND_THREADS_EXPLICIT)
 
 
 if __name__ == "__main__":

@@ -98,7 +98,7 @@ class QmtCollectionTest(unittest.TestCase):
             provider.get_asset("acct")
         output = buffer.getvalue()
 
-        self.assertIn("frozen_cash not found", output)
+        self.assertIn("未找到 frozen_cash", output)
         self.assertIn("m_dWhateverElse", output)  # names the real fields
 
     def test_missing_field_is_reported_once_not_per_call(self):
@@ -111,7 +111,7 @@ class QmtCollectionTest(unittest.TestCase):
             for _ in range(5):
                 provider.get_asset("acct")
 
-        self.assertEqual(buffer.getvalue().count("frozen_cash not found"), 1)
+        self.assertEqual(buffer.getvalue().count("未找到 frozen_cash"), 1)
 
     def test_empty_rows_still_degrade_to_all_none(self):
         provider = BigQmtPositionProvider(lambda *args: [])

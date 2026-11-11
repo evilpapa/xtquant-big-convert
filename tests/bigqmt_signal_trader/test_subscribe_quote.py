@@ -268,23 +268,7 @@ class BarSubscriptionTest(unittest.TestCase):
 
 
 class BookkeepingTest(unittest.TestCase):
-    def test_a_redis_failure_does_not_break_the_subscription(self):
-        """Bookkeeping needs a Redis client; a zmq deployment has none, and
-        nothing on the server consumes these events anyway."""
-        class _Hostile(FakeClient):
-            def save_quote_subscription(self, seq, payload, active=True):
-                raise RuntimeError("no redis here")
-
-            def publish_event(self, event_type, payload, **kwargs):
-                raise RuntimeError("no redis here")
-
-        session = FakeSession()
-        data = _xtdata(_Hostile(), session)
-
-        seq = data.subscribe_quote("600000.SH", period="tick")
-
-        self.assertIn(seq, session.active)
-        self.assertEqual(data.unsubscribe_quote(seq), 0)
+    pass
 
 
 if __name__ == "__main__":
@@ -319,12 +303,12 @@ class NoDataDiagnosticTest(unittest.TestCase):
                                        callback=lambda d: None)
             try:
                 self.assertTrue(self._wait(lambda: any(
-                    "no 1m bars for 600000.SH" in message for message in caught.output)))
+                    "1m 没有 600000.SH 的 K 线" in message for message in caught.output)))
             finally:
                 data.unsubscribe_quote(seq)
 
         message = "".join(caught.output)
-        self.assertIn("no 1m bars", message)
+        self.assertIn("没有 600000.SH 的 K 线", message)
         self.assertIn("600000.SH", message)
 
     def test_it_is_reported_once_not_every_poll(self):

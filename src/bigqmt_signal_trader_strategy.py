@@ -25,7 +25,7 @@ if _af_mod is not None:
     try:
         _importlib.reload(_af_mod)
     except Exception as _reload_err:
-        print("[bigqmt_signal_trader] reload adapter_factory failed: %s" % _reload_err)
+        print("[bigqmt_signal_trader] 重新加载 adapter_factory 失败：%s" % _reload_err)
 
 try:
     _load_bridge_module = __bigqmt_load_local_module
@@ -117,8 +117,8 @@ def _load_exec_events():
     if holder.get("module") is not None:
         return holder["module"]
     print(
-        "[bigqmt_signal_trader] exec_events load failed; exec-event push is "
-        "disabled for this run:\n%s" % direct_error
+        "[bigqmt_signal_trader] exec_events 加载失败；本次运行将禁用成交回报推送：\n%s"
+        % direct_error
     )
     return None
 
@@ -362,10 +362,9 @@ def _perform_reload(context_info):
     try:
         result["replies_flushed"] = _wait_for_responses_to_flush()
         if not result["replies_flushed"]:
-            print("[bigqmt_reload] WARNING: %d reply/replies still queued after "
-                  "%.0fs; the caller may see a timeout even though the reload "
-                  "runs" % (_pending_response_count(),
-                            _RELOAD_FLUSH_TIMEOUT_SECONDS))
+            print("[bigqmt_reload] 警告：%.0fs 后仍有 %d 个应答在队列中；"
+                  "重新加载仍会继续，但调用方可能看到超时"
+                  % (_pending_response_count(), _RELOAD_FLUSH_TIMEOUT_SECONDS))
         # #393: a reload rebuilds the handlers, and with them the in-process
         # order-identity journal -- on a no-Redis deployment every order this
         # bridge had named flipped to the QMT-side process name at once.
@@ -399,20 +398,20 @@ def _perform_reload(context_info):
                 while len(identity_journal) > limit:
                     identity_journal.popitem(last=False)
                 new_handlers._order_identity_local = identity_journal
-                print("[bigqmt_reload] order identity journal carried across "
-                      "(%d entries)" % len(identity_journal))
+                print("[bigqmt_reload] 委托身份日志已跨重载保留（%d 条）"
+                      % len(identity_journal))
         result["version_after"] = _package_version()
         result["ok"] = True
     except Exception as exc:
         result["error"] = "%s: %s" % (type(exc).__name__, exc)
-        _log_err("reload", "reload failed: %s\n%s"
+        _log_err("reload", "重新加载失败：%s\n%s"
                           % (exc, _traceback.format_exc()))
     result["seconds"] = round(time.time() - started, 3)
     _reload_result = result
-    print("[bigqmt_reload] %s purged=%d %s -> %s in %.2fs%s"
-          % ("ok" if result["ok"] else "FAILED", result["modules_purged"],
+    print("[bigqmt_reload] %s：清理模块=%d，版本 %s -> %s，耗时 %.2fs%s"
+          % ("成功" if result["ok"] else "失败", result["modules_purged"],
              before or "?", result["version_after"] or "?", result["seconds"],
-             "" if result["ok"] else "  (" + result["error"] + ") -- RESTART THE STRATEGY"))
+             "" if result["ok"] else "  (" + result["error"] + ")；请重启策略"))
     return result
 
 
@@ -678,7 +677,7 @@ def _transport_can_drain(transport_name):
         from bigqmt_signal_trader.transports.factory import transport_supports_drain
     except Exception:
         # 导入不到就退回历史名单，别让一个 import 失败改变行为
-        return str(transport_name or "").lower() in ("zmq", "mysql")
+        return str(transport_name or "").lower() in ("mysql",)
     return transport_supports_drain(transport_name)
 
 
@@ -701,7 +700,6 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
 
     _qsm = importlib.reload(_qsm)
     heartbeat_timeout = float(quote_config.get("heartbeat_timeout_seconds", 30.0))
-    zmq_bind_address = quote_config.get("zmq_bind_address")
     # #408: the events pipe derives its name from the RPC pipe block so both
     # sides compute the same path from the same config.
     pipe_name = dict(config.get("rpc") or {}).get("pipe", {}).get("pipe_name")
@@ -712,7 +710,6 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
         transport_name=transport_name,
         account_id=account_id,
         redis_client=redis_client,
-        zmq_bind_address=zmq_bind_address,
         enabled=True,
         heartbeat_timeout_seconds=heartbeat_timeout,
         pipe_name=pipe_name,
@@ -759,7 +756,7 @@ def _build_rpc_service(context_info, app, config):
         try:
             importlib.reload(importlib.import_module(_mod_name))
         except Exception as _reload_err:
-            print("[bigqmt_rpc] reload %s failed: %s" % (_mod_name, _reload_err))
+            print("[bigqmt_rpc] 重新加载 %s 失败：%s" % (_mod_name, _reload_err))
     # The RPC import has a valid module even if early optional push loading
     # failed. Callbacks reuse this reference without importing on the C++ stack.
     _exec_events = _redis_rpc._exec_events
@@ -793,7 +790,7 @@ def _build_rpc_service(context_info, app, config):
         )
     account_id = str(rpc_config.get("account_id") or config.get("account_id") or _account_id or "")
     if not account_id:
-        print("[bigqmt_rpc] disabled: account_id is empty")
+        print("[bigqmt_rpc] 已禁用：account_id 为空")
         return None
     allow_order_methods = _config_bool(rpc_config.get("allow_order_methods"), False)
     global _quote_subscription_service
@@ -884,7 +881,8 @@ def _build_rpc_service(context_info, app, config):
         configured_bg = _config_bool(configured_bg, False)
     background_threads = _resolve_background_threads(transport_name, configured_bg)
     if background_threads and not configured_bg:
-        print("[bigqmt_rpc] transport=%s cannot drain -> background_threads forced on" % transport_name)
+        print("[bigqmt_rpc] transport=%s 不支持 drain，已强制启用 background_threads"
+              % transport_name)
     # Build the transport. Redis is the default and reuses the existing clients/
     # templates (zero behavior change). zmq/mysql/shm go through the factory and
     # bypass the Redis clients entirely.
@@ -900,7 +898,7 @@ def _build_rpc_service(context_info, app, config):
         factory_config["print_prefix"] = "[bigqmt_rpc]"
         transport = build_transport(transport_name, factory_config, account_id=account_id, print_prefix="[bigqmt_rpc]")
     print(
-        "[bigqmt_rpc] transport=%s mode process_in_listener=%s listener_methods=%s allow_order_methods=%s background_threads=%s"
+        "[bigqmt_rpc] transport=%s 模式配置 process_in_listener=%s listener_methods=%s allow_order_methods=%s background_threads=%s"
         % (transport_name, process_in_listener, listener_methods, allow_order_methods, background_threads)
     )
     service = RedisPubSubRpcService(
@@ -938,7 +936,7 @@ def _build_rpc_service(context_info, app, config):
             # Multi-account mode: wrapped in MultiAccountRpcServiceManager
             return multi_service
     except Exception as _ma_err:
-        print("[bigqmt_rpc] multi_account check failed (single-account fallback): %s" % _ma_err)
+        print("[bigqmt_rpc] multi_account 检查失败，已回退到单账户模式：%s" % _ma_err)
     return service
 
 
@@ -952,10 +950,10 @@ def _start_rpc_service(context_info, app, config):
         if _quote_subscription_service is not None:
             try:
                 _quote_subscription_service[1].start_publisher()
-                print("[bigqmt_quote_push] publisher started transport=%s"
+                print("[bigqmt_quote_push] 行情推送发布器已启动 transport=%s"
                       % str(dict(config.get("rpc") or {}).get("transport") or "redis"))
             except Exception as exc:
-                _log_err("quote_push", "publisher start failed: %s" % exc)
+                _log_err("quote_push", "行情推送发布器启动失败：%s" % exc)
     return _rpc_service
 
 
@@ -1018,7 +1016,7 @@ def _drain_rpc_service(config):
         try:
             _quote_subscription_service[0].reap_expired()
         except Exception as exc:
-            _log_err("quote_push", "reap failed: %s" % exc)
+            _log_err("quote_push", "清理过期推送资源失败：%s" % exc)
     # #310 warm-up subscriptions (terminals whose get_full_tick answers only
     # subscribed codes) are dropped once idle; getattr-guarded so a package
     # from before the warm-up still drains.
@@ -1031,7 +1029,7 @@ def _drain_rpc_service(config):
         try:
             prune()
         except Exception as exc:
-            _log_err("full_tick", "warm-up prune failed: %s" % exc)
+            _log_err("full_tick", "全量逐笔预热订阅清理失败：%s" % exc)
     return processed
 
 
@@ -1086,7 +1084,7 @@ def _refresh_full_tick_cache(context_info, config):
                 max_wall_seconds=max_wall,
             )
         except Exception as exc:
-            _log_err("full_tick_cache", "symbol refresh failed: %s" % exc)
+            _log_err("full_tick_cache", "证券级行情缓存刷新失败：%s" % exc)
     if do_market:
         _last_full_tick_market_refresh_at = now
         try:
@@ -1101,7 +1099,7 @@ def _refresh_full_tick_cache(context_info, config):
                 max_wall_seconds=max_wall,
             )
         except Exception as exc:
-            _log_err("full_tick_cache", "market refresh failed: %s" % exc)
+            _log_err("full_tick_cache", "全市场行情缓存刷新失败：%s" % exc)
     return refreshed
 
 
@@ -1114,8 +1112,9 @@ def _schedule_adjust_if_needed(context_info, config):
     interval = str(config.get("schedule_adjust_interval") or "3000nMilliSecond")
     if not hasattr(context_info, "run_time"):
         print(
-            "[bigqmt_signal_trader] WARNING: ContextInfo.run_time unavailable; RPC drain "
-            "falls back to bar cadence (requested interval=%s not applied)" % interval
+            "[bigqmt_signal_trader] 警告：ContextInfo.run_time 不可用；"
+            "RPC drain 将回退到 K 线节拍（请求的 interval=%s 无法应用）"
+            % interval
         )
         return
     start_time = (datetime.datetime.now() + datetime.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -1123,13 +1122,14 @@ def _schedule_adjust_if_needed(context_info, config):
         context_info.run_time("adjust", interval, start_time)
         _scheduled_adjust = True
         print(
-            "[bigqmt_signal_trader] scheduled adjust interval=%s "
-            "(verify observed cadence in the 'adjust cadence' log line)" % interval
+            "[bigqmt_signal_trader] 已安排 adjust interval=%s"
+            "（实际节拍请查看“adjust 节拍”日志）" % interval
         )
     except Exception as exc:
         print(
-            "[bigqmt_signal_trader] WARNING: schedule adjust failed (%s); RPC drain falls back "
-            "to bar cadence, requested interval=%s not applied" % (exc, interval)
+            "[bigqmt_signal_trader] 警告：安排 adjust 调度失败（%s）；"
+            "RPC drain 将回退到 K 线节拍，请求的 interval=%s 无法应用"
+            % (exc, interval)
         )
 
 
@@ -1155,7 +1155,7 @@ def _record_adjust_source(source):
     stats[source] = stats.get(source, 0) + 1
     if now - stats["window_start"] >= 10.0:
         print(
-            "[adjust_source] handlebar=%d timer=%d over %.0fs"
+            "[adjust_source] handlebar=%d timer=%d，统计窗口 %.0fs"
             % (stats["handlebar"], stats["timer"], now - stats["window_start"])
         )
         stats.update({"handlebar": 0, "timer": 0, "window_start": now})
@@ -1206,7 +1206,7 @@ def _record_adjust_tick():
     if now - stats["window_start"] >= 10.0 and stats["count"] > 0:
         avg = stats["sum"] / stats["count"]
         print(
-            "[bigqmt_signal_trader] adjust cadence: ticks=%d avg=%.3fs min=%.3fs max=%.3fs over %.0fs"
+            "[bigqmt_signal_trader] adjust 节拍：ticks=%d avg=%.3fs min=%.3fs max=%.3fs，统计窗口 %.0fs"
             % (stats["count"], avg, stats["min"], stats["max"], now - stats["window_start"])
         )
         if sum(_tick_app_hist) > 0:
@@ -1236,12 +1236,13 @@ def _gil_probe_loop():
             if gaps:
                 gaps.sort()
                 print(
-                    "[gil_probe] over %.0fs: %d stalls>%.0fms  max=%.0fms p50=%.0fms total=%.0fms"
+                    "[gil_probe] 最近 %.0fs：%d 次卡顿>%.0fms，max=%.0fms p50=%.0fms total=%.0fms"
                     % (now - window_start, len(gaps), _LATENCY_PROBE_THRESHOLD_MS,
                        gaps[-1], gaps[len(gaps) // 2], sum(gaps))
                 )
             else:
-                print("[gil_probe] over %.0fs: 0 stalls>%.0fms (clean)" % (now - window_start, _LATENCY_PROBE_THRESHOLD_MS))
+                print("[gil_probe] 最近 %.0fs：没有超过 %.0fms 的卡顿（正常）"
+                      % (now - window_start, _LATENCY_PROBE_THRESHOLD_MS))
             window_start = now
             gaps = []
 
@@ -1253,15 +1254,15 @@ def _start_latency_probe():
     _latency_probe_started = True
     t = threading.Thread(target=_gil_probe_loop, name="bigqmt-gil-probe", daemon=True)
     t.start()
-    print("[gil_probe] started (threshold=%.0fms)" % _LATENCY_PROBE_THRESHOLD_MS)
+    print("[gil_probe] 已启动（threshold=%.0fms）" % _LATENCY_PROBE_THRESHOLD_MS)
 
 
 def _apply_gil_tuning():
     try:
         sys.setswitchinterval(_GIL_SWITCH_INTERVAL)
-        print("[bigqmt_signal_trader] gil switch interval set to %.4fs" % _GIL_SWITCH_INTERVAL)
+        print("[bigqmt_signal_trader] GIL 切换间隔已设置为 %.4fs" % _GIL_SWITCH_INTERVAL)
     except Exception as exc:
-        print("[bigqmt_signal_trader] setswitchinterval failed: %s" % exc)
+        print("[bigqmt_signal_trader] setswitchinterval 设置失败：%s" % exc)
 
 
 def init(ContextInfo):
@@ -1272,7 +1273,7 @@ def init(ContextInfo):
         try:
             ContextInfo.set_account(_account_id)
         except Exception as exc:
-            _log_startup_error("set_account failed: %s" % exc)
+            _log_startup_error("set_account 设置失败：%s" % exc)
     _apply_gil_tuning()
     _start_latency_probe()
     config = _build_config()
@@ -1283,25 +1284,25 @@ def init(ContextInfo):
     except Exception as exc:
         # A build failure (e.g. missing redis package) must not kill the strategy
         # before the RPC service even starts — log it and continue without app.
-        _log_startup_error("init_app/build_app failed: %s" % exc)
+        _log_startup_error("init_app/build_app 初始化失败：%s" % exc)
     try:
         _start_rpc_service(ContextInfo, app, config)
     except Exception as exc:
         # e.g. zmq port conflict -> TransportError. Log it so the user sees why
         # the RPC service didn't start instead of QMT silently exiting.
-        _log_startup_error("rpc service start failed: %s" % exc)
+        _log_startup_error("RPC 服务启动失败：%s" % exc)
     try:
         _schedule_adjust_if_needed(ContextInfo, config)
     except Exception as exc:
-        _log_startup_error("schedule adjust failed: %s" % exc)
-    print("[bigqmt_signal_trader] init ok")
+        _log_startup_error("adjust 调度设置失败：%s" % exc)
+    print("[bigqmt_signal_trader] 初始化成功")
 
     # 启动时自动诊断：检测服务状态 + 关键函数绑定，方便发现问题
     _diag_startup(ContextInfo, config)
     try:
         _start_context_warmup(ContextInfo, config)
     except Exception as exc:
-        _log_startup_error("context warmup failed to start: %s" % exc)
+        _log_startup_error("上下文预热启动失败：%s" % exc)
     return app
 
 
@@ -1313,7 +1314,7 @@ def _log_startup_error(message):
     except Exception:
         pass
     try:
-        print("[bigqmt_signal_trader] INIT ERROR: %s" % message)
+        print("[bigqmt_signal_trader] 初始化错误：%s" % message)
     except Exception:
         pass
 
@@ -1363,7 +1364,7 @@ def _diag_bar_driver(context_info):
                 parts.append("%s=%s" % (label, value))
         except Exception:
             continue
-    print("[bigqmt_diag] bar driver: %s" % (" ".join(parts) or "<无法读取>"))
+        print("[bigqmt_diag] K 线驱动：%s" % (" ".join(parts) or "<无法读取>"))
 
     for name in ("subscribe_quote", "subscribe_whole_quote", "set_universe", "is_last_bar"):
         print("[bigqmt_diag]   %-22s %s"
@@ -1383,7 +1384,7 @@ def _diag_startup(ContextInfo, config):
     get_trade_detail_data) are bound. Helps diagnose "service won't start" issues.
     """
     print("=" * 60)
-    print("[bigqmt_diag] startup diagnostics")
+    print("[bigqmt_diag] 启动诊断")
     print("=" * 60)
 
     _diag_bar_driver(ContextInfo)
@@ -1391,11 +1392,11 @@ def _diag_startup(ContextInfo, config):
     # 1. RPC service status
     rpc_config = dict(config.get("rpc") or {})
     transport = rpc_config.get("transport", "redis")
-    print("[bigqmt_diag] transport=%s" % transport)
+    print("[bigqmt_diag] 传输方式=%s" % transport)
     if _rpc_service is not None:
-        print("[bigqmt_diag] rpc_service=running (type=%s)" % type(_rpc_service).__name__)
+        print("[bigqmt_diag] rpc_service=运行中（type=%s）" % type(_rpc_service).__name__)
     else:
-        print("[bigqmt_diag] rpc_service=NOT STARTED (check enable_rpc / errors above)")
+        print("[bigqmt_diag] rpc_service=未启动（请检查 enable_rpc 或上方错误）")
 
     # 2. Key QMT function bindings
     qmt_api = dict(config.get("qmt_api") or {})
@@ -1407,13 +1408,13 @@ def _diag_startup(ContextInfo, config):
     try:
         tick = ContextInfo.get_full_tick(["000001.SZ"])
         if tick:
-            print("[bigqmt_diag] get_full_tick=OK (keys=%d)" % len(tick))
+            print("[bigqmt_diag] get_full_tick=正常（keys=%d）" % len(tick))
         else:
-            print("[bigqmt_diag] get_full_tick=EMPTY (market may be closed)")
+            print("[bigqmt_diag] get_full_tick=空（市场可能已休市）")
     except Exception as e:
-        print("[bigqmt_diag] get_full_tick=FAIL: %s" % str(e)[:60])
+        print("[bigqmt_diag] get_full_tick=失败：%s" % str(e)[:60])
 
-    print("[bigqmt_diag] diagnostics complete")
+    print("[bigqmt_diag] 诊断完成")
     print("=" * 60)
 
 
@@ -1477,28 +1478,28 @@ def _warmup_row_count(result):
 def _context_warmup_loop(context_info):
     for name, probe in CONTEXT_WARMUP_PROBES:
         started = time.time()
-        print("[bigqmt_warmup] %s: first call after a restart can take "
-              "minutes; running it now so a caller does not have to wait" % name)
+        print("[bigqmt_warmup] %s：重启后的首次调用可能耗时数分钟；"
+              "现在提前执行，以免调用方等待" % name)
         try:
             result = probe(context_info)
             elapsed = time.time() - started
         except Exception as exc:
-            print("[bigqmt_warmup] %s failed after %.1fs: %s"
+            print("[bigqmt_warmup] %s 在 %.1fs 后失败：%s"
                   % (name, time.time() - started, str(exc)[:120]))
             continue
         rows = _warmup_row_count(result)
         if rows == 0:
             # Warming nothing while reporting success is the failure mode this
             # check exists to catch; it already happened once.
-            print("[bigqmt_warmup] %s returned NOTHING in %.2fs -- the probe "
-                  "did not exercise the path it is meant to warm, so the "
-                  "first real caller will still pay the wait" % (name, elapsed))
+            print("[bigqmt_warmup] %s 在 %.2fs 内没有返回数据；"
+                  "预热请求未走到预期路径，首个真实调用仍需等待"
+                  % (name, elapsed))
         elif elapsed > 10.0:
-            print("[bigqmt_warmup] %s warm after %.1fs (%s rows) -- that wait "
-                  "is now paid; callers should see sub-second responses"
+            print("[bigqmt_warmup] %s 已在 %.1fs 后预热完成（%s 行）；"
+                  "本次等待已结束，后续调用应在亚秒级返回"
                   % (name, elapsed, rows))
         else:
-            print("[bigqmt_warmup] %s warm in %.2fs (%s rows)"
+            print("[bigqmt_warmup] %s 预热完成，耗时 %.2fs（%s 行）"
                   % (name, elapsed, rows))
 
 
@@ -1558,7 +1559,7 @@ def _pump_download_jobs(context_info, config):
             job_ttl_seconds=int(job_config.get("job_ttl_seconds") or 3600),
         )
     except Exception as exc:
-        _log_err("download_jobs", "pump failed: %s" % exc)
+        _log_err("download_jobs", "下载任务泵送失败：%s" % exc)
         return None
 
 
@@ -1578,7 +1579,7 @@ def _adjust_phase(name, fn, *args):
         import traceback as _tb
         try:
             from bigqmt_signal_trader.logging_setup import get_logger
-            get_logger("adjust").error("adjust phase %s failed:\n%s", name, _tb.format_exc())
+            get_logger("adjust").error("adjust 阶段 %s 执行失败：\n%s", name, _tb.format_exc())
         except Exception:
             pass
         return None
@@ -1611,7 +1612,7 @@ def adjust(ContextInfo, _source="timer"):
     except Exception:
         pass
     if not _adjust_logged:
-        print("[bigqmt_signal_trader] adjust ok")
+        print("[bigqmt_signal_trader] adjust 完成")
         _adjust_logged = True
     _tick_app_t0 = time.perf_counter()
     try:
@@ -1795,21 +1796,21 @@ def _note_exec_publish_failure(kind, exc):
     if state["reports"] <= 3:
         _log_err(
             "exec_events",
-            "publish %s failed: %s (%s)\n%s"
+            "发布 %s 失败：%s（%s）\n%s"
             % (kind, exc, exc.__class__.__name__, _traceback.format_exc()),
         )
     elif state["reports"] % 50 == 0:
         _log_err(
             "exec_events",
-            "publish %s still failing after %d attempts: %s (%s)"
+            "发布 %s 已连续失败 %d 次：%s（%s）"
             % (kind, state["reports"], exc, exc.__class__.__name__),
         )
     if not state["demoted"] and state["redis_failures"] >= _EXEC_REDIS_FAILURE_LIMIT:
         state["demoted"] = bool(_push_channel_sink())
         if state["demoted"]:
-            print("[bigqmt_exec_events] redis failed %d times in a row; switching "
-                  "to the quote push channel for order/trade callbacks. Remove the "
-                  "redis block from the local config to skip this entirely."
+            print("[bigqmt_exec_events] redis 已连续失败 %d 次；委托和成交回调"
+                  "将改用行情推送通道。若不需要该能力，可从本地配置中删除 "
+                  "redis 配置块。"
                   % state["redis_failures"])
 
 
@@ -1900,7 +1901,7 @@ def _exec_event_redis(config):
         try:
             from bigqmt_signal_trader.logging_setup import get_logger
 
-            get_logger("strategy").error("exec-event redis client build failed: %s", exc)
+            get_logger("strategy").error("成交回报 Redis 客户端创建失败：%s", exc)
         except Exception:
             pass
         return None
@@ -2008,7 +2009,7 @@ def _recover_callback_remark(kind, obj):
             return handlers._recover_order_remarks(event.get("account_id"), [event])[0]
         return event
     except Exception as exc:
-        print("[bigqmt_exec] order remark observation failed: %s" % type(exc).__name__)
+        print("[bigqmt_exec] 委托备注观测失败：%s" % type(exc).__name__)
         return None
 
 
@@ -2029,7 +2030,7 @@ def _publish_exec_event(kind, obj, context_info=None, normalized_event=None):
             print(exec_events.format_raw_snapshot(kind, obj))
             raw_fields = exec_events.raw_field_snapshot(obj)
         except Exception as exc:
-            print("[bigqmt_exec_raw] snapshot %s failed: %s" % (kind, exc))
+            print("[bigqmt_exec_raw] 原始快照 %s 获取失败：%s" % (kind, exc))
     if not _config_bool(event_config.get("enabled"), True):
         return
     # The channel is per account, so it has to be THIS event's account: a
@@ -2095,7 +2096,7 @@ def _publish_exec_event(kind, obj, context_info=None, normalized_event=None):
         # it came from -- that is what made issue #76 take a day to pin down.
         _log_err(
             "exec_events",
-            "building the %s event failed: %s (%s)\n%s"
+            "构建 %s 成交回报失败：%s（%s）\n%s"
             % (kind, exc, exc.__class__.__name__, _traceback.format_exc()),
         )
 
@@ -2138,21 +2139,20 @@ def credit_account_callback(ContextInfo, seq, result):
         handlers = getattr(_rpc_service, "handlers", None) if _rpc_service else None
         if handlers is None:
             _log_err("credit_account_callback",
-                     "QMT delivered a credit account detail (seq=%s) but there is "
-                     "no RPC service to hand it to -- the answer is being dropped."
+                     "QMT 已送达信用账户明细（seq=%s），但没有可接收的 RPC 服务；"
+                     "该结果将被丢弃。"
                      % (seq,))
             return False
         if not hasattr(handlers, "note_credit_account"):
             _log_err("credit_account_callback",
-                     "QMT delivered a credit account detail (seq=%s) but this "
-                     "deployment's handlers have no note_credit_account -- the "
-                     "bridge package is older than the entry file. Re-sync and "
-                     "restart." % (seq,))
+                     "QMT 已送达信用账户明细（seq=%s），但当前部署的 handlers "
+                     "没有 note_credit_account；桥接包版本早于入口文件。"
+                     "请重新同步并重启策略。" % (seq,))
             return False
         return handlers.note_credit_account(seq, result)
     except Exception as exc:
         _log_err("credit_account_callback",
-                 "recording the credit account detail failed: %s (%s)"
+                 "记录信用账户明细失败：%s（%s）"
                  % (exc, exc.__class__.__name__))
         return False
 

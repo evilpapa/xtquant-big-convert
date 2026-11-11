@@ -69,7 +69,7 @@ def _ensure_src_on_path() -> None:
 def _ensure_qmt_python_on_path() -> None:
     """把 QMT 的 python 目录加到 sys.path，让 local_config.py 能被发现。
 
-    这样客户端能读到 QMT 端的 transport=zmq 配置（服务端用 zmq 时客户端也得用）。
+    客户端和服务端须使用相同的传输配置。
     通过环境变量 BIGQMT_QMT_PYTHON_DIR 指定，或自动从常见路径/当前目录探测。
     """
     candidates = []

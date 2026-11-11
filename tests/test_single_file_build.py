@@ -26,7 +26,7 @@ TOOLS = os.path.join(ROOT, "tools")
 
 BUILDERS = {
     "redis": ("build_single_file.py", "utf-8"),
-    "no_redis_flat": ("build_no_redis_single_file_flat.py", "gbk"),
+    "pipe_flat": ("build_pipe_single_file_flat.py", "gbk"),
 }
 
 _built = {}
@@ -57,15 +57,15 @@ class BuildsSucceedTest(unittest.TestCase):
         path, source = build("redis")
         compile(source, path, "exec")
 
-    def test_no_redis_flat_build_compiles(self):
+    def test_pipe_flat_build_compiles(self):
         """The one that wraps every module in a function body."""
-        path, source = build("no_redis_flat")
+        path, source = build("pipe_flat")
         compile(source, path, "exec")
 
     def test_flat_build_really_does_wrap_modules_in_functions(self):
         """If this stops being true, the compile test above stops being a
         regression guard for #76 and nobody would notice."""
-        _path, source = build("no_redis_flat")
+        _path, source = build("pipe_flat")
         match = re.search(
             r'"bigqmt_signal_trader/xtquant_compat\.py": (_mod_\d+),', source)
         self.assertIsNotNone(match, "xtquant_compat not embedded")
@@ -173,7 +173,7 @@ class EmbeddedContentTest(unittest.TestCase):
     def test_constant_backfill_survives_the_indentation_pass(self):
         """The flat builder re-indents sources into function bodies; the #76
         fix must come out the other side intact."""
-        _path, source = build("no_redis_flat")
+        _path, source = build("pipe_flat")
         self.assertIn("for _const_name in dir(_xtconstant):", source)
 
 

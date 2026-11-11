@@ -95,9 +95,10 @@ class ServiceContractTest(unittest.TestCase):
         self.assertTrue(callable(getattr(transport, "drain_request_queue", None)))
         self.assertEqual(transport.drain_request_queue(max_items=20), 0)
 
+
     def test_every_transport_the_factory_builds_can_be_drained(self):
         """同一个坑不要在下一个传输上重犯。"""
-        for name in ("redis", "zmq", "pipe"):
+        for name in ("redis", "pipe"):
             try:
                 transport = build_transport(name, {}, account_id="acct")
             except Exception:
@@ -105,6 +106,8 @@ class ServiceContractTest(unittest.TestCase):
             self.assertTrue(
                 callable(getattr(transport, "drain_request_queue", None)),
                 "%s 传输没有 drain_request_queue，adjust 会掉进 redis 兜底" % name)
+
+
 
 
 @WINDOWS_ONLY
@@ -218,7 +221,7 @@ class BackgroundThreadResolutionTest(unittest.TestCase):
 
     def test_the_decision_asks_the_transport_not_a_list(self):
         from bigqmt_signal_trader_strategy import _transport_can_drain
-        for name in ("zmq", "mysql", "pipe"):
+        for name in ("pipe"):
             self.assertTrue(_transport_can_drain(name), name)
         self.assertFalse(_transport_can_drain("shm"))
         self.assertFalse(_transport_can_drain("nonesuch"))

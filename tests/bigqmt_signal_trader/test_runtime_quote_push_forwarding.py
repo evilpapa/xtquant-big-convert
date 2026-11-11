@@ -33,25 +33,7 @@ class RuntimeQuotePushForwardingTest(unittest.TestCase):
         runtime.configure = self._saved_configure
         runtime.set_account_id = self._saved_set_account_id
 
-    def test_runtime_config_loads_quote_push_block(self):
-        expected = {
-            "enabled": True,
-            "zmq_bind_address": "tcp://127.0.0.1:15593",
-        }
 
-        runtime.configure_runtime_redis({"quote_push": expected})
-
-        self.assertEqual(runtime.QUOTE_PUSH_CONFIG, expected)
-
-    def test_apply_config_forwards_quote_push_block(self):
-        runtime.QUOTE_PUSH_CONFIG = {
-            "enabled": True,
-            "zmq_bind_address": "tcp://127.0.0.1:15593",
-        }
-
-        runtime._apply_config("TESTACCOUNT")
-
-        self.assertEqual(self._captured["quote_push"], runtime.QUOTE_PUSH_CONFIG)
 
 
 if __name__ == "__main__":

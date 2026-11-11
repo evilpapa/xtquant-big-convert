@@ -663,26 +663,6 @@ class XtquantCompatTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             trader.query_stock_positions(StockAccount("acct"))
 
-    def test_zmq_query_failure_never_falls_back_to_redis_cache(self):
-        class FailingZmqClient(FakeRpcClient):
-            transport_name = "zmq"
-
-            def call(self, method, params=None, account_id=None, timeout_seconds=None):
-                raise RuntimeError("zmq timeout")
-
-            def _redis(self):
-                raise AssertionError("ZMQ query must not access Redis")
-
-        trader = BigQmtXtTrader(account_id="acct")
-        trader.client = FailingZmqClient()
-        acc = StockAccount("acct")
-
-        with self.assertRaisesRegex(RuntimeError, "zmq timeout"):
-            trader.query_stock_asset(acc)
-        with self.assertRaisesRegex(RuntimeError, "zmq timeout"):
-            trader.query_stock_positions(acc)
-        with self.assertRaisesRegex(RuntimeError, "zmq timeout"):
-            trader.query_stock_position(acc, "600000.SH")
 
     def test_client_call_via_transport_builds_valid_request(self):
         # Regression: the swappable-transport path in BigQmtRpcClient.call() built
@@ -697,7 +677,7 @@ class XtquantCompatTest(unittest.TestCase):
                 return {"ok": True, "data": {"pong": True}}
 
         client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
-        client.transport_name = "zmq"
+        client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
         result = client.call("ping", {"x": 1})
@@ -723,7 +703,7 @@ class XtquantCompatTest(unittest.TestCase):
                 }
 
         client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
-        client.transport_name = "zmq"
+        client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
         with self.assertRaises(RuntimeError) as ctx:
@@ -737,7 +717,7 @@ class XtquantCompatTest(unittest.TestCase):
                 return {"ok": True, "data": {"pong": True, "method": request["method"]}}
 
         client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
-        client.transport_name = "zmq"
+        client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
         futures = [client.call_async("ping", {"i": i}) for i in range(5)]
@@ -754,7 +734,7 @@ class XtquantCompatTest(unittest.TestCase):
                 return {"ok": True, "data": {"i": request["params"]["i"]}}
 
         client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
-        client.transport_name = "zmq"
+        client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
         got = []
@@ -780,7 +760,7 @@ class XtquantCompatTest(unittest.TestCase):
                 return {"ok": False, "error": "boom"}
 
         client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
-        client.transport_name = "zmq"
+        client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
         called = []
@@ -791,37 +771,8 @@ class XtquantCompatTest(unittest.TestCase):
         _t.sleep(0.3)  # 给 dispatcher 一个机会（它不应触发）
         self.assertEqual(called, [])
 
-    def test_zmq_with_explicit_address_never_builds_redis_discovery(self):
-        client = BigQmtRpcClient(
-            account_id="acct",
-            redis_config={
-                "transport": "zmq",
-                "zmq": {"connect_address": "tcp://127.0.0.1:20146"},
-            },
-        )
-
-        def forbidden_redis():
-            raise AssertionError("ZMQ explicit-address mode must not touch Redis")
-
-        client._redis = forbidden_redis
-        transport = client._transport()
-
-        self.assertEqual(transport.name, "zmq")
-        self.assertEqual(transport.connect_address, "tcp://127.0.0.1:20146")
-        self.assertIsNone(transport.discovery_redis_client)
-
-    def test_pure_zmq_quote_metadata_does_not_build_redis_client(self):
-        """纯 ZMQ 的兼容订阅元数据不能隐式连接 Redis。"""
-        client = BigQmtRpcClient(account_id="acct", redis_config={"transport": "zmq"})
-        client._redis = lambda: (_ for _ in ()).throw(AssertionError("Redis must not be used"))
-
-        event = client.publish_event("subscribe_quote", {"seq": 1})
-        client.save_quote_subscription(1, {"seq": 1}, active=True)
-
-        self.assertEqual(event["event_type"], "subscribe_quote")
-
     def test_mysql_quote_metadata_keeps_existing_redis_path(self):
-        """非 ZMQ transport 继续使用既有 Redis 订阅元数据。"""
+        """MySQL transport 继续使用既有 Redis 订阅元数据。"""
         class RedisRecorder:
             def __init__(self):
                 self.calls = []
@@ -844,33 +795,20 @@ class XtquantCompatTest(unittest.TestCase):
         self.assertEqual(redis.calls, ["xadd", "publish", "hset"])
 
 
+
+
+
+
+
+
+
+
+
+
 class UseFormulaBypassTest(unittest.TestCase):
     """use_formula=False：必须最新数据的调用（subscribe_quote 盘中轮询）
     不走 FormulaServer 快照直连。"""
 
-    def test_call_with_use_formula_false_skips_router(self):
-        calls = []
-
-        class _FakeRouter:
-            def supports(self, method):
-                return True
-
-            def call(self, method, params):
-                raise AssertionError("router must not be called when use_formula=False")
-
-        class _FakeTransport:
-            def send_request(self, request, timeout_seconds):
-                calls.append(request["method"])
-                return {"ok": True, "data": {"pong": True}}
-
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
-        client.transport_name = "zmq"
-        client._transport_instance = _FakeTransport()
-        client._formula_router_instance = _FakeRouter()
-
-        result = client.call("get_market_data_ex", {"x": 1}, use_formula=False)
-        self.assertEqual(result, {"pong": True})
-        self.assertEqual(calls, ["get_market_data_ex"])
 
     def test_subscribe_quote_fetch_uses_rpc_not_formula(self):
         xt = BigQmtXtData(FakeRpcClient())
@@ -902,6 +840,32 @@ class UseFormulaBypassTest(unittest.TestCase):
         fetch()
         self.assertFalse(recorded.get("use_formula", True),
                          "subscribe_quote 盘中轮询必须 use_formula=False（读实时数据）")
+
+
+    def test_call_with_use_formula_false_skips_router(self):
+        calls = []
+
+        class _FakeRouter:
+            def supports(self, method):
+                return True
+
+            def call(self, method, params):
+                raise AssertionError("router must not be called when use_formula=False")
+
+        class _FakeTransport:
+            def send_request(self, request, timeout_seconds):
+                calls.append(request["method"])
+                return {"ok": True, "data": {"pong": True}}
+
+        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client.transport_name = "mysql"
+        client._transport_instance = _FakeTransport()
+        client._formula_router_instance = _FakeRouter()
+
+        result = client.call("get_market_data_ex", {"x": 1}, use_formula=False)
+        self.assertEqual(result, {"pong": True})
+        self.assertEqual(calls, ["get_market_data_ex"])
+
 
 
 class FormulaStaleFailoverTest(unittest.TestCase):

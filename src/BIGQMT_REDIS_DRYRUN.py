@@ -1,4 +1,4 @@
-#coding:gbk
+#coding:utf-8
 """QMT bridge entry using the same file-loader pattern as qmt_realtime strategies.
 
 Broker QMT strategy sandboxes may reject local package names through their
@@ -185,7 +185,7 @@ def _load_local_module(name):
                 "xt_trader.sync_deployment(), or copy src/ from the release. "
                 "A different version will not help; every version fails the "
                 "same way on this file." % source_path)
-        print("[bigqmt_shell] load failed: module=%s path=%s error=%s: %s"
+        print("[bigqmt_shell] 加载失败 module=%s path=%s error=%s：%s"
               % (name, source_path, type(exc).__name__, exc))
         raise
     _set_parent_attribute(name, module)
@@ -256,18 +256,18 @@ def _stop_previous_rpc_service():
         return
     try:
         reset()
-        print("[bigqmt_shell] previous rpc service stopped")
+        print("[bigqmt_shell] 已停止之前的 RPC 服务")
     except Exception as exc:
         # Continue the reload so a broken old instance does not prevent QMT
         # from reporting its normal startup error.
-        print("[bigqmt_shell] previous rpc service stop failed: %s" % exc)
+        print("[bigqmt_shell] 停止之前的 RPC 服务失败：%s" % exc)
 
 
 _stop_previous_rpc_service()
 _clear_local_modules()
 _importlib.import_module = _local_import_module
 _importlib.reload = _local_reload
-print("[bigqmt_shell] importlib entry source_root=%s" % _SOURCE_ROOT)
+print("[bigqmt_shell] importlib 入口 source_root=%s" % _SOURCE_ROOT)
 
 
 def _fallback_account_id():
@@ -284,7 +284,7 @@ try:
     _strategy = _local_import("bigqmt_signal_trader_strategy", globals(), fromlist=("*",))
     _strategy.reset_app()
 except Exception as bridge_preload_error:
-    print("[bigqmt_shell] bridge preload failed: %s" % bridge_preload_error)
+    print("[bigqmt_shell] 桥接预加载失败：%s" % bridge_preload_error)
 
 _runtime = _local_import("bigqmt_signal_trader_redis_rpc_runtime", globals(), fromlist=("*",))
 
@@ -300,39 +300,21 @@ try:
     if forced_transport:
         BIGQMT_REDIS_CONFIG = dict(BIGQMT_REDIS_CONFIG or {})
         BIGQMT_REDIS_CONFIG["transport"] = str(forced_transport)
-        if str(forced_transport).lower() == "zmq":
-            # setdefault, not assignment: an explicit False in the local config
-            # is the #183 drain opt-in, and overwriting it kept the pure-zmq
-            # entries -- the deployments that most want low latency -- on the
-            # slow path (#188). Measured on the live terminal, drain takes zmq
-            # from ping 404ms / positions 607ms to 95ms for both.
-            #
-            # Only the historical default is filled in here. A transport that
-            # cannot drain still gets its receiver thread: _resolve_background_
-            # threads forces True for anything outside zmq/mysql/redis.
-            BIGQMT_REDIS_CONFIG.setdefault("rpc_background_threads", True)
-            BIGQMT_REDIS_CONFIG["download_jobs_enabled"] = False
-            # Execution events have a native ZMQ PUB path.  Preserve the
-            # configured/default switch so MiniQMT-compatible order and trade
-            # callbacks keep working without Redis.
-            BIGQMT_REDIS_CONFIG["full_tick_cache_enabled"] = False
-    print("[bigqmt_shell] local rpc config loaded transport=%s keys=%s" % (
+    print("[bigqmt_shell] 本地 RPC 配置已加载 transport=%s keys=%s" % (
         (BIGQMT_REDIS_CONFIG or {}).get("transport", "redis"),
         sorted((BIGQMT_REDIS_CONFIG or {}).keys()),
     ))
     _runtime.configure_runtime_redis(BIGQMT_REDIS_CONFIG)
 except Exception as rpc_config_error:
-    print("[bigqmt_shell] local rpc config load failed: %s" % rpc_config_error)
-    if str(globals().get("BIGQMT_FORCE_TRANSPORT") or "").lower() == "zmq":
-        raise RuntimeError("ZMQ bridge requires a valid local QMT config: %s" % rpc_config_error)
+    print("[bigqmt_shell] 本地 RPC 配置加载失败：%s" % rpc_config_error)
 
 try:
     _config = _load_local_config()
     BIGQMT_ACCOUNT_ID = getattr(_config, "BIGQMT_ACCOUNT_ID", "")
-    print("[bigqmt_shell] local account config loaded=%s" % bool(BIGQMT_ACCOUNT_ID))
+    print("[bigqmt_shell] 本地账户配置已加载=%s" % bool(BIGQMT_ACCOUNT_ID))
     _runtime.configure_runtime_account(BIGQMT_ACCOUNT_ID)
 except Exception as account_config_error:
-    print("[bigqmt_shell] local account config load failed: %s" % account_config_error)
+    print("[bigqmt_shell] 本地账户配置加载失败：%s" % account_config_error)
     account_id = _fallback_account_id()
     if account_id:
         _runtime.configure_runtime_account(account_id)
@@ -351,7 +333,7 @@ try:
     #
     # So: read the single source instead of copying it.
     qmt_extra = _runtime.capture_qmt_injected_funcs(globals())
-    print("[bigqmt_shell] download globals bound=%s" % sorted(k for k in qmt_extra if "download" in k or "down_history" in k))
+    print("[bigqmt_shell] 下载相关全局函数已绑定=%s" % sorted(k for k in qmt_extra if "download" in k or "down_history" in k))
     _runtime.bind_runtime_api(
         passorder_func=globals().get("passorder"),
         cancel_func=globals().get("cancel"),
@@ -363,19 +345,17 @@ try:
     # being exec'd as a plain script: the module body runs, init() is never
     # called, no RPC service starts, and the run simply ends -- which from the
     # log looks like a successful start followed by "finished" (issue #123).
-    # ASCII only: this file declares #coding:gbk and is stored as UTF-8, so it
-    # holds together only while every byte is ASCII.
+    # This file declares UTF-8 so Chinese diagnostics stay readable in the
+    # QMT strategy output panel.
     if not any(name in globals() for name in
                ("passorder", "get_trade_detail_data", "download_history_data")):
-        print("[bigqmt_shell] WARNING: QMT injected none of its API globals "
-              "(passorder / get_trade_detail_data / download_history_data), so "
-              "this file is running as a plain script rather than as a "
-              "strategy. init() will never be called, the RPC service will not "
-              "start, and the run ends here with nothing listening. Two known "
-              "causes: running it from the strategy EDITOR window instead of "
-              "adding it under model trading, and the 'standalone python "
-              "process' option, which makes QMT exec the file as __main__ "
-              "without calling init(). See issue #123.")
+        print("[bigqmt_shell] 警告：QMT 未注入任何 API 全局函数"
+              "（passorder / get_trade_detail_data / download_history_data），"
+              "当前文件正作为普通脚本运行，而不是策略。init() 不会被调用，"
+              "RPC 服务不会启动，运行将在此结束且没有监听器。"
+              "两个已知原因：从策略编辑窗口直接运行，而不是添加到模型交易；"
+              "或启用了“独立 Python 进程”，使 QMT 以 __main__ 方式执行文件"
+              "但不调用 init()。参见问题 #123。")
 except NameError:
     pass
 

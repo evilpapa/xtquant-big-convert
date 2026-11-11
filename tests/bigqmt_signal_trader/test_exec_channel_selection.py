@@ -156,50 +156,7 @@ class _patched_channel_builder(object):
 
 
 class ChannelSelectionTest(unittest.TestCase):
-    def test_zmq_transport_with_working_redis_subscribes_redis_channels(self):
-        """The #144 shape: zmq transport, Redis reachable -> Redis channels."""
-        trader, recorder = _trader("zmq", None)
-        redis_client = _FakeRedisClient(
-            messages=[json.dumps(ORDER_EVENT).encode("utf-8")],
-            stop=lambda: setattr(trader, "_event_running", False),
-        )
-        trader.client._redis = lambda: redis_client
-        # Recorded rather than self.fail() so the pre-fix code (which goes
-        # straight to the push channel) fails cleanly instead of hanging.
-        push = _FakePushChannel(
-            stop=lambda: setattr(trader, "_event_running", False))
 
-        trader._event_running = True
-        with _patched_channel_builder(push):
-            trader._event_loop()
-
-        self.assertIsNone(push.topics,
-                          "push channel must not be built when Redis is reachable")
-        ps = redis_client.pubsubs[0]
-        self.assertEqual(
-            set(ps.subscribed),
-            {exec_events.order_channel("acct"),
-             exec_events.trade_channel("acct"),
-             exec_events.order_error_channel("acct"),
-             exec_events.cancel_error_channel("acct")})
-        self.assertEqual(recorder.names(), ["order"])
-        self.assertTrue(ps.closed)
-
-    def test_zmq_transport_without_redis_uses_push_channel(self):
-        trader, _ = _trader("zmq", None)
-        redis_client = _FakeRedisClient(ping_ok=False)
-        trader.client._redis = lambda: redis_client
-        push = _FakePushChannel(
-            stop=lambda: setattr(trader, "_event_running", False))
-
-        trader._event_running = True
-        with _patched_channel_builder(push):
-            trader._event_loop()
-
-        self.assertEqual(
-            set(push.topics or []),
-            {"exec:order", "exec:trade", "exec:order_error", "exec:cancel_error"})
-        self.assertTrue(push.stopped)
 
     def test_redis_transport_with_working_redis_still_uses_redis(self):
         trader, recorder = _trader("redis", None)
@@ -245,43 +202,6 @@ class ChannelSelectionTest(unittest.TestCase):
         self.assertIsNone(push.topics, "redis transport must not fall to the "
                                       "push channel -- nothing would publish there")
 
-    def test_redis_dying_mid_round_reselects_push_next_round(self):
-        """A server that demotes Redis mid-session (issue #145) must be
-        followed: the Redis round dies with the connection, the next round
-        finds Redis unreachable and selects the push channel."""
-        trader, _ = _trader("zmq", None)
-
-        class DyingRedis(_FakeRedisClient):
-            """Round 1 reachable but the subscription dies in use; from then
-            on unreachable -- the realistic mid-session death."""
-
-            def ping(self):
-                if self.pings >= 1:
-                    raise RuntimeError("redis unreachable")
-                return super().ping()
-
-        redis_client = DyingRedis(stop=lambda: None)
-        trader.client._redis = lambda: redis_client
-
-        class DyingPubSub(_FakePubSub):
-            def get_message(self, timeout=1.0):
-                raise ConnectionError("redis went away mid-session")
-
-        redis_client.pubsub = lambda ignore_subscribe_messages=True: DyingPubSub([], lambda: None)
-
-        push = _FakePushChannel(
-            stop=lambda: setattr(trader, "_event_running", False))
-
-        real_sleep = time.sleep
-        def fast_sleep(seconds):
-            real_sleep(0.01)
-
-        trader._event_running = True
-        with _patched_sleep(fast_sleep):
-            with _patched_channel_builder(push):
-                trader._event_loop()
-
-        self.assertIsNotNone(push.topics)
 
 
 class PushChannelBuilderResolutionTest(unittest.TestCase):
@@ -296,19 +216,6 @@ class PushChannelBuilderResolutionTest(unittest.TestCase):
     def test_the_trader_class_has_no_such_method(self):
         self.assertFalse(hasattr(BigQmtXtTrader, "_build_quote_push_channel"))
 
-    def test_the_listener_resolves_the_module_level_builder(self):
-        trader, _ = _trader("zmq", None)
-        push = _FakePushChannel(
-            stop=lambda: setattr(trader, "_event_running", False))
-
-        trader._event_running = True
-        with _patched_channel_builder(push):
-            trader._event_loop_push_channel()
-
-        self.assertEqual(
-            set(push.topics or []),
-            {"exec:order", "exec:trade", "exec:order_error", "exec:cancel_error"})
-        self.assertTrue(push.stopped)
 
 
 class _patched_sleep(object):

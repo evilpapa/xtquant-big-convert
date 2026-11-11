@@ -72,16 +72,6 @@ def _submit(handlers, remark, strategy_name):
 
 
 class LocalIdentityJournalTest(unittest.TestCase):
-    def test_submitted_order_gets_strategy_name_back_without_redis(self):
-        gateway = _QueryGateway([_row(user_order_id="sig-1")])
-        handlers = _handlers(gateway)
-        # No identity Redis anywhere -- the zmq single-file shape.
-        self.assertIsNone(handlers._identity_redis())
-
-        _submit(handlers, "sig-1", "my_strat")
-        rows = handlers._handle_query_orders({})
-
-        self.assertEqual(rows[0].strategy_name, "my_strat")
 
     def test_order_not_submitted_here_stays_unnamed(self):
         gateway = _QueryGateway([_row(user_order_id="manual-order")])

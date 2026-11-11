@@ -82,8 +82,8 @@ def _report_missing_field(label, row, candidates):
     except Exception:
         available = []
     print(
-        "[bigqmt_asset] %s not found (tried %s); ACCOUNT row exposes: %s"
-        % (label, ", ".join(candidates), ", ".join(available) or "<none>")
+        "[bigqmt_asset] 未找到 %s（已尝试 %s）；ACCOUNT 行现有字段：%s"
+        % (label, ", ".join(candidates), ", ".join(available) or "<无>")
     )
 
 
@@ -161,7 +161,7 @@ def skip_unparsable_row(kind, row, exc):
     if key in _unparsable_rows_reported:
         return
     _unparsable_rows_reported.add(key)
-    print("[bigqmt_code] skipping unparsable %s row (instrument=%r exchange=%r): %s"
+    print("[bigqmt_code] 跳过无法解析的 %s 行（instrument=%r exchange=%r）：%s"
           % (kind, instrument, exchange, exc))
 
 

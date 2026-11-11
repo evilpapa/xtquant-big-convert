@@ -1958,9 +1958,9 @@ class BigQmtRpcHandlers:
                     # submit's name, or erased it entirely when that submit
                     # passed "" and rows fell back to the QMT process name.
                     if name:
-                        print("[bigqmt_rpc] order remark %r reused across "
-                              "strategies: keeping %r, ignoring %r (#393). "
-                              "Pass a unique remark per order."
+                        print("[bigqmt_rpc] 委托备注 %r 已被多个策略复用："
+                              "保留 %r，忽略 %r（#393）。"
+                              "请为每笔委托使用唯一备注。"
                               % (remark, existing_name, name))
                     journal.move_to_end(key)
                     return
@@ -2102,10 +2102,10 @@ class BigQmtRpcHandlers:
         try:
             from .logging_setup import get_logger
             get_logger("rpc").warning(
-                "%s returned %d row(s) with every field empty, on thread %r. "
-                "QMT trade-context queries answer this way off the main strategy "
-                "thread -- the call did NOT fail, the data is simply not there. "
-                "Check probe_capabilities thread_routing (#204).",
+                "%s 在线程 %r 上返回 %d 行，但所有字段均为空。"
+                "QMT 交易上下文查询在非主策略线程上会返回这种结果；"
+                "调用并未失败，只是数据不在该线程可见。"
+                "请检查 probe_capabilities 的 thread_routing（#204）。",
                 source, len(rows), thread_name)
         except Exception:
             pass
@@ -2763,8 +2763,8 @@ class BigQmtRpcHandlers:
                        params.get("price")))
             raise ValueError("volume must be positive")
         if _is_cash_repay_order_type(request.order_type) and request.price > 0:
-            print("%s 直接还款: amount=%d taken from order_volume; price=%r is ignored "
-                  "by passorder (#330)" % ("[bigqmt_rpc]", request.volume, request.price))
+            print("%s 直接还款：金额=%d（取自 order_volume）；passorder 会忽略价格=%r"
+                  "（#330）" % ("[bigqmt_rpc]", request.volume, request.price))
 
         identity = None
         identity_redis = self._identity_redis()
@@ -3274,7 +3274,7 @@ class BigQmtRpcHandlers:
         try:
             from .logging_setup import get_logger
             get_logger("rpc").info(
-                "batch submit account=%s items=%d placed=%d failed=%d %.0fms",
+                "批量提交 account=%s items=%d 已提交=%d 失败=%d %.0fms",
                 account_id, len(orders),
                 sum(1 for r in results if r.get("success") and not r.get("idempotent")),
                 sum(1 for r in results if not r.get("success")),
@@ -3936,11 +3936,11 @@ class RedisPubSubRpcService:
         self._queue_thread = getattr(self._transport, "_queue_thread", None)
         if not self.background_threads:
             self._start_heavy_worker()
-            print("%s started queue=%s background_threads=False heavy_offload=%s"
+            print("%s 已启动 queue=%s background_threads=False heavy_offload=%s"
                   % (self.print_prefix, self.request_queue,
                      self._heavy_thread is not None))
             return
-        print("%s started channel=%s queue=%s" % (self.print_prefix, self.request_channel, self.request_queue))
+        print("%s 已启动 channel=%s queue=%s" % (self.print_prefix, self.request_channel, self.request_queue))
 
     def stop(self):
         self._running.clear()
@@ -3975,7 +3975,8 @@ class RedisPubSubRpcService:
             try:
                 self.process_request(request)
             except Exception:
-                print("%s heavy worker failed:\n%s" % (self.print_prefix, traceback.format_exc()))
+                print("%s 重任务工作线程失败：\n%s"
+                      % (self.print_prefix, traceback.format_exc()))
 
     def _on_heavy_worker(self):
         thread = self._heavy_thread
@@ -4051,7 +4052,7 @@ class RedisPubSubRpcService:
                 try:
                     from .logging_setup import get_logger
                     get_logger("rpc").error(
-                        "publish heavy reply failed method=%s:\n%s",
+                        "发布重任务应答失败 method=%s：\n%s",
                         (request or {}).get("method"), traceback.format_exc())
                 except Exception:
                     pass
@@ -4065,7 +4066,8 @@ class RedisPubSubRpcService:
                 self._pubsub = pubsub
                 pubsub.subscribe(self.request_channel)
                 if self.debug_log_limit > 0:
-                    print("%s subscribed channel=%s" % (self.print_prefix, self.request_channel))
+                    print("%s 已订阅 channel=%s"
+                          % (self.print_prefix, self.request_channel))
                 while self._running.is_set():
                     message = pubsub.get_message(timeout=1.0)
                     if not self._running.is_set():
@@ -4074,7 +4076,8 @@ class RedisPubSubRpcService:
                         continue
                     self._handle_received_payload(message.get("data"), "pubsub")
             except Exception:
-                print("%s listener failed:\n%s" % (self.print_prefix, traceback.format_exc()))
+                print("%s 监听器失败：\n%s"
+                      % (self.print_prefix, traceback.format_exc()))
                 time.sleep(1.0)
             finally:
                 try:
@@ -4088,7 +4091,8 @@ class RedisPubSubRpcService:
         while self._running.is_set():
             try:
                 if self.debug_log_limit > 0:
-                    print("%s queue polling key=%s" % (self.print_prefix, self.request_queue))
+                    print("%s 队列轮询 key=%s"
+                          % (self.print_prefix, self.request_queue))
                 while self._running.is_set():
                     # brpop blocks server-side until an item arrives (or the
                     # short timeout fires), so a request is picked up within
@@ -4103,7 +4107,8 @@ class RedisPubSubRpcService:
                     raw = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else item
                     self._handle_received_payload(raw, "queue")
             except Exception:
-                print("%s queue listener failed:\n%s" % (self.print_prefix, traceback.format_exc()))
+                print("%s 队列监听器失败：\n%s"
+                      % (self.print_prefix, traceback.format_exc()))
                 time.sleep(1.0)
 
     def _handle_received_payload(self, raw_payload, source):
@@ -4113,13 +4118,14 @@ class RedisPubSubRpcService:
                 preview = self._loads(raw_payload)
                 method = str(preview.get("method") or "")
                 print(
-                    "%s received source=%s method=%s inline=%s"
+                    "%s 已收到请求 source=%s method=%s inline=%s"
                     % (self.print_prefix, source, method, self._should_process_in_listener(preview))
                 )
                 self.enqueue_payload(preview)
                 return
             except Exception:
-                print("%s receive preview failed:\n%s" % (self.print_prefix, traceback.format_exc()))
+                print("%s 请求预览失败：\n%s"
+                      % (self.print_prefix, traceback.format_exc()))
         self.enqueue_payload(raw_payload)
 
     def enqueue_payload(self, raw_payload):
@@ -4130,7 +4136,7 @@ class RedisPubSubRpcService:
         if self._should_offload(payload):
             self._heavy_count += 1
             if self._heavy_count <= self.debug_log_limit:
-                print("%s heavy read -> worker method=%s queued=%s"
+                print("%s 重读取已转交工作线程 method=%s queued=%s"
                       % (self.print_prefix, payload.get("method"), self._heavy_queue.qsize()))
             self._heavy_queue.put(payload)
             return
@@ -4140,7 +4146,7 @@ class RedisPubSubRpcService:
         self._deferred_count += 1
         if self._deferred_count <= self.debug_log_limit:
             print(
-                "%s deferred method=%s pending_before=%s"
+                "%s 已延迟处理 method=%s pending_before=%s"
                 % (self.print_prefix, payload.get("method"), self.pending.qsize())
             )
         try:
@@ -4355,7 +4361,7 @@ class RedisPubSubRpcService:
         try:
             publish(request, str(settlement.server_error or ""))
         except Exception as exc:
-            print("%s shadow order_error push failed: %s" % (self.print_prefix, exc))
+            print("%s 影子 order_error 推送失败：%s" % (self.print_prefix, exc))
 
     def drain_pending(self, max_items=20, budget_seconds=None):
         """Run queued requests on the adjust thread, then settle.
@@ -4387,7 +4393,7 @@ class RedisPubSubRpcService:
                 break
             if self._processed_count < self.debug_log_limit:
                 print(
-                    "%s draining method=%s pending_after=%s"
+                    "%s 正在 drain method=%s pending_after=%s"
                     % (self.print_prefix, request.get("method"), self.pending.qsize())
                 )
             self.process_request(request)
@@ -4508,7 +4514,7 @@ class RedisPubSubRpcService:
         if order_key is not None:
             self._remember_order_response(order_key, response, state="refused")
         if self._expired_request_count <= 5 or self._expired_request_count % 100 == 0:
-            print("%s refused expired request method=%s request_id=%s waited=%.1fs (total %d)"
+            print("%s 已拒绝过期请求 method=%s request_id=%s waited=%.1fs（累计 %d）"
                   % (self.print_prefix, method, response.get("request_id"), waited,
                      self._expired_request_count))
         try:
@@ -4568,7 +4574,7 @@ class RedisPubSubRpcService:
             if seen is not None:
                 self._duplicate_order_requests += 1
                 remembered = seen.get("response")
-                print("%s duplicate order request suppressed method=%s request_id=%s"
+                print("%s 已抑制重复委托请求 method=%s request_id=%s"
                       % (self.print_prefix, method, request_id))
                 if remembered is None:
                     # Still in flight: the first copy publishes to the same
@@ -4660,7 +4666,7 @@ class RedisPubSubRpcService:
             try:
                 from .logging_setup import get_logger
                 get_logger("rpc").error(
-                    "publish response failed method=%s:\n%s", method, _tb.format_exc()
+                    "发布应答失败 method=%s：\n%s", method, _tb.format_exc()
                 )
             except Exception:
                 pass
@@ -4674,7 +4680,7 @@ class RedisPubSubRpcService:
             try:
                 from .logging_setup import get_logger
                 get_logger("rpc").info(
-                    "ping breakdown handle=%.1fms jsonable=%.1fms publish=%.1fms",
+                    "ping 耗时明细 handle=%.1fms jsonable=%.1fms publish=%.1fms",
                     (_t1 - _t0) * 1000.0,
                     (_t_pub0 - _t1) * 1000.0,
                     (time.perf_counter() - _t_pub0) * 1000.0)
@@ -4682,7 +4688,8 @@ class RedisPubSubRpcService:
                 pass
         self._processed_count += 1
         if self._processed_count <= self.debug_log_limit:
-            print("%s responded method=%s ok=%s" % (self.print_prefix, method, response["ok"]))
+            print("%s 已应答 method=%s ok=%s"
+                  % (self.print_prefix, method, response["ok"]))
         return response
 
     def _note_slow_request(self, method, seconds):
@@ -4705,8 +4712,8 @@ class RedisPubSubRpcService:
         try:
             from .logging_setup import get_logger
             get_logger("rpc").warning(
-                "slow request method=%s took %.1fs thread=%s (#342: this is "
-                "what an [adjust_phase] drain of the same size was inside)",
+                "请求处理缓慢 method=%s 耗时 %.1fs thread=%s（#342："
+                "同规模的 [adjust_phase] drain 就运行在这段时间内）",
                 method, seconds, thread_name)
         except Exception:
             pass
@@ -4744,10 +4751,10 @@ class RedisPubSubRpcService:
         try:
             from .logging_setup import get_logger
             get_logger("rpc").warning(
-                "slow response method=%s total=%.1fs handle=%.1fs "
-                "to_jsonable=%.1fs publish=%.1fs thread=%s (#386: the slow "
-                "part is the reply conversion/send, not the handler -- "
-                "consider chunk_size or a narrower window)",
+                "应答发送缓慢 method=%s total=%.1fs handle=%.1fs "
+                "to_jsonable=%.1fs publish=%.1fs thread=%s（#386："
+                "瓶颈在应答转换和发送，不在处理函数；"
+                "可考虑调整 chunk_size 或缩小查询窗口）",
                 method, total, handle, jsonable, publish, thread_name)
         except Exception:
             pass
@@ -4823,7 +4830,7 @@ class RedisPubSubRpcService:
             raise first_error
         self._published_count += 1
         if self._published_count <= self.debug_log_limit:
-            print("%s published response receivers=%s" % (self.print_prefix, receivers))
+            print("%s 已发布应答 receivers=%s" % (self.print_prefix, receivers))
         return receivers
 
 

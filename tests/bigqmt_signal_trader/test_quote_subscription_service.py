@@ -9,7 +9,6 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from bigqmt_signal_trader.quote_push_channel import (
     NullQuotePushChannel,
     RedisQuotePushChannel,
-    ZmqQuotePushChannel,
 )
 from bigqmt_signal_trader.quote_subscription_manager import (
     QuoteSubscriptionManager,
@@ -54,14 +53,6 @@ class BuildQuoteSubscriptionServiceTest(unittest.TestCase):
         self.assertIsInstance(manager, QuoteSubscriptionManager)
         self.assertIsInstance(channel, RedisQuotePushChannel)
 
-    def test_zmq_transport_builds_zmq_channel_with_bind_address(self):
-        service = build_quote_subscription_service(
-            FakeContextInfo(), transport_name="zmq", account_id="acct",
-            zmq_bind_address="tcp://127.0.0.1:15561", enabled=True,
-        )
-        manager, channel = service
-        self.assertIsInstance(channel, ZmqQuotePushChannel)
-        self.assertEqual(channel.bind_address, "tcp://127.0.0.1:15561")
 
     def test_pipe_transport_gets_a_real_events_pipe(self):
         """#408: pipe deployments now get a real push wire (a dedicated

@@ -17,7 +17,7 @@
    | `BIGQMT_REDIS_PORT` | `6379` | Redis 端口 |
    | `BIGQMT_REDIS_DB` | `5` | Redis DB |
    | `BIGQMT_REDIS_PASSWORD` | — | Redis 密码 |
-   | `BIGQMT_RPC_TRANSPORT` | `redis` | 传输方式 redis/zmq |
+   | `BIGQMT_RPC_TRANSPORT` | `redis` | 传输方式 redis |
    | `BIGQMT_RPC_TIMEOUT_SECONDS` | `6.0` | RPC 超时 |
 
 2. **配置文件** `bigqmt_signal_trader_client_config.py`（在 PYTHONPATH 中，gitignored）
@@ -351,7 +351,7 @@ xt_trader.subscribe(acc)
 - **解决**: 先 `download_history_data2` 下载原始数据（客户端有自愈机制）
 
 ### 7.4 Transport 不匹配
-- 客户端 redis / 服务端 zmq → ping 超时
+- 客户端 redis → ping 超时
 - **解决**: 两端 `transport` 字段保持一致
 
 ### 7.5 QMT 必须运行在实盘模式

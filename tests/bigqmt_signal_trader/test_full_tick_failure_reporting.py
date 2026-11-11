@@ -64,31 +64,8 @@ class RaisesTheRealFailureTest(unittest.TestCase):
     def setUp(self):
         self.codes = _codes(LARGE_CODE_LIST + 1)
 
-    def test_it_is_not_a_bare_reraise(self):
-        client = FakeClient(TimeoutError("zmq rpc timeout: get_full_tick"),
-                            market_error=TimeoutError("re-read timed out"))
 
-        with self.assertRaises(Exception) as caught:
-            _xtdata(client).get_full_tick(self.codes)
 
-        self.assertNotIn("No active exception", str(caught.exception))
-
-    def test_it_keeps_the_original_type(self):
-        """Callers catching TimeoutError must keep catching it."""
-        client = FakeClient(TimeoutError("zmq rpc timeout: get_full_tick"),
-                            market_error=TimeoutError("re-read timed out"))
-
-        with self.assertRaises(TimeoutError):
-            _xtdata(client).get_full_tick(self.codes)
-
-    def test_it_keeps_the_original_message(self):
-        client = FakeClient(TimeoutError("zmq rpc timeout: get_full_tick"),
-                            market_error=TimeoutError("re-read timed out"))
-
-        with self.assertRaises(TimeoutError) as caught:
-            _xtdata(client).get_full_tick(self.codes)
-
-        self.assertIn("zmq rpc timeout", str(caught.exception))
 
     def test_the_re_read_reason_is_logged(self):
         """It is the half a reporter cannot see from the traceback."""

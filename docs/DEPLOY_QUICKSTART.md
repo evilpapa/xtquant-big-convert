@@ -1,8 +1,8 @@
 # 部署快速开始（单账号）
 
-> 面向第一次部署和升级已有部署的最短路径。传输层对比、多账号、无 redis 版本的能力边界见 [使用指南](USER_GUIDE.md)；排错见「日志与排错」。
+> 面向第一次部署和升级已有部署的最短路径。传输层和多账号说明见 [使用指南](USER_GUIDE.md)；排错见「日志与排错」。
 
-整条链路只有三件东西：**QMT 侧的服务端**（一个策略文件加一个包，跑在 QMT 进程里）、**外部的客户端**（pip 装的包）、**中间的 Redis**（或同机 ZMQ）。部署就是把服务端放进 QMT、让两边的连接参数一致。
+整条链路只有三件东西：**QMT 侧的服务端**（一个策略文件加一个包，跑在 QMT 进程里）、**外部的客户端**（pip 装的包）、**中间的 Redis**。部署就是把服务端放进 QMT、让两边的连接参数一致。
 
 ## 先看这张表：什么文件放哪、谁放
 
@@ -13,18 +13,18 @@
 | `bigqmt_signal_trader` 包（客户端用的那份） | 客户端机器的 site-packages | 第 1 步 `pip install` |
 | `bigqmt_signal_trader_client_config.py` | 客户端：**和你运行的脚本同一目录** | 第 2 步 `bigqmt-init` 第二个目录问题（回车 = 当前目录） |
 | `bigqmt_signal_trader/`（整个包目录） | QMT 的 `python` 目录，如 `D:\QMT交易端\python\` | 第 3 步**你手动拷** |
+| `BIGQMT_REDIS_DRYRUN.py` | 同上 | 同上 |
 | `bigqmt_signal_trader_strategy.py` | 同上 | 同上 |
 | `bigqmt_signal_trader_redis_rpc_runtime.py` | 同上 | 同上 |
-| `BIGQMT_REDIS_DRYRUN.py`（入口；纯 zmq 换 `BIGQMT_ZMQ_DRYRUN.py`） | 同上 | 同上 |
+| `BIGQMT_REDIS_DRYRUN.py`（入口） | 同上 | 同上 |
 | `bigqmt_signal_trader_local_config.py` | QMT 的 `python` 目录 | 第 2 步 `bigqmt-init` 第一个目录问题（**必须手填**，回车 = 当前目录） |
 
 `bigqmt-init` **只写两份配置**，不拷包、不装依赖、不会自己去找 QMT 装在哪。「QMT 的 `python` 目录」指 QMT 安装目录下叫 `python` 的子目录，不是 `bin.x64`。客户端配置跟着你的脚本走，不放 QMT 目录。
 
 ## 前提
 
-- 大 QMT 客户端已安装并已登录（各券商版本均可）
-- 一个 Redis；同机可选 ZMQ 免 Redis
-- 客户端机器上有 Python 3.8 以上。**QMT 自带的是 Python 3.6.8**，服务端代码就跑在它里面，这一点在升级时会用到
+准备 QMT 服务端、客户端 Python 环境及双方可访问的 Redis，并遵守券商要求。
+
 
 ## 先选部署方式
 
@@ -34,7 +34,6 @@
 |---|---|---|
 | `package`（默认） | 一个包目录 + 三个顶层 `.py`，共 4 项 | 常规选择。升级时可以 `reload_deployment` 热更新，不用重启策略 |
 | `single_file` | 一个 `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py`，包和配置都 base64 内嵌在里面 | QMT 目录不方便放多个文件、或想一个文件拷来拷去 |
-| `single_file_no_redis` | 一个 `BIGQMT_DRYRUN_NO_REDIS_FLAT_ALL_IN_ONE.py`，包以明文平铺进去，传输强制 ZMQ | 券商沙箱拒绝 `import redis` 时 |
 
 单文件模式的代价：包内嵌在文件里，升级只能整个文件替换再重启策略，`reload_deployment` 刷不动它。
 
@@ -76,7 +75,6 @@ python -m bigqmt_signal_trader.init_config
 
 传输方式
   1) redis (默认)
-  2) zmq
 请选择 [1-2]: 1
 Redis 地址 [127.0.0.1]: 192.168.8.13
 Redis 端口 [6379]: 63790
@@ -89,8 +87,7 @@ Redis 密码（无则回车，输入不回显）:
 
 部署方式
   1) 标准包部署（把 src/ 同步到 QMT 的 python 目录） (默认)
-  2) 单文件（base64 内嵌，redis 或 zmq 均可）
-  3) 单文件（明文代码，强制 zmq；沙箱拒绝 import redis 时用）
+  2) 单文件（base64 内嵌，redis）
 请选择 [1-3]: 1
 QMT 的 python 目录（回车则写到当前目录）: D:\QMT交易端\python   ← 别回车
 客户端配置写到哪个目录（回车则当前目录）: D:\my_client
@@ -106,7 +103,6 @@ QMT 的 python 目录（回车则写到当前目录）: D:\QMT交易端\python  
 |---|---|
 | 资金账号 | 服务端和客户端会写同一个，对不上是「查询全空」的头号原因 |
 | 账号类型（STOCK） | STOCK / CREDIT / FUTURE / STOCK_OPTION / HUGANGTONG / SHENGANGTONG。信用账户选 CREDIT，选错查出来是整行 0。股票户兼做港股通：生成后把 `BIGQMT_ACCOUNT_TYPE` 手工改成列表 `["STOCK", "HUGANGTONG", "SHENGANGTONG"]` |
-| 传输方式（redis） | redis 或 zmq。两边由同一组答案生成，不会一边 redis 一边 zmq |
 | Redis 地址 / 端口 / db / 用户名 / 密码 | 选 redis 才问。密码输入不回显，会写进配置文件 |
 | 允许远程下单/撤单？（否） | 打开前它会警告：任何能连上这条通道的程序都可以下单。首次部署先留 `否`，验证通过再打开 |
 | 部署方式（package） | 见上表 |
@@ -119,7 +115,7 @@ QMT 的 python 目录（回车则写到当前目录）: D:\QMT交易端\python  
 |---|---|---|
 | `bigqmt_signal_trader_local_config.py` | QMT 的 python 目录 | 服务端 |
 | `bigqmt_signal_trader_client_config.py` | 你指定的客户端目录 | 客户端 |
-| `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` 或 `BIGQMT_DRYRUN_NO_REDIS_FLAT_ALL_IN_ONE.py` | QMT 的 python 目录 | 只有单文件模式才生成，配置已烘焙进去 |
+| `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` | QMT 的 python 目录 | 只有单文件模式才生成，配置已烘焙进去 |
 
 已存在的文件会先问再覆盖，`--force` 跳过询问。
 
@@ -127,8 +123,6 @@ QMT 的 python 目录（回车则写到当前目录）: D:\QMT交易端\python  
 
 几个不问、直接定死的：
 
-- `rpc_background_threads` 一律 `False`（adjust drain）——后台线程每次跨线程交接付一个 tick，redis 也不例外（#343）
-- 选了 `single_file_no_redis` 会把传输改成 zmq，不会留下一份声称用 redis 的配置
 
 > 生成的文件带账号和凭据，**不要提交到版本库**。QMT 登录密码不落盘——`qmt_launcher` 从环境变量 `BIGQMT_LOGIN_PASSWORD` 读。
 
@@ -153,7 +147,6 @@ BIGQMT_REDIS_DRYRUN.py                  编辑器里加载的入口
 
 4 项缺一不可。少了包目录报 `No module named bigqmt_signal_trader`；少了入口面板没有任何输出。拷完 QMT 的 `python` 目录里应该同时有这 4 项加第 2 步写的 `bigqmt_signal_trader_local_config.py`，共 5 个名字。
 
-> 纯 ZMQ 同机部署（不想装 redis）：多拷一个 `BIGQMT_ZMQ_DRYRUN.py`，入口换成它。
 
 ## 第 4 步：QMT 里运行入口
 
@@ -267,10 +260,8 @@ xt_trader.reload_status()                       # 1~2 秒后看这个
 
 | 现象 | 原因与处理 |
 |------|-----------|
-| ping 超时 | 客户端和服务端 transport 不一致（一边 redis 一边 zmq），或 Redis 地址/密码/db 不一致。用 `bigqmt-init` 一次生成两份就不会 |
 | 服务端找不到配置 | `bigqmt-init` 问「QMT 的 python 目录」时直接回车了，配置写到了当前目录。把 `bigqmt_signal_trader_local_config.py` 挪到 QMT 的 python 目录 |
 | 客户端报 `account_id` 为空 / 连到 127.0.0.1 / 连的是别的账号 | 客户端没找到 `bigqmt_signal_trader_client_config.py`：它靠 import 找，必须和运行的脚本同目录（或在 `PYTHONPATH` 上、或 `BIGQMT_CLIENT_CONFIG_MODULE` 指定）。`python -c` 是从**当前目录**找。找不到时退回服务端那份 `bigqmt_signal_trader_local_config.py`，所以在 QMT 目录里跑能通、换个目录就不通 |
-| QMT 面板报 `import redis` 被拒 | 券商沙箱白名单拦截 → 重跑 `bigqmt-init` 选 `single_file_no_redis`，或纯 ZMQ 入口 |
 | 查询全空但账户有数据 | 账号没对上（服务端 `BIGQMT_ACCOUNT_ID` vs 客户端），或 QMT 不在实盘模式 |
 | 信用账户查出来整行 0 | `bigqmt-init` 的账号类型选了 STOCK，应选 CREDIT |
 | QMT 报错 `unexpected keyword argument 'protocol'` | QMT 自带 redis-py 3.5.3 太旧——升级桥接包到 ≥0.2.9（已修，按版本能力透传） |

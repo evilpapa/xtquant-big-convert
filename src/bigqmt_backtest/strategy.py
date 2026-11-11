@@ -1,4 +1,4 @@
-"""Small external-strategy contract and a synchronous ZMQ runner."""
+"""Small external-strategy contract and a synchronous runner."""
 
 
 class StrategyContext(object):

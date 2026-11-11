@@ -1,4 +1,4 @@
-"""Versioned request/response protocol for the backtest-only ZMQ bridge."""
+"""Versioned request/response protocol for the backtest engine."""
 
 import datetime as dt
 import json

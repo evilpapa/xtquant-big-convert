@@ -225,23 +225,6 @@ class IdentityClientWiringTest(unittest.TestCase):
 
         self.assertIsNone(handlers._identity_redis())
 
-    def test_the_strategy_reuses_its_cached_exec_event_client(self):
-        """Not a second builder of its own.
-
-        _exec_event_redis already exists for exactly this case -- "the RPC
-        service has none, which is the zmq-transport case" -- and it caches.
-        Its docstring records why: a fresh client per call leaked a connection
-        pool per event, and redis-py's __del__ then raised an AttributeError
-        that Python swallows as "Exception ignored in", visible only in the QMT
-        panel.
-        """
-        import bigqmt_signal_trader_strategy as strategy
-        import inspect
-
-        source = inspect.getsource(strategy._build_rpc_service)
-
-        self.assertIn("order_identity_redis_client", source)
-        self.assertIn("_exec_event_redis(config)", source)
 
     def test_no_redis_config_means_no_client(self):
         import bigqmt_signal_trader_strategy as strategy
@@ -310,13 +293,6 @@ class AttributionTest(unittest.TestCase):
         self.assertEqual(self.redis.mgets, [])
         self.assertEqual(self.redis.gets, [])
 
-    def test_a_zmq_deployment_without_redis_returns_the_rows_unchanged(self):
-        rows = [Row(user_order_id="bq:abc:sig-1", strategy_name="")]
-
-        named = self._handlers(None)._attribute_to_strategies(ACCOUNT, rows)
-
-        self.assertEqual(named[0].strategy_name, "")
-        self.assertEqual(len(named), 1)
 
     def test_an_exploding_redis_does_not_lose_the_rows(self):
         """Attribution is a nicety; the query result is not."""

@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-ENTRIES = ("BIGQMT_REDIS_DRYRUN.py", "BIGQMT_ZMQ_BACKTEST.py")
+ENTRIES = ("BIGQMT_REDIS_DRYRUN.py",)
 
 # The real one, from the reporter's screenshot.
 REAL_TOKEN = ("MiFBOecYoHXT4UUBBOIr3m5aTVbA5Rbt6OnG52cfBT5EAtPG9kA7kQnEsKuDUOO"
@@ -124,11 +124,6 @@ class MessageTest(unittest.TestCase):
             self.assertIn("A different version will not help",
                           self._entry_source(entry), entry)
 
-    def test_the_backtest_entry_stays_isolated(self):
-        """It must not mention the live bridge -- pinned by
-        test_qmt_runtime.py, and easy to break when adding shared wording."""
-        self.assertNotIn("bigqmt_signal_trader",
-                         self._entry_source("BIGQMT_ZMQ_BACKTEST.py"))
 
 
 if __name__ == "__main__":

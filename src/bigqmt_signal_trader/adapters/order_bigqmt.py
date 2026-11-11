@@ -396,9 +396,9 @@ def _report_missing_order_time(row):
     except Exception:
         available = []
     print(
-        "[bigqmt_order] order_time not found (tried %s / %s); ORDER row exposes: %s"
+        "[bigqmt_order] 未找到 order_time（已尝试 %s / %s）；ORDER 行现有字段：%s"
         % (", ".join(_ORDER_DATE_FIELDS), ", ".join(_ORDER_TIME_FIELDS),
-           ", ".join(available) or "<none>")
+           ", ".join(available) or "<无>")
     )
 
 

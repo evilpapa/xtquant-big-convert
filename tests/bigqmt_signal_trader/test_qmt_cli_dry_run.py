@@ -25,7 +25,7 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-QMT_PY = os.path.join(ROOT, "qmt-trader", "scripts", "qmt.py")
+QMT_PY = os.path.join(ROOT, "skill", "scripts", "qmt.py")
 
 
 def _load_qmt_cli():

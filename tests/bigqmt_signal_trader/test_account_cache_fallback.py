@@ -79,13 +79,6 @@ class DefaultPropagatesTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             trader.query_stock_position("test-only", "600000.SH")
 
-    def test_redis_now_matches_zmq(self):
-        """#243 的核心症状：同一输入两种传输答案相反。"""
-        for transport in ("redis", "zmq"):
-            trader = _trader(_snapshot(_now()))
-            trader.client.transport_name = transport
-            with self.assertRaises(RuntimeError, msg="transport=%s 吞掉了异常" % transport):
-                trader.query_stock_positions("test-only")
 
 
 class OptInFallbackTest(unittest.TestCase):

@@ -85,8 +85,8 @@ _CONNECT_POLL_SECONDS = 0.05
 def _kernel32():
     if os.name != "nt":
         raise TransportError(
-            "named-pipe transport is Windows-only (os.name=%r). Use redis or "
-            "zmq for cross-platform deployments." % os.name)
+            "named-pipe transport is Windows-only (os.name=%r). Use redis "
+            "for cross-platform deployments." % os.name)
     from ctypes import wintypes
 
     # 部分券商 QMT 内置 Python 3.6 的 ctypes.wintypes 缺 HANDLE/BOOL

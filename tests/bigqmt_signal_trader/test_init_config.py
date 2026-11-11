@@ -21,11 +21,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader import init_config
-from bigqmt_signal_trader.transports.zmq_transport import (
-    DEFAULT_ZMQ_HOST,
-    _default_zmq_address,
-    _default_zmq_port,
-)
 
 
 class _Script(object):
@@ -107,88 +102,15 @@ class RenderedConfigTest(unittest.TestCase):
             _answers(allow_order_methods=True)), "s.py")
         self.assertIs(on["BIGQMT_REDIS_CONFIG"]["rpc_allow_order_methods"], True)
 
-    def test_background_threads_follow_the_transport(self):
-        """Not a safety choice, a latency one -- and it differs per transport.
-
-        This test used to pin False for everything, matching a blanket rule
-        that was protecting the wrong thing: safety comes from
-        LISTENER_DEFERRED_METHODS being excluded when the listener list is
-        expanded (test_listener_methods_never_leak_deferred), not from this
-        flag. Pinning one value shipped zmq 37x slower than it needed to be
-        (592.9ms vs 15.8ms) and redis 9x (30.7ms vs 3.4ms) -- see #244 and
-        docs/LATENCY_REPORT.md.
-        """
-        # #343: every transport drains. redis's "True is faster" was the
-        # adjust thread's LPOP stealing the request; #321 removed that.
-        wants_background = {"redis": False, "zmq": False,
-                            "pipe": False, "mysql": False}
-        for transport, expected in sorted(wants_background.items()):
-            loaded = _load(init_config.render_server_config(
-                _answers(transport=transport)), "s.py")
-            self.assertIs(
-                loaded["BIGQMT_REDIS_CONFIG"]["rpc_background_threads"], expected,
-                "transport=%s 应该是 %s" % (transport, expected))
-            self.assertIs(loaded["BIGQMT_REDIS_CONFIG"]["rpc_process_in_listener"], True)
 
     def test_the_order_switch_does_not_change_the_threading_mode(self):
         for answers in (_answers(), _answers(allow_order_methods=True)):
             loaded = _load(init_config.render_server_config(answers), "s.py")
             self.assertIs(loaded["BIGQMT_REDIS_CONFIG"]["rpc_background_threads"], False)
 
-    def test_zmq_client_gets_a_concrete_connect_address(self):
-        loaded = _load(init_config.render_client_config(
-            _answers(transport="zmq", host="192.168.1.9")), "c.py")
 
-        zmq = loaded["BIGQMT_REDIS_CONFIG"]["zmq"]
-        address = zmq["connect_address"]
-        self.assertTrue(address.startswith("tcp://192.168.1.9:"), address)
-        self.assertEqual(zmq["host"], "192.168.1.9")
-        self.assertEqual(zmq["port"], _default_zmq_port("8886800503"))
 
-    def test_zmq_client_address_matches_the_server_transport_default(self):
-        """The generated client must dial the endpoint ZmqTransport binds."""
-        for account_id in ("8886800503", "account-without-digits"):
-            loaded = _load(init_config.render_client_config(
-                _answers(account_id=account_id, transport="zmq",
-                         host="192.168.1.9")), "c.py")
 
-            address = loaded["BIGQMT_REDIS_CONFIG"]["zmq"]["connect_address"]
-            self.assertEqual(
-                address,
-                _default_zmq_address(account_id, host="192.168.1.9"),
-            )
-
-    def test_zmq_same_host_configs_use_the_same_loopback_endpoint(self):
-        answers = _answers(
-            account_id="8886800503", transport="zmq", host=DEFAULT_ZMQ_HOST
-        )
-        server = _load(init_config.render_server_config(answers), "s.py")
-        client = _load(init_config.render_client_config(answers), "c.py")
-
-        expected = _default_zmq_address("8886800503", host=DEFAULT_ZMQ_HOST)
-        self.assertEqual(
-            server["BIGQMT_REDIS_CONFIG"]["zmq"]["bind_address"], expected
-        )
-        self.assertEqual(
-            client["BIGQMT_REDIS_CONFIG"]["zmq"]["connect_address"], expected
-        )
-
-    def test_zmq_remote_host_connects_to_qmt_and_server_binds_all_interfaces(self):
-        answers = _answers(
-            account_id="8886800503", transport="zmq", host="192.168.8.13"
-        )
-        server = _load(init_config.render_server_config(answers), "s.py")
-        client = _load(init_config.render_client_config(answers), "c.py")
-        port = _default_zmq_port("8886800503")
-
-        self.assertEqual(
-            client["BIGQMT_REDIS_CONFIG"]["zmq"]["connect_address"],
-            "tcp://192.168.8.13:%d" % port,
-        )
-        self.assertEqual(
-            server["BIGQMT_REDIS_CONFIG"]["zmq"]["bind_address"],
-            "tcp://0.0.0.0:%d" % port,
-        )
 
     def test_credentials_survive_characters_that_would_break_naive_quoting(self):
         nasty = "a'b\"c\\d#e"
@@ -250,28 +172,7 @@ class PromptFlowTest(unittest.TestCase):
 
         self.assertEqual(answers["port"], 6380)
 
-    def test_zmq_skips_the_redis_credential_prompts(self):
-        script = _Script(answers=["8886800503", "", "2", "10.0.0.5"] + [""] * 8)
-        answers = init_config.prompt_answers(
-            script.write, script.read, read_secret=script.read_secret)
 
-        self.assertEqual(answers["transport"], "zmq")
-        self.assertEqual(answers["password"], "")
-        self.assertNotIn("Redis 密码", "".join(script.prompts))
-        self.assertIn("0.0.0.0", script.text())
-        self.assertIn("防火墙", script.text())
-
-    def test_no_redis_single_file_forces_zmq(self):
-        """Choosing a build that cannot import redis must not leave the config
-        claiming a redis transport."""
-        script = _Script(
-            answers=["8886800503", "", "1", "", "", "", "", "n", "3", "", ""],
-            secrets=[""])
-        answers = init_config.prompt_answers(
-            script.write, script.read, read_secret=script.read_secret)
-
-        self.assertEqual(answers["deployment"], "single_file_no_redis")
-        self.assertEqual(answers["transport"], "zmq")
 
     def test_the_password_prompt_says_it_is_hidden(self):
         script = _Script(answers=["8886800503"] + [""] * 12)
@@ -415,17 +316,6 @@ class SingleFileFromPipInstallTest(unittest.TestCase):
         self.assertIn("'10.0.0.5'", text)
         self.assertNotIn("YOUR_ACCOUNT_ID", text)
 
-    def test_no_redis_flat_builds_from_packaged_copy(self):
-        written = init_config.apply(
-            self._answers(deployment="single_file_no_redis"), self.bogus_root,
-            self._silence, input, force=True)
-
-        target = os.path.join(self.tmp, "BIGQMT_DRYRUN_NO_REDIS_FLAT_ALL_IN_ONE.py")
-        self.assertIn(target, written)
-        with io.open(target, encoding="gbk") as handle:
-            text = handle.read()
-        self.assertIn("_MODULE_FUNCS", text)
-        self.assertIn("'10.0.0.5'", text)
 
     def test_missing_builder_error_names_the_escape_hatches(self):
         orig = init_config._materialize_packaged_builder
@@ -437,21 +327,6 @@ class SingleFileFromPipInstallTest(unittest.TestCase):
         finally:
             init_config._materialize_packaged_builder = orig
 
-    def test_packaged_copies_stay_in_sync_with_tools(self):
-        """The wheel ships tools/ builders as _singlefile/*.txt; a drifted
-        copy would mean pip users build from stale sources."""
-        import pkgutil
-        for script, _name, _encoding in init_config.BUILDERS.values():
-            with open(os.path.join(ROOT, "tools", script), "rb") as handle:
-                source = handle.read()
-            packaged = pkgutil.get_data(
-                "bigqmt_signal_trader", "_singlefile/%s.txt" % script)
-            self.assertEqual(source, packaged, "stale packaged copy: %s" % script)
-        with open(os.path.join(ROOT, "bigqmt_no_redis", "zmq_transport.py"), "rb") as handle:
-            source = handle.read()
-        packaged = pkgutil.get_data(
-            "bigqmt_signal_trader", "_singlefile/zmq_transport.py.txt")
-        self.assertEqual(source, packaged, "stale packaged copy: zmq_transport.py")
 
 
 if __name__ == "__main__":

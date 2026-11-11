@@ -1,11 +1,5 @@
-"""Isolated ZMQ bridge for QMT-native and standalone backtests.
+"""Isolated QMT-native and standalone backtest components."""
 
-This package deliberately does not import ``bigqmt_signal_trader``.  The live
-bridge and both backtest backends therefore have separate module state,
-identities, and order gateways.  QMT-native mode never uses the local broker.
-"""
-
-from .client import BacktestZmqClient
 from .data_feed import CsvBarFeed, InMemoryBarFeed
 from .engine import BacktestConfig, BacktestEngine
 from .protocol import BacktestBridgeProtocol
@@ -15,7 +9,6 @@ __all__ = [
     "BacktestBridgeProtocol",
     "BacktestConfig",
     "BacktestEngine",
-    "BacktestZmqClient",
     "CsvBarFeed",
     "InMemoryBarFeed",
 ]

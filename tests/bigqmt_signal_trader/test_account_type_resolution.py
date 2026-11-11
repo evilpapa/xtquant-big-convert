@@ -117,7 +117,7 @@ class ResolutionIsVisibleTest(unittest.TestCase):
             BASE + 'BIGQMT_ACCOUNT_TYPE = "CREDIT"\n'
                    'BIGQMT_REDIS_CONFIG = {"account_type": "STOCK"}\n')
 
-        self.assertIn("ignored conflicting", output)
+        self.assertIn("忽略以下来源中冲突", output)
         self.assertIn("BIGQMT_REDIS_CONFIG", output)
 
     def test_the_shipped_default_is_not_reported_as_a_conflict(self):
@@ -127,7 +127,7 @@ class ResolutionIsVisibleTest(unittest.TestCase):
             BASE + 'BIGQMT_ACCOUNT_TYPE = "CREDIT"\n'
                    'BIGQMT_REDIS_CONFIG = {}\n')
 
-        self.assertNotIn("ignored conflicting", output)
+        self.assertNotIn("忽略以下来源中冲突", output)
 
 
 class ReachesTheAssetQueryTest(unittest.TestCase):

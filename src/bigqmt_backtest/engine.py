@@ -33,7 +33,7 @@ class BacktestConfig(object):
         lot_size=100,
         time_in_force="NEXT_BAR",
         seed=0,
-        strategy_name="external_zmq_strategy",
+        strategy_name="external_backtest_strategy",
         parameters=None,
         fee_schedule="a_share_2023_08_28",
         market_rules_version="a_share_v1",
@@ -63,7 +63,7 @@ class BacktestConfig(object):
         if self.time_in_force not in ("NEXT_BAR", "DAY"):
             raise ValueError("time_in_force must be NEXT_BAR or DAY")
         self.seed = int(seed)
-        self.strategy_name = str(strategy_name or "external_zmq_strategy")
+        self.strategy_name = str(strategy_name or "external_backtest_strategy")
         self.parameters = dict(parameters or {})
         self.fee_schedule = str(fee_schedule or "custom")
         self.market_rules_version = str(market_rules_version or "custom")
@@ -304,7 +304,7 @@ class BacktestEngine(object):
             "frame_count": len(self.feed),
             "config": self.config.to_dict(),
             "live_ready": False,
-            "execution_channel": "backtest_zmq_only",
+            "execution_channel": "backtest_only",
         }
         self._write_json(os.path.join(output_dir, "meta.json"), meta)
         self._write_json(os.path.join(output_dir, "result.json"), self._result)

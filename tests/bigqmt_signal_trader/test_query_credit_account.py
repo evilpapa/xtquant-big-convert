@@ -442,11 +442,9 @@ class CreditCallbackWiringTest(unittest.TestCase):
     # 仓库里跟踪着的入口文件。
     ENTRY_FILES = (
         "src/BIGQMT_REDIS_DRYRUN.py",
-        "src/BIGQMT_ZMQ_BACKTEST.py",
         "src/bigqmt_signal_trader_redis_rpc_runtime.py",
         "src/bigqmt_signal_trader_redis_dryrun.py",
         "src/bigqmt_signal_trader_dryrun.py",
-        "bigqmt_no_redis/DRYRUN_no_redis.py",
     )
 
     # 单文件构建产物是 .gitignore 掉的生成物，干净检出里根本不存在，

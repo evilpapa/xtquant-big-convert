@@ -79,11 +79,11 @@
 
 ## 2.5 全推行情订阅（server 推送，对齐 miniqmt `subscribe_whole_quote`）
 
-这三个方法只管理**订阅生命周期与心跳**；行情数据本身走独立的 server→client 推送通道（zmq PUB/SUB 或 redis pub/sub，msgpack 编码、json 兜底），**不经过 RPC 响应**。多 client 订阅同一组合（`frozenset` 规范化）共享一个服务端订阅组：普通代码使用 `ContextInfo.subscribe_whole_quote`，显式 `.SHO/.SZO` 合约逐只使用 `ContextInfo.subscribe_quote(..., result_type="list")`。引用计数归零（全部退订或全部心跳超时）才退订组内全部大 QMT 句柄。详见 `docs/SUBSCRIBE_WHOLE_QUOTE_PUSH.md`。
+这三个方法只管理**订阅生命周期与心跳**；行情数据本身走独立的 server→client 推送通道（Redis pub/sub，msgpack 编码、json 兜底），**不经过 RPC 响应**。多 client 订阅同一组合（`frozenset` 规范化）共享一个服务端订阅组：普通代码使用 `ContextInfo.subscribe_whole_quote`，显式 `.SHO/.SZO` 合约逐只使用 `ContextInfo.subscribe_quote(..., result_type="list")`。引用计数归零（全部退订或全部心跳超时）才退订组内全部大 QMT 句柄。详见 `docs/SUBSCRIBE_WHOLE_QUOTE_PUSH.md`。
 
 ### `subscribe_whole_quote`
 - **参数**：`client_id`（str，必填，client 进程级稳定 id）、`sub_id`（str，必填，client 侧订阅号）、`codes`（list[str]，必填）：市场代码（`["SH","SZ"]`）或品种代码列表。
-- **返回**：`{"combo_key": str, "topic": str, "push_endpoint": str}`。`topic` 即推送通道的过滤主题；`push_endpoint` 为 zmq PUB 地址（redis 推送时为空，client 本地推导 channel 名）。
+- **返回**：`{"combo_key": str, "topic": str, "push_endpoint": str}`。`topic` 即推送通道的过滤主题；（redis 推送时为空，client 本地推导 channel 名）。
 - **语义**：首个 client 订阅该组合时建立大 QMT 订阅；同组合后续 client 共享。幂等（重复 subscribe 不重复建订阅，用于 server 重启后 client 重放恢复）。
 
 ### `unsubscribe_whole_quote`

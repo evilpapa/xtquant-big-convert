@@ -549,8 +549,8 @@ def _warn_order_identity(exc):
     now = time.monotonic()
     if now - _last_identity_warning >= 60:
         _last_identity_warning = now
-        print("[bigqmt_rpc] order identity read failed: %s: %s; "
-              "strategy_name may fall back to the QMT process name (#393)"
+        print("[bigqmt_rpc] 委托身份读取失败：%s: %s；"
+              "strategy_name 可能回退为 QMT 进程名（#393）"
               % (exc.__class__.__name__, exc))
 
 
@@ -622,9 +622,9 @@ def remember_order_identity(redis_client, account_id, user_order_id, strategy_na
         new_name = payload["strategy_name"]
         if existing_name:
             if new_name and new_name != existing_name:
-                print("[bigqmt_rpc] order remark %r reused across strategies: "
-                      "keeping %r, ignoring %r; rows already reported keep "
-                      "their name (#393). Pass a unique remark per order."
+                print("[bigqmt_rpc] 委托备注 %r 已被多个策略复用："
+                      "保留 %r，忽略 %r；此前已回报的行继续使用原名称（#393）。"
+                      "请为每笔委托使用唯一备注。"
                       % (user_order_id, existing_name, new_name))
             return None
         if not new_name:

@@ -39,7 +39,6 @@ from bigqmt_signal_trader_strategy import (  # noqa: E402
 # 会被 QMT 挂载、因而必须自己做捕获的入口文件。
 MOUNTED_ENTRIES = (
     os.path.join("src", "BIGQMT_REDIS_DRYRUN.py"),
-    os.path.join("bigqmt_no_redis", "DRYRUN_no_redis.py"),
 )
 
 # 手抄表的特征：一串 QMT 全局函数名字面量凑在一起。真正的手抄表有 13-16 个

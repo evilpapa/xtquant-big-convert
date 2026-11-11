@@ -86,13 +86,6 @@ class SinkChoiceTest(_StrategyState):
 
         self.assertIs(strategy._exec_event_sink({}), redis)
 
-    def test_the_push_channel_is_used_when_no_redis_is_configured(self):
-        """A zmq deployment with no redis used to deliver nothing at all (#76)."""
-        channel = Sink("channel")
-        self._with_redis(None)
-        self._with_channel(channel)
-
-        self.assertIs(strategy._exec_event_sink({}), channel)
 
     def test_a_demoted_redis_hands_over_to_the_channel(self):
         redis, channel = Sink("redis"), Sink("channel")

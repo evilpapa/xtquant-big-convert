@@ -28,8 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-ENTRIES = (("BIGQMT_REDIS_DRYRUN.py", "utf-8"),
-           ("BIGQMT_ZMQ_BACKTEST.py", "gbk"))
+ENTRIES = (("BIGQMT_REDIS_DRYRUN.py", "utf-8"),)
 
 
 class _FakeSys(object):
@@ -155,10 +154,6 @@ class ShippedInBothEntriesTest(unittest.TestCase):
         for entry, encoding in ENTRIES:
             self.assertIn("_MISSING_LOCAL_MODULES", _source(entry, encoding), entry)
 
-    def test_the_backtest_entry_stays_isolated(self):
-        """It must not mention the live bridge -- pinned by test_qmt_runtime."""
-        self.assertNotIn("bigqmt_signal_trader",
-                         _source("BIGQMT_ZMQ_BACKTEST.py", "gbk"))
 
 
 if __name__ == "__main__":

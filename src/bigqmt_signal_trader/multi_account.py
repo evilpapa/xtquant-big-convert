@@ -243,7 +243,7 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
     sink = getattr(primary, "redis", None)
     identity_redis = sink
     if sink is None:
-        # zmq (#334): no redis. Exec events there go out on the quote push
+        # Without redis, exec events can go out on the quote push
         # channel (exec:* topics, #76); the manager holds that channel's
         # publish, so wrap it as a push sink.
         sink = _push_sink_from_handlers(primary.handlers)
@@ -262,86 +262,18 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
     return poller
 
 
-def _secondary_zmq_config(rpc_config, account_id):
-    """The zmq block for a secondary: its OWN endpoint, on the primary's host.
-
-    The configured block belongs to the primary -- ``bind_address`` / ``port``
-    / ``account_id`` in it would put the secondary on the primary's socket
-    (EADDRINUSE) or under the primary's name. Drop those so the port derives
-    from the secondary's account_id, which is exactly how a zmq client
-    configured with that account derives the address it connects to. Keep
-    the host: 0.0.0.0 for a remote-reachable terminal, a specific interface
-    for a locked-down one -- dropping it would fall back to loopback.
-    """
-    zmq_config = dict(rpc_config.get("zmq") or {})
-    primary_bind = zmq_config.pop("bind_address", None)
-    zmq_config.pop("connect_address", None)
-    zmq_config.pop("port", None)
-    zmq_config.pop("account_id", None)
-    if primary_bind and not zmq_config.get("host"):
-        text = str(primary_bind).split("://", 1)[-1]
-        host = text.rsplit(":", 1)[0] if ":" in text else text
-        if host:
-            zmq_config["host"] = host
-    return zmq_config
-
-
-def _build_secondary_non_redis(primary, account_id, config, transport_name):
-    """A secondary on the primary's transport kind, for zmq (#334).
-
-    Only zmq derives a per-account endpoint the client already knows how to
-    find; pipe / mysql / shm have no per-account addressing, so a secondary
-    on them is refused with a log line rather than built on a dead redis
-    client (the pre-#334 failure: ``'NoneType' object has no attribute
-    'pubsub'`` from the secondary's listener threads).
-    """
-    from .redis_rpc import RedisPubSubRpcService
-
-    rpc_config = dict((config.get("rpc") or {}))
-    if transport_name != "zmq":
-        logger.warning("multi_account: secondary %s*** not built -- transport %r has no "
-                       "per-account endpoint (redis or zmq only)", account_id[:3], transport_name)
-        return None
-    try:
-        from .transports.factory import build_transport
-
-        factory_config = dict(rpc_config)
-        factory_config["account_id"] = account_id
-        factory_config["zmq"] = _secondary_zmq_config(rpc_config, account_id)
-        transport = build_transport(
-            transport_name, factory_config, account_id=account_id,
-            print_prefix="[bigqmt_rpc_2nd]")
-    except Exception as e:
-        logger.error("multi_account: secondary %s*** zmq transport build failed: %s",
-                     account_id[:3], e)
-        return None
-    logger.info("multi_account: secondary %s*** on zmq bound=%s",
-                account_id[:3], getattr(transport, "bind_address", "?"))
-    return RedisPubSubRpcService(
-        redis_client=None,
-        response_redis_client=None,
-        handlers=SecondaryHandlersProxy(primary.handlers, account_id),
-        account_id=account_id,
-        max_queue_size=int(rpc_config.get("max_queue_size", 200)),
-        process_in_listener=True,
-        listener_methods=rpc_config.get("listener_methods") or ("*",),
-        background_threads=True,
-        transport=transport,
-    )
-
-
 def _build_secondary(primary, account_id, config):
     """Build a secondary ``RedisPubSubRpcService`` sharing the primary's handlers.
 
     The secondary gets its own Redis connection (so ``stop()`` on the secondary
     doesn't kill the primary's listener) and a ``SecondaryHandlersProxy`` that
-    injects the secondary's account_id into every request. On a zmq
-    deployment it gets its own zmq endpoint instead (#334).
+    injects the secondary's account_id into every request.
     """
     rpc_config = dict((config.get("rpc") or {}))
     transport_name = str(rpc_config.get("transport") or "redis").lower()
     if transport_name not in ("redis", "", "default"):
-        return _build_secondary_non_redis(primary, account_id, config, transport_name)
+        logger.warning("multi_account: secondary %s*** unavailable for transport %r", account_id[:3], transport_name)
+        return None
     try:
         from .redis_rpc import RedisPubSubRpcService
         from .transports.redis_transport import RedisTransport

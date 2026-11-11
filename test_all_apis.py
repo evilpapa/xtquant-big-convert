@@ -7,7 +7,6 @@ like:
   - get_positions returns {} when the account HAS positions
   - submit_order returns SUBMITTED but the order never entered the system
   - query_orders returns [] because strategy_name didn't match
-  - client transport (redis) doesn't match server (zmq) → timeout
 
 Config is read from bigqmt_signal_trader_local_config (gitignored) or env vars;
 no credentials are hard-coded here. Run from a dir where that config module
@@ -49,48 +48,16 @@ def _load_config():
     transport = str(
         os.environ.get("BIGQMT_RPC_TRANSPORT") or cfg.get("transport") or "redis"
     ).lower()
-    zmq_cfg = dict(cfg.get("zmq") or {})
-    return str(account), redis_cfg, transport, zmq_cfg
+    return str(account), redis_cfg, transport
 
 
-ACCOUNT, REDIS, TRANSPORT, ZMQ_CFG = _load_config()
+ACCOUNT, REDIS, TRANSPORT = _load_config()
 
 
 def _build_caller():
-    """Build the one caller every test goes through: (method, params, timeout).
-
-    This used to always talk call_redis_rpc -- under a zmq deployment the
-    ping timed out and every test after it failed, while the bridge itself
-    was fine (issue #157, @simonfantasy). Follows the configured transport
-    now; the zmq envelope matches what the client library's call() sends.
-    redis-py is only needed on the redis path, so NO_REDIS_FLAT deployments
-    (no redis client lib at all) can run this script too.
-    """
-    if TRANSPORT == "zmq":
-        import uuid as _uuid
-
-        from bigqmt_signal_trader.transports.zmq_transport import ZmqTransport
-
-        zt = ZmqTransport(
-            account_id=ACCOUNT,
-            connect_address=ZMQ_CFG.get("connect_address") or ZMQ_CFG.get("bind_address"),
-            host=ZMQ_CFG.get("host"),
-            port=int(ZMQ_CFG["port"]) if ZMQ_CFG.get("port") else None,
-        )
-
-        def call(method, params, timeout):
-            request = {
-                "schema_version": 1,
-                "request_id": _uuid.uuid4().hex,
-                "account_id": ACCOUNT,
-                "method": method,
-                "params": params or {},
-                "ttl_seconds": 60,
-            }
-            return zt.send_request(request, timeout)
-
-        return call
-
+    """Build the Redis caller used by the checks."""
+    if TRANSPORT not in ("redis", "", "default"):
+        raise ValueError("test_all_apis.py requires Redis transport")
     import redis
 
     r = redis.Redis(**REDIS)
@@ -191,9 +158,7 @@ def main():
         if "timeout" in ping_err.lower():
             print("   可能原因: 客户端 transport 和服务端不匹配")
             print("   - 客户端配置 transport=%s" % TRANSPORT)
-            print("   - 如果服务端是 zmq, 客户端也要设 transport=zmq")
             print("   - 如果服务端是 redis, 客户端保持 redis 即可")
-            print("   - zmq 下检查 BIGQMT_REDIS_CONFIG.zmq.connect_address 是否指向服务端绑定地址")
         return
     print("✅ ping OK (%.0fms) — 客户端/服务端连通 (%s)" % (ping_ms, TRANSPORT.upper()))
 

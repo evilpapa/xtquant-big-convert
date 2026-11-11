@@ -40,24 +40,7 @@ class EntryHonoursExplicitBackgroundThreadsTest(unittest.TestCase):
                 "setdefault so a configured False still opts into the drain "
                 "(#188)" % os.path.basename(path))
 
-    def test_each_entry_still_fills_in_the_historical_default(self):
-        """setdefault, not deletion: no key at all must still mean True."""
-        for path in FILES:
-            source = self._source(path)
-            self.assertIn(
-                'setdefault("rpc_background_threads", True)', source,
-                "%s must still default rpc_background_threads to True when the "
-                "local config never set it" % os.path.basename(path))
 
-    def test_the_no_redis_banner_reports_the_value_it_actually_used(self):
-        """The banner printed background_threads=True even when it was False.
-
-        A log line that always says True is worse than no log line: it is the
-        first thing anyone checks when the drain "did not work".
-        """
-        source = self._source(FILES[1])
-        self.assertNotIn("no-redis mode: transport=zmq background_threads=True",
-                         source)
 
 
 if __name__ == "__main__":

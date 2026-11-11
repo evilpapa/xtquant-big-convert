@@ -115,19 +115,6 @@ class DeferredAliasesAreNotDispatchableInlineTest(unittest.TestCase):
             self.assertFalse(
                 service._should_process_in_listener({"method": "get_positions"}))
 
-    def test_safe_aliases_still_run_inline(self):
-        """别名本身不是罪名 —— get_full_tick -> get_ticks 是行情读，必须留在收包线程。
-
-        行情读走 inline 是有意的：ZMQ 传输没有 adjust 驱动的 drain，把它们
-        一起延后会永远卡住（redis_rpc.py 里 LISTENER_DEFERRED_METHODS 下面
-        那段注释）。
-        """
-        service = _service(("get_full_tick",))
-        self.assertTrue(
-            service._should_process_in_listener({"method": "get_full_tick"}),
-            "把安全的行情别名也挡掉了")
-        self.assertTrue(
-            service._should_process_in_listener({"method": "get_ticks"}))
 
 
 class ReporterReproductionTest(unittest.TestCase):

@@ -80,23 +80,6 @@ class QmtBarExtractorTest(unittest.TestCase):
                        if f not in FakeQmtContext.HISTORY_FIELDS]
         self.assertEqual(unsupported, [])
 
-    def test_qmt_entry_is_isolated_and_binds_native_order_callbacks(self):
-        path = os.path.join(SRC, "BIGQMT_ZMQ_BACKTEST.py")
-        with open(path, "r", encoding="gbk") as handle:
-            source = handle.read()
-
-        self.assertNotIn("bigqmt_signal_trader", source)
-        self.assertIn("passorder", source)
-        self.assertIn("get_trade_detail_data", source)
-        self.assertIn("order_callback", source)
-        self.assertIn("deal_callback", source)
-        self.assertNotIn("_importlib.import_module =", source)
-
-        runtime_path = os.path.join(SRC, "bigqmt_backtest", "qmt_runtime.py")
-        with open(runtime_path, "r", encoding="utf-8") as handle:
-            runtime_source = handle.read()
-        self.assertNotIn("StreamingBacktestEngine", runtime_source)
-        self.assertNotIn("SimulatedBroker", runtime_source)
 
     def test_native_session_executes_passorder_on_qmt_callback_thread(self):
         calls = []

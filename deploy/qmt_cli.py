@@ -74,7 +74,6 @@ def redis_kwargs():
 def raw_redis():
     kw = redis_kwargs()
     kw.pop("transport", None)
-    kw.pop("zmq", None)
     username = kw.get("username") or None
     kw["username"] = username
     return redis.Redis(**kw)

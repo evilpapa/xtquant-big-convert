@@ -19,7 +19,7 @@ BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
 
 BIGQMT_REDIS_CONFIG = {
     # 账户查询（持仓/资产）失败时，是否用 redis 里的上一份快照作答。
-    # 默认 False —— 查询失败就抛给调用方，和 zmq/pipe 一致。打开它等于接受
+    # 默认 False —— 查询失败就抛给调用方，和 pipe 一致。打开它等于接受
     # 「拿旧持仓当当前持仓」，策略据此算仓位是会出事的（#243）。
     # 打开后仍要求快照带 updated_at 且在时限内，否则照样抛。
     # "account_cache_fallback": False,
@@ -30,19 +30,8 @@ BIGQMT_REDIS_CONFIG = {
     "db": 5,
     "username": "",
     "password": "",
-    # Transport selection. Must match the QMT-side server config. Default
-    # "redis" works with the standard DRYRUN; use "zmq" when the server runs
-    # with transport=zmq (e.g. the no-redis version or explicit zmq mode).
+    # Transport must match the QMT-side configuration.
     "transport": "redis",
-    # ZMQ-specific settings (only used when transport=zmq):
-    # "zmq": {
-    #     # Explicit connect address. The QMT-side server binds a port derived
-    #     # from account_id (default 15563 for account 8886800503). If you know
-    #     # the exact address, set it here to skip service discovery.
-    #     "connect_address": "tcp://127.0.0.1:15563",
-    #     # "host": "127.0.0.1",
-    #     # "port": 15563,
-    # },
 }
 
 # Default direct mode calls get_full_tick through RPC. Set enabled=True only when
@@ -99,7 +88,7 @@ BIGQMT_FORMULA_SERVER_CONFIG = {
 #   Server pushes each incremental tick batch to every client subscribed to the
 #   same combination; the RPC methods above only manage the subscription lifecycle.
 #   Data flows over a separate push channel matching `transport` above
-#   (redis pub/sub, or zmq PUB/SUB when transport="zmq"), msgpack-encoded
+#   (redis pub/sub), msgpack-encoded
 #   (install the `msgpack` extra; falls back to json if absent).
 #
 #   quote_client_id: process-stable subscriber id. The server counts references

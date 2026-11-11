@@ -29,13 +29,12 @@ BIGQMT_REDIS_CONFIG = {
     #
     # 设 False 时整个 redis 块不再下发给策略，于是委托身份库、异步下载任务、
     # 全推快照缓存、exec 事件推送都不会去连 redis —— 一次都不试。用在券商 QMT
-    # 的 import 白名单不含 redis、或纯 zmq 部署本来就没装 redis 的场景
+    # 的 import 白名单不含 redis 的场景
     # （issue #145 / #147）。下面的 host/port 有默认值，所以不设这一项时
     # 「配了 redis」和「什么都没写」是分辨不出来的。
     #
     # 代价：查询里的 strategy_name 回填失效（那份记录只存在 redis 里，见 #133）；
     # 异步下载任务和全推快照缓存不可用（这两个在大 QMT 上本来就默认关闭）。
-    # 委托/成交回调不受影响 —— 它们会走 zmq 推送通道。
     # "redis_enabled": False,
     "host": "127.0.0.1",
     "port": 6379,
@@ -59,7 +58,6 @@ BIGQMT_REDIS_CONFIG = {
     # adjust tick; a background thread costs one tick per GIL acquisition and
     # a round trip has several (#343, live terminal 2026-09-22, ms):
     #     redis  True ping 407 / positions 197    False ping 102 / positions 103
-    #     zmq    True ping 103 / positions 490    False ping  87 / positions  88
     # True is only for a transport that cannot drain (none of the shipped
     # ones need it).
     "rpc_process_in_listener": True,

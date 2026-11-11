@@ -1,33 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Build BIGQMT_DRYRUN_NO_REDIS_FLAT_ALL_IN_ONE.py.
-
-与 build_no_redis_single_file_plain.py 收集的模块完全一致，但内嵌源码以
-【真实 Python 代码】形式写入文件（不是字符串、不是 base64）:
-
-    每个模块的源码被缩进后放进一个 def _mod_N(): 函数体，
-    运行时取该函数的 __code__ 在一个全新的模块 dict 中 exec:
-
-        exec(func.__code__, module.__dict__)
-
-这样生成的文件里可以直接搜索 / 阅读 / 修改内嵌源码 —— 类和函数就是
-普通代码，IDE 可以高亮、跳转、缩进，不存在三引号转义问题。
-
-实现要点（与纯字符串加载的差异）:
-- 函数体 code 在 exec 时, LOAD_GLOBAL 查 module.__dict__（exec 的 globals）
-- 【闭包陷阱】模块级名字如果被嵌套函数/类方法闭包引用，函数体编译器会
-  把它变成 cell 变量（存于 _mod_N 函数帧），而模块代码里用 global 更新
-  的是 module.__dict__ —— 两者不再同步（典型：redis_rpc_runtime 的
-  RPC_TRANSPORT 被 configure_runtime_redis 更新后，_apply_config 闭包
-  读到的仍是旧值 "redis"）。因此构建时用 AST 收集每个模块的顶层绑定名，
-  在函数体开头注入 "global <names>"，让所有模块级名字都走 module dict，
-  与真实模块语义完全一致（这也是 flat 版与字符串版行为一致的前提）。
-- 缩进时用 tokenize 保护多行字符串内部行，避免改动字符串内容
-- 模块级名字经 global 声明后直接写入模块 dict，无需 __export_module__
-  回写；__export_module__ 仅保留给 local_config 的手工函数体使用
-- 相对导入 (from .models import X) 走 _local_import 钩子, 依赖
-  module.__dict__["__package__"], 与字符串版完全一致
-- local_config 模块同样以真实代码函数体生成，值引用 _SHELL_CONFIG
-"""
+"""Shared flat-code embedding helpers for the named-pipe builder."""
 import ast
 import io
 import os
@@ -38,38 +10,7 @@ import build_single_file as bsf
 # This script lives in tools/ in a source checkout; a byte-identical copy ships
 # inside the wheel as package data so bigqmt-init works from a pip install too.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT_PATH = os.environ.get(
-    "BIGQMT_BUILD_OUT", os.path.join(ROOT, "src", "BIGQMT_DRYRUN_NO_REDIS_FLAT_ALL_IN_ONE.py"))
-
 INDENT = "    "
-
-
-def no_redis_override_path(root=ROOT):
-    """Path to the self-contained zmq transport that replaces the redis one.
-
-    Repository checkout first (bigqmt_no_redis/zmq_transport.py); a pip
-    install ships the same file as package data, materialized to a temp dir.
-    """
-    repo_path = os.path.join(root, "bigqmt_no_redis", "zmq_transport.py")
-    if os.path.isfile(repo_path):
-        return repo_path
-    try:
-        import pkgutil
-        import tempfile
-        data = pkgutil.get_data(
-            "bigqmt_signal_trader", "_singlefile/zmq_transport.py.txt")
-    except Exception:
-        data = None
-    if data:
-        tmpdir = tempfile.mkdtemp(prefix="bigqmt-flat-")
-        path = os.path.join(tmpdir, "zmq_transport.py")
-        with open(path, "wb") as handle:
-            handle.write(data)
-        return path
-    raise SystemExit(
-        "cannot locate bigqmt_no_redis/zmq_transport.py: neither the "
-        "repository checkout nor the packaged copy inside "
-        "bigqmt_signal_trader._singlefile was found")
 
 
 def _decode(data):
@@ -222,36 +163,8 @@ def module_funcs_block(sources, extra):
     return "\n".join(lines)
 
 
-def main():
-    top_dir, package_dir = bsf.resolve_source_dirs()
-    sources = bsf.collect_package(package_dir, top_dir)
-
-    with open(no_redis_override_path(), "rb") as f:
-        override = f.read()
-    sources["bigqmt_signal_trader/transports/zmq_transport.py"] = override
-
-    extra = {}
-    for name in ("bigqmt_signal_trader_strategy.py",
-                 "bigqmt_signal_trader_redis_rpc_runtime.py"):
-        full = os.path.join(top_dir, name)
-        with open(full, "rb") as f:
-            extra[name] = f.read()
-    extra["bigqmt_no_redis/__init__.py"] = b"# coding: utf-8\n# no-redis local package marker (self-contained zmq transport lives here).\n"
-    extra["bigqmt_no_redis/zmq_transport.py"] = override
-
-    funcs_block = module_funcs_block(sources, extra)
-    template = FLAT_TEMPLATE.replace("__MODULE_FUNCS_BLOCK__", funcs_block)
-
-    total = sum(len(v) for v in sources.values()) + sum(len(v) for v in extra.values())
-    with open(OUT_PATH, "w", encoding="gbk", newline="\n") as f:
-        f.write(template)
-    print("WROTE %s" % OUT_PATH)
-    print("embedded files: %d package + %d top-level" % (len(sources), len(extra)))
-    print("embedded raw bytes: %d (flat real code, not string/base64)" % total)
-
-
-FLAT_TEMPLATE = '''#coding:gbk
-"""Single-file self-contained Big QMT dry-run strategy (no-redis version).
+FLAT_TEMPLATE = r'''#coding:gbk
+"""Single-file self-contained Big QMT dry-run strategy (named-pipe version).
 
 FLAT build: the embedded sources are written inline as REAL Python code
 (NOT strings, NOT base64). Each module source is indented inside a
@@ -262,28 +175,30 @@ So you can search / read / edit any embedded module as normal code, e.g.
 bigqmt_signal_trader_redis_rpc_runtime, with IDE syntax highlighting and
 indentation support, and no triple-quote escaping issues.
 
-All custom modules referenced by bigqmt_no_redis/DRYRUN_no_redis.py are
-embedded into this file and loaded in-memory at runtime:
+All custom modules the bridge needs are embedded into this file and
+loaded in-memory at runtime:
 
-    * bigqmt_signal_trader package (all submodules, with
-      transports/zmq_transport overridden by the self-contained no-redis
-      version that inlines the encoding helpers)
+    * bigqmt_signal_trader package (all submodules)
     * bigqmt_signal_trader_strategy
     * bigqmt_signal_trader_redis_rpc_runtime
     * bigqmt_signal_trader_local_config  (generated from the config block below)
 
-The RPC transport is forced to ZMQ; the third-party redis package is never
-imported and the zmq transport path never touches a redis-named module, so
-this file loads cleanly in QMT sandboxes whose whitelist rejects redis.
+The RPC transport is forced to the Windows named pipe (ctypes/kernel32 only).
+No redis or outbound socket connections: this build is for
+QMT sandboxes that kill the process when it dials out. The redis connection
+fields in the config below are ignored in pipe mode.
 
-This file never imports any other custom module from disk. It only uses the
-standard library plus third-party libraries (zmq, pandas, ...). The embedded
+This file never imports any other custom module from disk. The embedded
 loader below resolves relative imports against the in-memory modules, so you
 can copy this one file to a QMT python directory and run it as a strategy
 without shipping the package alongside.
 
-Edit BIGQMT_ACCOUNT_ID / BIGQMT_REDIS_CONFIG below before running. The redis
-connection fields in the config are ignored in no-redis mode.
+Callbacks: the pipe has no push channel. on_stock_order / on_stock_trade /
+on_order_error are synthesized client-side by polling queries (#372, default
+1s, BIGQMT_EXEC_POLL_SECONDS). Whole-quote push (subscribe_whole_quote) is
+disabled in this build -- poll get_full_tick instead.
+
+Edit BIGQMT_ACCOUNT_ID below before running.
 """
 import builtins as _builtins
 import importlib as _importlib
@@ -309,6 +224,15 @@ BIGQMT_REDIS_CONFIG = {
     # (issues #145 / #147).
     "redis_enabled": False,
     "rpc_allow_order_methods": False,
+    # 命名管道传输（本机同主机；ctypes/kernel32，零第三方依赖，不碰 socket）。
+    "transport": "pipe",
+    # 原生 xtdata SDK 的调用会拨 127.0.0.1:58610；QMT 把它判为「非法IP」并弹
+    # 模态框，卡住策略线程。pipe 构建默认关掉（显式写出来，避免任何 provider
+    # 忘了按 transport 推导时回落到构造器默认的 True）。
+    "native_xtdata_enabled": False,
+    "pipe": {
+        "pipe_name": "bigqmt_rpc",   # 管道名前缀，账号 id 自动拼在后面；客户端要一致
+    },
     # Requests drain through QMT's run_time("adjust", ...) callback, on the main
     # strategy thread. get_trade_detail_data returns EMPTY off that thread, so
     # order/query methods must not be moved to a background thread.
@@ -567,17 +491,21 @@ def _load_local_config():
 try:
     _config = _load_local_config()
     BIGQMT_REDIS_CONFIG = getattr(_config, "BIGQMT_REDIS_CONFIG", {})
-    # Force zmq transport (this is the no-redis version).
+    # Force pipe transport (this is the named-pipe build: no socket anywhere).
     BIGQMT_REDIS_CONFIG = dict(BIGQMT_REDIS_CONFIG or {})
-    BIGQMT_REDIS_CONFIG["transport"] = "zmq"
-    # setdefault: an explicit False is the #183 drain opt-in, worth 4-6x lower
-    # latency on zmq, and assignment overwrote it (#188).
-    BIGQMT_REDIS_CONFIG.setdefault("rpc_background_threads", True)
-    # Nothing here can reach redis, so say so instead of letting the runtime
-    # fill in 127.0.0.1:6379 from its defaults (issues #145 / #147).
+    BIGQMT_REDIS_CONFIG["transport"] = "pipe"
+    # drain 轮询（adjust 拍），后台线程在这类沙箱里只有 GIL 代价没有收益。
+    BIGQMT_REDIS_CONFIG.setdefault("rpc_background_threads", False)
+    # Nothing here may dial out: redis 块不下发（懒 client 首个命令就 connect，
+    # EDR 抓到就杀进程，2026-09-24 实盘）。
     BIGQMT_REDIS_CONFIG["redis_enabled"] = False
-    print("[bigqmt_shell] no-redis mode: transport=zmq background_threads=%s "
-          "redis_enabled=False" % BIGQMT_REDIS_CONFIG["rpc_background_threads"])
+    # pipe 没有推送线：全推推送关掉（客户端轮询 get_full_tick / 执行回调由
+    # 客户端轮询合成 #372）；下载队列和快照缓存需要 redis，一并关。
+    BIGQMT_REDIS_CONFIG["quote_push"] = {"enabled": False}
+    BIGQMT_REDIS_CONFIG.setdefault("download_jobs_enabled", False)
+    BIGQMT_REDIS_CONFIG.setdefault("full_tick_cache_enabled", False)
+    print("[bigqmt_shell] pipe mode: transport=pipe background_threads=%s "
+          "redis_enabled=False quote_push=False" % BIGQMT_REDIS_CONFIG["rpc_background_threads"])
     _runtime.configure_runtime_redis(BIGQMT_REDIS_CONFIG)
 except Exception as redis_config_error:
     print("[bigqmt_shell] local redis config load failed: %s" % redis_config_error)
@@ -625,4 +553,4 @@ credit_account_callback = _runtime.credit_account_callback
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit("Use build_pipe_single_file_flat.py for the named-pipe build")

@@ -106,13 +106,6 @@ class RpcHandlerNativeGateTest(unittest.TestCase):
         app = types.SimpleNamespace(order_gateway=None, position_sync_sink=None)
         return strategy._build_rpc_service(types.SimpleNamespace(), app, config)
 
-    def test_helper_defaults_off_for_pipe_and_on_elsewhere(self):
-        import bigqmt_signal_trader_strategy as strategy
-
-        self.assertFalse(strategy._native_xtdata_enabled({"transport": "pipe"}))
-        self.assertTrue(strategy._native_xtdata_enabled({"transport": "zmq"}))
-        self.assertTrue(strategy._native_xtdata_enabled({"transport": "redis"}))
-        self.assertTrue(strategy._native_xtdata_enabled({}))
 
     def test_explicit_value_wins_over_transport_default(self):
         import bigqmt_signal_trader_strategy as strategy
@@ -130,13 +123,6 @@ class RpcHandlerNativeGateTest(unittest.TestCase):
         self.assertIsNotNone(service)
         self.assertFalse(service.handlers.market_data.native_xtdata_enabled)
 
-    def test_non_pipe_handler_provider_keeps_native_on(self):
-        service = self._build_service({
-            "transport": "zmq",
-            "zmq": {"connect_address": "tcp://127.0.0.1:20146"},
-        })
-        self.assertIsNotNone(service)
-        self.assertTrue(service.handlers.market_data.native_xtdata_enabled)
 
 
 class ClientRedisGateTest(unittest.TestCase):

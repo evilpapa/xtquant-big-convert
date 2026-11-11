@@ -27,7 +27,6 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from bigqmt_signal_trader.account_type_map import reload as reload_map  # noqa: E402
 from bigqmt_signal_trader.quote_push_channel import (  # noqa: E402
     RedisQuotePushChannel,
-    ZmqQuotePushChannel,
     decode_push_payload,
 )
 from bigqmt_signal_trader.quote_subscription_manager import (  # noqa: E402
@@ -149,16 +148,6 @@ class BuilderWiresTheMapTest(unittest.TestCase):
         self.assertTrue(any(":ACCT2:" in c for c in published), published)
         self.assertTrue(any(":ACCT1:" in c for c in published), published)
 
-    def test_zmq_binds_every_accounts_endpoint(self):
-        with _with_map({"ACCT1": "STOCK", "ACCT2": "FUTURE"}):
-            reload_map()
-            _manager, channel = build_quote_subscription_service(
-                _Ctx(), transport_name="zmq", account_id="ACCT1",
-                zmq_bind_address="tcp://127.0.0.1:15561", enabled=True)
-        self.assertIsInstance(channel, ZmqQuotePushChannel)
-        self.assertEqual("tcp://127.0.0.1:15561", channel.bind_address)
-        from bigqmt_signal_trader.quote_subscription_manager import _default_quote_push_zmq_bind
-        self.assertEqual([_default_quote_push_zmq_bind("ACCT2")], channel.extra_bind_addresses)
 
     def test_the_single_account_shape_is_unchanged(self):
         sys.modules.pop("bigqmt_signal_trader_local_config", None)

@@ -277,21 +277,6 @@ def _quote_client_id():
     return new_id
 
 
-def _quote_push_zmq_address(client):
-    """Derive the server whole-quote PUB address: same host as the RPC zmq
-    endpoint, RPC port + 1 (the PUB socket binds a distinct port)."""
-    from .transports.zmq_transport import DEFAULT_ZMQ_HOST, _default_zmq_port
-
-    zmq_config = dict(getattr(client, "zmq_config", {}) or {})
-    explicit = zmq_config.get("quote_push_connect_address")
-    if explicit:
-        return str(explicit)
-    host = zmq_config.get("host") or DEFAULT_ZMQ_HOST
-    port = zmq_config.get("port")
-    base_port = int(port) if port is not None else _default_zmq_port(client.account_id)
-    return "tcp://%s:%d" % (host, base_port + 1)
-
-
 def _build_quote_push_channel(client):
     """Build the push-channel subscriber matching the RPC transport: redis
     deployments derive the channel locally; zmq deployments connect to the
@@ -306,12 +291,9 @@ def _build_quote_push_channel(client):
     127.0.0.1:6379——外连即杀的沙箱里那一次拨号就是杀进程（2026-09-24
     实盘逐行核对）。
     """
-    from .quote_push_channel import RedisQuotePushChannel, ZmqQuotePushChannel
+    from .quote_push_channel import RedisQuotePushChannel
 
     transport_name = str(getattr(client, "transport_name", "redis") or "redis").lower()
-    if transport_name in ("zmq",):
-        address = _quote_push_zmq_address(client)
-        return ZmqQuotePushChannel(connect_address=address)
     if transport_name in ("pipe",):
         # #408: the events pipe path derives from the RPC pipe block exactly
         # as the server derives it -- no discovery needed. An explicit redis
@@ -1024,8 +1006,8 @@ def _warn_stale_formula_bars(data, params, hit=None):
             return
         _formula_stale_warned[key] = True
         log.warning(
-            "FormulaServer data looks stale for %s %s: newest bar %s lags now by %.0fs. "
-            "Falling back to the RPC bridge for live reads (cooldown %.0fs).",
+            "FormulaServer 返回的 %s %s 数据疑似过期：最新 K 线 %s 落后当前时间 %.0fs。"
+            "实时读取将回退到 RPC 桥接（冷却 %.0fs）。",
             code, period, newest, lag, _FORMULA_STALE_COOLDOWN_SECONDS,
         )
     except Exception:
@@ -1488,8 +1470,6 @@ class BigQmtRpcClient:
             or os.environ.get("BIGQMT_RPC_TRANSPORT")
             or "redis"
         ).lower()
-        self.zmq_config = dict(merged_redis_config.get("zmq") or {})
-        self.mysql_config = dict(merged_redis_config.get("mysql") or {})
         self.pipe_config = dict(merged_redis_config.get("pipe") or {})
         self._transport_instance = None  # lazily built by _transport()
         # FormulaServer read fast-path. QMT's C++ quote service (port 58600)
@@ -1533,18 +1513,7 @@ class BigQmtRpcClient:
 
             client_config = load_client_config()
             config_redis = dict(client_config.get("redis_config") or {})
-            zmq_config = dict(config_redis.get("zmq") or {})
-            zmq_config.update(self.zmq_config)
-            # ZMQ must work without Redis. Discovery is opt-in and unnecessary
-            # when connect_address is explicitly configured.
-            if (
-                not zmq_config.get("connect_address")
-                and bool(zmq_config.get("redis_discovery_enabled", False))
-            ):
-                zmq_config.setdefault("discovery_redis_client", self._redis())
             factory_config = {
-                "zmq": zmq_config,
-                "mysql": dict(config_redis.get("mysql") or {}, **self.mysql_config),
                 # 管道名两侧必须一致，否则客户端连的是另一条线 —— 表现为
                 # 「连不上」而不是「配错了」，最难查的那种。
                 "pipe": dict(config_redis.get("pipe") or {}),
@@ -1586,7 +1555,8 @@ class BigQmtRpcClient:
                     self.formula_server_config, print_prefix="[bigqmt_formula]"
                 )
             except Exception as exc:
-                print("[bigqmt_formula] disabled (%s: %s)" % (exc.__class__.__name__, exc))
+                print("[bigqmt_formula] 已禁用（%s：%s）"
+                      % (exc.__class__.__name__, exc))
 
                 class _Disabled(object):
                     def supports(self, method):
@@ -1738,12 +1708,12 @@ class BigQmtRpcClient:
                 try:
                     result = fut.result()
                 except Exception as exc:
-                    log.warning("call_async %s failed: %s", method, exc)
+                    log.warning("call_async 调用 %s 失败：%s", method, exc)
                     return
                 try:
                     callback(result)
                 except Exception:
-                    log.exception("call_async callback failed: %s", method)
+                    log.exception("call_async 回调执行失败 method=%s", method)
 
             future.add_done_callback(lambda fut: dispatcher.submit(_deliver, fut))
         return future
@@ -1756,9 +1726,6 @@ class BigQmtRpcClient:
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "payload": payload or {},
         }
-        # 显式地址且未启用 Redis discovery 的 ZMQ 是纯 ZMQ 模式，不应隐式连接 Redis。
-        if self.transport_name == "zmq" and not bool(self.zmq_config.get("redis_discovery_enabled", False)):
-            return event
         raw = json.dumps(event, ensure_ascii=False, default=str)
         stream_key = stream_template.format(account_id=account_id)
         redis_client = self._redis()
@@ -1777,9 +1744,6 @@ class BigQmtRpcClient:
         return event
 
     def save_quote_subscription(self, seq, payload, active=True):
-        # MySQL、SHM 和混合 ZMQ 继续保留既有 Redis subscription metadata 行为。
-        if self.transport_name == "zmq" and not bool(self.zmq_config.get("redis_discovery_enabled", False)):
-            return
         account_id = str(self.account_id or "")
         key = "bigqmt:quote_subscriptions:%s" % account_id
         redis_client = self._redis()
@@ -2007,12 +1971,12 @@ def _notice_field_list_cost(field_list):
     _FIELD_LIST_NOTICE["shown"] = True
     try:
         log.info(
-            "get_market_data_ex with an empty field_list returns all 11 columns "
-            "and must go over RPC. If the six OHLCV columns %s are enough, pass "
-            "them as field_list -- that path is served by FormulaServer, 0.015s "
-            "against 5.8s measured. Naming preClose / suspendFlag / "
-            "settelementPrice / openInterest falls back to RPC, so a wider "
-            "field_list is safe, just not faster.", ", ".join(DIRECT_PATH_FIELDS))
+            "field_list 为空时，get_market_data_ex 会返回全部 11 列，必须通过 RPC 读取。"
+            "如果六个 OHLCV 字段 %s 已足够，请将它们作为 field_list 传入；"
+            "该路径由 FormulaServer 直连，实测 0.015s，而 RPC 为 5.8s。"
+            "指定 preClose / suspendFlag / settelementPrice / openInterest 时"
+            "会回退到 RPC，因此更宽的 field_list 安全但不会更快。",
+            ", ".join(DIRECT_PATH_FIELDS))
     except Exception:
         pass
 
@@ -2126,11 +2090,11 @@ def warn_on_version_mismatch(ping_response):
             return None
         _VERSION_WARNED["shown"] = True
         log.warning(
-            "version mismatch: this client is %s, the QMT-side bridge is %s. "
-            "A copy alone does not take effect -- QMT keeps modules across "
-            "strategy re-runs, so the strategy must be restarted too. Set "
-            "BIGQMT_AUTO_SYNC=1 (or call xt_trader.sync_deployment()) to push "
-            "this client's package into the QMT python directory.",
+            "版本不一致：客户端为 %s，QMT 端桥接为 %s。"
+            "仅复制文件不会生效；QMT 在重复运行策略时会保留已加载模块，"
+            "因此策略也必须重启。可设置 BIGQMT_AUTO_SYNC=1"
+            "（或调用 xt_trader.sync_deployment()）将客户端包推送到"
+            "QMT 的 Python 目录。",
             local, server)
         return (local, server)
     except Exception:
@@ -2258,16 +2222,15 @@ class BigQmtXtData:
                 # actual failure, and say why the recovery did not help.
                 if fallback_errors:
                     log.warning(
-                        "get_full_tick: %d codes failed directly (%s) and the "
-                        "market re-read failed too (%s: %s); raising the "
-                        "original failure.",
+                        "get_full_tick：%d 个代码直接读取失败（%s），"
+                        "全市场重新读取也失败（%s：%s）；现在抛出最初捕获的异常。",
                         len(codes), failure,
                         fallback_errors[-1].__class__.__name__,
                         fallback_errors[-1])
                 else:
                     log.warning(
-                        "get_full_tick: %d codes failed directly (%s) and "
-                        "could not be recovered from a market read.",
+                        "get_full_tick：%d 个代码直接读取失败（%s），"
+                        "且无法通过全市场读取恢复。",
                         len(codes), failure)
                 raise failure
         return data or {}
@@ -2335,9 +2298,9 @@ class BigQmtXtData:
                 break          # everything asked for; no need to widen
 
         log.warning(
-            "get_full_tick: %d codes did not come back directly; re-read %s as "
-            "%s and filtered to %d. A market token with types= is cheaper than "
-            "a list this long.",
+            "get_full_tick：%d 个代码未直接返回；已按 %s 重新读取，"
+            "使用 %s 并筛选到 %d 条。与这么长的代码列表相比，"
+            "使用带 types= 的市场 token 开销更低。",
             len(wanted), "/".join(sorted(markets)), "/".join(attempts[-1]
                                                              if len(merged) < len(wanted)
                                                              else attempts[0]),
@@ -2530,7 +2493,7 @@ class BigQmtXtData:
         except Exception as exc:
             # Degrade to the terminal's answer. The bars themselves are good;
             # taking the whole read down over the fill would be the worse bug.
-            log.warning("preClose backfill for period %s skipped: %s", period, exc)
+            log.warning("period=%s 的 preClose 回填已跳过：%s", period, exc)
             return data
 
         for code, spans in targets.items():
@@ -2675,7 +2638,7 @@ class BigQmtXtData:
         except Exception as exc:
             # The terminal's answer was good enough to serve; taking the whole
             # read down over the rebuild would be the worse bug.
-            log.warning("ongoing %s bar rebuild skipped: %s", period, exc)
+            log.warning("正在形成的 %s K 线重建已跳过：%s", period, exc)
             return data
 
         rebuilt = appended = 0
@@ -2748,7 +2711,7 @@ class BigQmtXtData:
         except Exception as exc:
             # The local answer was good enough to serve; taking the whole
             # read down over the appended bar would be the worse bug.
-            log.warning("ongoing 1d bar rescue skipped: %s", exc)
+            log.warning("正在形成的 1d K 线补救已跳过：%s", exc)
             return data
         appended = 0
         for code in wanted:
@@ -2770,12 +2733,11 @@ class BigQmtXtData:
         _DAILY_RESCUE_NOTICE["shown"] = True
         try:
             log.info(
-                "%d forming 1d bar(s) missing from the local answer were "
-                "appended from the live daily read (#226/#307 family, the 1d "
-                "case): a client-cache frame cached before the session or a "
-                "store read right after an incremental download stops at the "
-                "previous trading day. Pass resynth_ongoing_multiday=False to "
-                "serve the raw answer.", appended)
+                "本地结果缺少 %d 根正在形成的 1d K 线，已从实时日线读取中追加"
+                "（#226/#307 同类问题中的 1d 场景）：在开盘前缓存的客户端数据，"
+                "或增量下载后立即读取的本地存储，可能只到上一交易日。"
+                "如需返回原始结果，请传入 resynth_ongoing_multiday=False。",
+                appended)
         except Exception:
             pass
 
@@ -2879,12 +2841,12 @@ class BigQmtXtData:
         _RESYNTH_NOTICE["shown"] = True
         try:
             log.info(
-                "%d ongoing %s bar(s) were reconciled from the period's "
-                "daily bars and %d missing one(s) appended (issues #226 and "
-                "#307): big QMT synthesizes them from the request window or "
-                "drops them mid-session, miniQMT serves the period's "
-                "accumulation. Pass resynth_ongoing_multiday=False to serve "
-                "the raw answer.", count - appended, period, appended)
+                "%d 根正在形成的 %s K 线已用该周期的日线核对，"
+                "并追加了 %d 根缺失 K 线（问题 #226、#307）："
+                "大 QMT 会按请求窗口合成本周期数据，或在盘中丢弃这些 K 线；"
+                "miniQMT 则返回该周期的累计数据。"
+                "如需返回原始结果，请传入 resynth_ongoing_multiday=False。",
+                count - appended, period, appended)
         except Exception:
             pass
 
@@ -2896,11 +2858,11 @@ class BigQmtXtData:
         _PRE_CLOSE_NOTICE["shown"] = True
         try:
             log.info(
-                "period %s came back with preClose = 0.0 for every bar, so it was "
-                "filled from the daily preClose of each period's first trading day "
-                "(issue #166). That is the same value MiniQMT reports, including on "
-                "an ex-dividend day, but it is computed here rather than answered by "
-                "the terminal -- pass backfill_pre_close=False to get the raw bars.",
+                "period=%s 的每根 K 线 preClose 都为 0.0，"
+                "因此已按各周期首个交易日的日线 preClose 回填（问题 #166）。"
+                "该值与 MiniQMT 的结果一致，除息日也是如此；"
+                "但这里是本地计算值，并非终端返回。"
+                "如需原始 K 线，请传入 backfill_pre_close=False。",
                 period)
         except Exception:
             pass
@@ -3003,7 +2965,8 @@ class BigQmtXtData:
                 # than returning a silent empty dict.
                 raise failures[0][1]
             for batch, exc in failures:
-                print("[bigqmt_client] get_market_data_ex batch failed (%d codes, first=%s): %s"
+                print("[bigqmt_client] get_market_data_ex 批量读取失败"
+                      "（codes=%d，first=%s）：%s"
                       % (len(batch), batch[0] if batch else "", exc))
 
         if backfill_pre_close:
@@ -3029,7 +2992,8 @@ class BigQmtXtData:
                 try:
                     cache.write(code, period, df, dividend_type=dividend_type)
                 except Exception as exc:
-                    log.warning("local cache write failed code=%s period=%s: %s", code, period, exc)
+                    log.warning("本地缓存写入失败 code=%s period=%s：%s",
+                                code, period, exc)
         return data
 
     def get_local_data(
@@ -3331,12 +3295,11 @@ class BigQmtXtData:
             # answers False, #339) -- say so rather than hand back a flat
             # frame that reads like bars.
             log.warning(
-                "%s %s %s %s~%s: every bar is volume 0 / suspendFlag 1 after a "
-                "server-side download and retry. These are Big QMT placeholder "
-                "bars, not trades -- the terminal has no local %s data for this "
-                "window. Check download_history_data2 on this terminal "
-                "(probe_capabilities -> qmt_globals) or download the period in "
-                "the terminal's 数据管理 first.",
+                "%s %s %s %s~%s：服务端下载并重试后，每根 K 线仍是"
+                "volume=0 / suspendFlag=1。这些是大 QMT 的占位 K 线，并非真实成交；"
+                "终端本地没有该窗口的 %s 数据。请检查此终端的 "
+                "download_history_data2（probe_capabilities -> qmt_globals），"
+                "或先在终端“数据管理”中下载该周期。",
                 method, ",".join(codes[:5]) + (",..." if len(codes) > 5 else ""),
                 params.get("period", "1d"), params.get("start_time", ""),
                 params.get("end_time", ""), params.get("period", "1d"),
@@ -3409,13 +3372,13 @@ class BigQmtXtData:
         poller = _BarPoller(
             fetch, callback, self._bar_poll_interval_seconds(),
             on_error=lambda exc: log.debug(
-                "subscribe_quote poll failed code=%s period=%s: %s",
+                "subscribe_quote 轮询失败 code=%s period=%s：%s",
                 stock_code, period, exc),
             on_no_data=lambda: log.warning(
-                "subscribe_quote: no %s bars for %s -- the subscription is live "
-                "but stays silent until this terminal has data for that period. "
-                "Check the period is downloaded (get_market_data_ex returns an "
-                "empty frame for it).", period, stock_code))
+                "subscribe_quote：%s 没有 %s 的 K 线；订阅仍然有效，"
+                "但在终端取得该周期数据前不会推送。"
+                "请检查该周期是否已下载（get_market_data_ex 对该周期返回空表）。",
+                period, stock_code))
         with self._bar_poller_lock:
             self._bar_pollers[seq] = poller
         poller.start()
@@ -3864,10 +3827,10 @@ class BigQmtXtData:
                     # nothing was written even though the task was accepted.
                     # Name them instead of reporting fake progress.
                     log.warning(
-                        "download_history_data2 %s %s~%s: %d code(s) sit in the "
-                        "append-only dead zone (window ends before the terminal's "
-                        "local last bar; nothing was written for them). They are "
-                        "in 'skipped', not 'finished': %s",
+                        "download_history_data2 %s %s~%s：%d 个代码位于"
+                        "仅追加下载的死区（窗口结束时间早于终端本地最后一根 K 线，"
+                        "因此没有写入任何数据）。它们被归入 'skipped'，"
+                        "而不是 'finished'：%s",
                         period, start_time, end_time, len(skipped),
                         ",".join(skipped[:5]))
             for code in batch:
@@ -4782,7 +4745,7 @@ class BigQmtXtTrader:
             try:
                 self.stop()
             except Exception:
-                log.exception("connect failed and event listener teardown failed")
+                log.exception("连接失败，且事件监听器清理失败")
             raise
 
     def sync_deployment(self, dry_run=False):
@@ -4804,23 +4767,23 @@ class BigQmtXtTrader:
         info = self.client.call("get_deployment_info", {}) or {}
         target = info.get("qmt_python_dir") or ""
         if not target:
-            log.warning("sync_deployment: the bridge did not report a "
-                        "qmt_python_dir (server too old?); nothing copied")
+            log.warning("sync_deployment：桥接端未返回 qmt_python_dir"
+                        "（服务端版本可能过旧？），未复制任何文件")
             return {"updated": [], "error": "no qmt_python_dir reported"}
 
         result = _sync(target, dry_run=dry_run)
         if result.get("error"):
-            log.warning("sync_deployment: %s", result["error"])
+            log.warning("sync_deployment：%s", result["error"])
         elif result["updated"]:
             log.warning(
-                "sync_deployment: %d file(s) %s in %s. RESTART THE STRATEGY -- "
-                "QMT keeps modules across re-runs, so this has no effect until "
-                "you do. Config files untouched: %s",
+                "sync_deployment：%d 个文件已%s，目录=%s。"
+                "请重启策略；QMT 在重复运行时会保留已加载模块，"
+                "重启前本次更新不会生效。配置文件未改动：%s",
                 len(result["updated"]),
-                "would be updated" if dry_run else "updated",
-                target, ", ".join(result["skipped_config"]) or "none present")
+                "准备更新" if dry_run else "更新",
+                target, ", ".join(result["skipped_config"]) or "无")
         else:
-            log.info("sync_deployment: already up to date (%d files identical)",
+            log.info("sync_deployment：已是最新版本（%d 个文件内容相同）",
                      result["identical"])
         return result
 
@@ -4912,12 +4875,12 @@ class BigQmtXtTrader:
         if declared in (getattr(self, "_server_account_types", None) or []):
             return
         log.warning(
-            "account_type mismatch: this client asked for %s but the QMT "
-            "deployment is configured as %s. The client's StockAccount type "
-            "does NOT travel to the server -- set BIGQMT_ACCOUNT_TYPE = %r in "
-            "the QMT-side local config and restart the strategy. Until then "
-            "queries answer as %s (a credit account read as STOCK returns an "
-            "all-zero asset row).", declared, server, declared, server)
+            "account_type 不匹配：客户端请求 %s，但 QMT 端部署配置为 %s。"
+            "客户端 StockAccount 的类型不会传到服务端；请在 QMT 端本地配置中"
+            "设置 BIGQMT_ACCOUNT_TYPE = %r，然后重启策略。"
+            "在此之前查询会按 %s 应答（信用账户按 STOCK 读取时，"
+            "资产行会全部返回 0）。",
+            declared, server, declared, server)
 
     def _fire_account_status(self):
         """Fire on_account_status after connect/subscribe (MiniQMT parity).
@@ -4939,7 +4902,7 @@ class BigQmtXtTrader:
                 )
             )
         except Exception:
-            log.exception("user callback failed: on_account_status")
+            log.exception("用户回调执行失败：on_account_status")
 
     def _event_loop_push_channel(self):
         """One push-channel round: zmq exec events arrive on the same PUB
@@ -4966,7 +4929,7 @@ class BigQmtXtTrader:
         except Exception:
             # 静默重试养大了 #366（方法不存在 -> AttributeError -> 永远收不到
             # 回调，外面什么都看不见）。失败必须留痕。
-            log.exception("exec event push-channel round failed; retrying")
+            log.exception("成交回报推送通道本轮失败，正在重试")
             time.sleep(1.0)
         finally:
             if channel is not None:
@@ -5001,7 +4964,7 @@ class BigQmtXtTrader:
             except Exception as exc:
                 failures += 1
                 if failures == 1 or failures % 20 == 0:
-                    log.warning("exec poll round failed x%d: %s: %s",
+                    log.warning("成交回报轮询本轮失败，已连续 %d 次：%s：%s",
                                 failures, exc.__class__.__name__, exc)
                 if failures >= 5:
                     return   # 通道可能整体坏了（比如 redis 宕了）-> 外层重选
@@ -5132,7 +5095,7 @@ class BigQmtXtTrader:
 
     def _exec_transport_uses_push_channel(self):
         # zmq and pipe both carry exec events on their push channel (#76, #408).
-        return str(getattr(self.client, "transport_name", "redis") or "redis").lower() in ("zmq", "pipe")
+        return str(getattr(self.client, "transport_name", "redis") or "redis").lower() in ("pipe",)
 
     def _exec_events_redis_or_none(self):
         """A REACHABLE Redis client for the exec-event channels, or None.
@@ -5282,7 +5245,7 @@ class BigQmtXtTrader:
         except Exception:
             # 业务回调异常不能打崩事件线程，但必须留痕（issue: 静默吞错）。
             log.exception(
-                "user callback failed: event_type=%s account=%s",
+                "用户回调执行失败 event_type=%s account=%s",
                 event.get("event_type"),
                 account_id,
             )
@@ -5892,7 +5855,7 @@ class BigQmtXtTrader:
                 self._submit_async_jobs(jobs)
             except Exception:
                 # A worker that dies takes every later async order with it.
-                log.exception("async order submit failed for %d job(s)", len(jobs))
+                log.exception("异步委托提交失败 jobs=%d", len(jobs))
             finally:
                 for _ in jobs:
                     self._async_order_queue.task_done()
@@ -5916,7 +5879,7 @@ class BigQmtXtTrader:
             except Exception:
                 # The dispatcher dying would strand every later callback AND
                 # every armed barrier, so it must not.
-                log.exception("async callback dispatch failed seq=%s",
+                log.exception("异步回调分发失败 seq=%s",
                               unit.get("seq") if isinstance(unit, dict) else "?")
             finally:
                 self._async_callback_queue.task_done()
@@ -6005,7 +5968,7 @@ class BigQmtXtTrader:
             try:
                 self._submit_async_cancel_jobs(jobs)
             except Exception:
-                log.exception("async cancel submit failed for %d job(s)", len(jobs))
+                log.exception("异步撤单提交失败 jobs=%d", len(jobs))
             finally:
                 for _ in jobs:
                     self._async_cancel_queue.task_done()
@@ -6106,16 +6069,16 @@ class BigQmtXtTrader:
                 account_id=account_id,
             ) or []
         except RpcServerRepliedError as exc:
-            log.warning("cancel batch of %d refused by the server (%s); "
-                        "submitting one at a time", len(group), exc)
+            log.warning("服务端拒绝批量撤销 %d 笔（%s）；正在逐笔提交",
+                        len(group), exc)
             for job in group:
                 try:
                     self._submit_async_cancel_single(job)
                 except Exception:
-                    log.exception("async cancel failed after batch refusal")
+                    log.exception("批量撤销被拒后，异步撤单仍然失败")
             return
         except Exception as exc:
-            log.exception("cancel batch of %d outcome unknown; NOT resubmitting",
+            log.exception("批量撤销 %d 笔的结果未知；不会重新提交",
                           len(group))
             for seq, args, kwargs in group:
                 order_id = args[1] if len(args) > 1 else kwargs.get("order_id", "")
@@ -6134,13 +6097,12 @@ class BigQmtXtTrader:
             # The server appends one result per item, so nothing back means the
             # batch never ran -- not that every cancel failed. Fall back to
             # singles, which is what would have happened anyway.
-            log.warning("cancel batch of %d returned no results; submitting "
-                        "one at a time", len(group))
+            log.warning("批量撤销 %d 笔未返回结果；正在逐笔提交", len(group))
             for job in group:
                 try:
                     self._submit_async_cancel_single(job)
                 except Exception:
-                    log.exception("async cancel failed after empty batch")
+                    log.exception("批量撤销返回空结果后，异步撤单仍然失败")
             return
         by_index = {}
         for position, entry in enumerate(results):
@@ -6397,15 +6359,15 @@ class BigQmtXtTrader:
             results = self.order_stock_batch(batch_account, payload,
                                              idempotent=False) or []
         except RpcServerRepliedError as exc:
-            log.warning("async batch of %d refused by the server (%s); "
-                        "submitting one at a time", len(group), exc)
+            log.warning("服务端拒绝异步批量委托 %d 笔（%s）；正在逐笔提交",
+                        len(group), exc)
             results = None
         except Exception as exc:
             # Timeout / transport failure: the batch's fate is unknown. Do NOT
             # resubmit -- report each item as unknown-outcome instead. The
             # message must say the orders may be live, because they may be:
             # a caller that retries on failure double-orders.
-            log.exception("async batch of %d outcome unknown; NOT resubmitting",
+            log.exception("异步批量委托 %d 笔的结果未知；不会重新提交",
                           len(group))
             for (seq, args, kwargs), fields in group:
                 self._enqueue_batch_outcome(seq, fields, {
@@ -6421,13 +6383,13 @@ class BigQmtXtTrader:
                 # the batch never ran -- not that every order failed. Reporting
                 # N failures here would be the dangerous reading: a caller that
                 # retries on failure would place them all a second time.
-                log.warning("async batch of %d returned no results; submitting "
-                            "one at a time", len(group))
+                log.warning("异步批量委托 %d 笔未返回结果；正在逐笔提交",
+                            len(group))
             for (seq, args, kwargs), _fields in group:
                 try:
                     self._submit_async_single(seq, args, kwargs)
                 except Exception:
-                    log.exception("async order failed after batch fallback seq=%s", seq)
+                    log.exception("批量回退后，异步委托仍然失败 seq=%s", seq)
             return
         by_index = {}
         for position, entry in enumerate(results):
@@ -6478,7 +6440,7 @@ class BigQmtXtTrader:
         ever arrives.
         """
         transport_name = str(getattr(self.client, "transport_name", "redis") or "redis").lower()
-        return transport_name in ("redis", "", "default", "zmq")
+        return transport_name in ("redis", "", "default")
 
     def _submit_async_single(self, seq, args, kwargs):
         """Submit one job and enqueue its outcome. Runs on the order worker."""
@@ -6605,7 +6567,7 @@ class BigQmtXtTrader:
                     ),
                 )
         except Exception:
-            log.exception("user callback failed: async outcome seq=%s kind=%s",
+            log.exception("用户回调执行失败 async outcome seq=%s kind=%s",
                           seq, unit.get("kind"))
         finally:
             # response/error 已触发 -> 放行这笔委托暂存的 order/trade (issue #51)。
@@ -6664,7 +6626,7 @@ class BigQmtXtTrader:
                 )
         except Exception:
             log.exception(
-                "user callback failed: async cancel outcome seq=%s kind=%s",
+                "用户回调执行失败 async cancel outcome seq=%s kind=%s",
                 seq, unit.get("kind"),
             )
 
@@ -6996,9 +6958,9 @@ class BigQmtXtTrader:
                 # [{}, {}]. Coercing that to {} silently reports "no IPOs
                 # today", so say so instead of swallowing it.
                 log.warning(
-                    "query_ipo_data: server returned %s, not a mapping -- the "
-                    "QMT-side bridge is too old to preserve get_ipo_data's "
-                    "shape and the rows are empty. Update the server side.",
+                    "query_ipo_data：服务端返回 %s，而不是映射对象；"
+                    "QMT 端桥接版本过旧，无法保持 get_ipo_data 的返回结构，"
+                    "因此结果为空。请更新服务端。",
                     type(data).__name__)
             return {}
         except Exception:
@@ -7113,7 +7075,7 @@ class BigQmtXtTrader:
                 callback(result)
             except Exception:
                 log.exception(
-                    "user callback failed: %s",
+                    "用户回调执行失败：%s",
                     getattr(sync_call, "__name__", "async_query_callback"),
                 )
             return None
@@ -7179,7 +7141,7 @@ class BigQmtXtTrader:
             try:
                 callback(result)
             except Exception:
-                log.exception("user callback failed: query_ipo_data_async")
+                log.exception("用户回调执行失败：query_ipo_data_async")
             return None
         return self._next_async_seq()
 

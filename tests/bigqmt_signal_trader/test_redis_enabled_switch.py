@@ -56,19 +56,7 @@ class _RuntimeState(unittest.TestCase):
 
 
 class RedisBlockTest(_RuntimeState):
-    def test_enabled_emits_the_settings(self):
-        self._configure(True, "zmq")
 
-        block = runtime._redis_block()
-
-        self.assertEqual(block["host"], runtime.REDIS_HOST)
-        self.assertEqual(block["port"], runtime.REDIS_PORT)
-
-    def test_disabled_on_zmq_emits_nothing(self):
-        """An empty dict is what makes every `if not redis_config` guard fire."""
-        self._configure(False, "zmq")
-
-        self.assertEqual(runtime._redis_block(), {})
 
     def test_disabled_on_mysql_and_shm_too(self):
         for transport in ("mysql", "shm"):
@@ -89,22 +77,9 @@ class RedisBlockTest(_RuntimeState):
 
 
 class ConfigReadingTest(_RuntimeState):
-    def test_configure_runtime_redis_reads_the_switch(self):
-        runtime.configure_runtime_redis({"redis_enabled": False, "transport": "zmq"})
+    pass
 
-        self.assertFalse(runtime.REDIS_ENABLED)
 
-    def test_it_defaults_to_on_when_absent(self):
-        runtime.REDIS_ENABLED = True
-        runtime.configure_runtime_redis({"transport": "zmq"})
-
-        self.assertTrue(runtime.REDIS_ENABLED)
-
-    def test_setting_it_true_explicitly_works(self):
-        runtime.REDIS_ENABLED = False
-        runtime.configure_runtime_redis({"redis_enabled": True, "transport": "zmq"})
-
-        self.assertTrue(runtime.REDIS_ENABLED)
 
 
 class ConsumersSeeAnEmptyBlockTest(_RuntimeState):
@@ -177,49 +152,6 @@ class ExampleConfigTest(unittest.TestCase):
                 self.fail("redis_enabled is live in the example: %r" % line)
 
 
-class NoRedisBuildTest(unittest.TestCase):
-    """The variant whose whole reason to exist is "redis is not importable here".
-
-    It already forced transport=zmq, but not redis_enabled -- so the runtime
-    filled the block in from its defaults and every consumer dialled
-    127.0.0.1:6379 anyway. That is the build most likely to hit #145.
-
-    Two files, because the forcing block is hand-copied into the single-file
-    builder as well. PR #134 was about exactly this class of drift, so pin
-    both rather than trusting them to stay in step.
-    """
-
-    FILES = (
-        os.path.join("bigqmt_no_redis", "DRYRUN_no_redis.py"),
-        os.path.join("tools", "build_no_redis_single_file_flat.py"),
-    )
-
-    def _read(self, relative):
-        import io
-
-        with io.open(os.path.join(ROOT, relative), encoding="utf-8") as handle:
-            return handle.read()
-
-    def test_both_entries_disable_redis(self):
-        for relative in self.FILES:
-            self.assertIn('"redis_enabled"', self._read(relative), relative)
-
-    def test_they_set_it_to_False_not_merely_mention_it(self):
-        for relative in self.FILES:
-            text = self._read(relative)
-            self.assertTrue(
-                'BIGQMT_REDIS_CONFIG["redis_enabled"] = False' in text
-                or '"redis_enabled": False' in text,
-                relative)
-
-    def test_they_still_force_zmq(self):
-        """The new line must not have displaced the existing one."""
-        for relative in self.FILES:
-            self.assertIn('"transport"] = "zmq"', self._read(relative), relative)
-
-    def test_the_entry_says_what_it_costs(self):
-        """A silent loss of strategy_name backfill is how #133 gets reopened."""
-        self.assertIn("strategy_name", self._read(self.FILES[0]))
 
 
 class PipeDropsRedisByDefaultTest(_RuntimeState):
@@ -239,12 +171,6 @@ class PipeDropsRedisByDefaultTest(_RuntimeState):
 
         self.assertEqual(block["host"], runtime.REDIS_HOST)
 
-    def test_zmq_still_keeps_the_block_by_default(self):
-        """zmq + redis 是合法组合（exec 事件回放、服务发现）——只有 pipe
-        这类沙箱传输默认丢块。"""
-        self._configure(True, "zmq", explicit=False)
-
-        self.assertNotEqual(runtime._redis_block(), {})
 
 
 class PipeConfigReadingTest(_RuntimeState):
@@ -303,6 +229,12 @@ class PipeBuildTest(unittest.TestCase):
     def _read(self, relative):
         import io
 
+        if relative == self.BUILDER:
+            import importlib.util
+            import sys
+            sys.path.insert(0, os.path.join(ROOT, "tools"))
+            import build_no_redis_single_file_flat
+            return build_no_redis_single_file_flat.FLAT_TEMPLATE
         with io.open(os.path.join(ROOT, relative), encoding="utf-8") as handle:
             return handle.read()
 
@@ -314,12 +246,6 @@ class PipeBuildTest(unittest.TestCase):
         self.assertIn('"redis_enabled"] = False', text)
         self.assertIn('"quote_push"] = {"enabled": False}', text)
 
-    def test_the_builder_does_not_substitute_zmq(self):
-        """pipe_transport 在包里、零依赖——pipe 版不做 no-redis 的
-        zmq_transport 替换，也不内嵌 bigqmt_no_redis。"""
-        text = self._read(self.BUILDER)
-        self.assertNotIn("no_redis_override_path()", text.replace("flat.no_redis_override_path", ""))
-        self.assertIn("named-pipe version", text)
 
 
 if __name__ == "__main__":

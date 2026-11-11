@@ -34,10 +34,10 @@ def _probe_market(ContextInfo):
         ticks = ContextInfo.get_full_tick([code])
         tick = (ticks or {}).get(code)
         if not tick:
-            print("[bigqmt_diagnostic] market tick missing code=%s raw=%s" % (code, ticks))
+            print("[bigqmt_diagnostic] 市场逐笔行情缺失 code=%s raw=%s" % (code, ticks))
         else:
             print(
-                "[bigqmt_diagnostic] market tick ok code=%s lastPrice=%s bid1=%s ask1=%s"
+                "[bigqmt_diagnostic] 市场逐笔行情正常 code=%s lastPrice=%s bid1=%s ask1=%s"
                 % (
                     code,
                     tick.get("lastPrice"),
@@ -46,15 +46,15 @@ def _probe_market(ContextInfo):
                 )
             )
     except Exception as exc:
-        print("[bigqmt_diagnostic] market tick failed: %s" % exc)
+        print("[bigqmt_diagnostic] 市场逐笔行情获取失败：%s" % exc)
 
     try:
         detail = ContextInfo.get_instrumentdetail(code)
         if not detail:
-            print("[bigqmt_diagnostic] instrument missing code=%s" % code)
+            print("[bigqmt_diagnostic] 标的信息缺失 code=%s" % code)
         else:
             print(
-                "[bigqmt_diagnostic] instrument ok code=%s status=%s up=%s down=%s"
+                "[bigqmt_diagnostic] 标的信息正常 code=%s status=%s up=%s down=%s"
                 % (
                     code,
                     detail.get("InstrumentStatus"),
@@ -63,24 +63,24 @@ def _probe_market(ContextInfo):
                 )
             )
     except Exception as exc:
-        print("[bigqmt_diagnostic] instrument failed: %s" % exc)
+        print("[bigqmt_diagnostic] 标的信息获取失败：%s" % exc)
 
 
 def _probe_positions(account_id):
     query = _resolve_runtime_name("get_trade_detail_data")
     if query is None:
-        print("[bigqmt_diagnostic] position failed: get_trade_detail_data missing")
+        print("[bigqmt_diagnostic] 持仓查询失败：缺少 get_trade_detail_data")
         return
     if not account_id:
-        print("[bigqmt_diagnostic] position skipped: account is empty")
+        print("[bigqmt_diagnostic] 已跳过持仓查询：账户为空")
         return
 
     try:
         positions = query(account_id, "STOCK", "POSITION") or []
-        print("[bigqmt_diagnostic] position ok account=%s count=%s" % (account_id, len(positions)))
+        print("[bigqmt_diagnostic] 持仓查询正常 account=%s count=%s" % (account_id, len(positions)))
         for pos in positions[:8]:
             print(
-                "[bigqmt_diagnostic] position item code=%s.%s name=%s volume=%s available=%s"
+                "[bigqmt_diagnostic] 持仓明细 code=%s.%s name=%s volume=%s available=%s"
                 % (
                     _safe_attr(pos, "m_strInstrumentID", ""),
                     _safe_attr(pos, "m_strExchangeID", ""),
@@ -90,7 +90,7 @@ def _probe_positions(account_id):
                 )
             )
     except Exception as exc:
-        print("[bigqmt_diagnostic] position failed account=%s error=%s" % (account_id, exc))
+        print("[bigqmt_diagnostic] 持仓查询失败 account=%s error=%s" % (account_id, exc))
 
 
 def _probe(ContextInfo, reason):
@@ -98,10 +98,10 @@ def _probe(ContextInfo, reason):
     if _PROBED:
         return
     _PROBED = True
-    print("[bigqmt_diagnostic] probe start reason=%s account=%s" % (reason, _ACCOUNT_ID))
+    print("[bigqmt_diagnostic] 探测开始 reason=%s account=%s" % (reason, _ACCOUNT_ID))
     _probe_market(ContextInfo)
     _probe_positions(_ACCOUNT_ID)
-    print("[bigqmt_diagnostic] probe end")
+    print("[bigqmt_diagnostic] 探测结束")
 
 
 def init(ContextInfo):
@@ -109,7 +109,7 @@ def init(ContextInfo):
     _ACCOUNT_ID = _detect_account()
     if _ACCOUNT_ID and hasattr(ContextInfo, "set_account"):
         ContextInfo.set_account(_ACCOUNT_ID)
-    print("[bigqmt_diagnostic] init ok account=%s" % _ACCOUNT_ID)
+    print("[bigqmt_diagnostic] 初始化成功 account=%s" % _ACCOUNT_ID)
     _probe(ContextInfo, "init")
 
 

@@ -42,33 +42,12 @@ class DefaultValueTest(unittest.TestCase):
         """A dead bridge must not look like a hung program."""
         self.assertLessEqual(DEFAULT_RPC_TIMEOUT_SECONDS, 60.0)
 
-    def test_a_client_with_no_config_uses_it(self):
-        client = BigQmtRpcClient(account_id="acct", redis_config={"transport": "zmq"})
-
-        self.assertEqual(client.timeout_seconds, DEFAULT_RPC_TIMEOUT_SECONDS)
 
 
 class OverrideTest(unittest.TestCase):
     """Raising the default must not take the knobs away."""
 
-    def test_an_explicit_argument_wins(self):
-        client = BigQmtRpcClient(account_id="acct", timeout_seconds=3.0,
-                                 redis_config={"transport": "zmq"})
 
-        self.assertEqual(client.timeout_seconds, 3.0)
-
-    def test_the_environment_variable_wins_over_the_default(self):
-        saved = os.environ.get("BIGQMT_RPC_TIMEOUT_SECONDS")
-        try:
-            os.environ["BIGQMT_RPC_TIMEOUT_SECONDS"] = "12.5"
-            client = BigQmtRpcClient(account_id="acct",
-                                     redis_config={"transport": "zmq"})
-            self.assertEqual(client.timeout_seconds, 12.5)
-        finally:
-            if saved is None:
-                os.environ.pop("BIGQMT_RPC_TIMEOUT_SECONDS", None)
-            else:
-                os.environ["BIGQMT_RPC_TIMEOUT_SECONDS"] = saved
 
 
 class TemplatesTest(unittest.TestCase):

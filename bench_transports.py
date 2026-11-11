@@ -1,16 +1,7 @@
 # coding: utf-8
-"""Compare end-to-end RPC latency across transports.
-
-Runs the same ping workload through:
-  * Redis (real server, the production path) via call_redis_rpc
-  * ZMQ (local tcp loopback, the low-latency path) via ZmqTransport
-
-Prints a side-by-side min/p50/p90/p99/max comparison. The ZMQ leg spins up a
-local in-process server so no QMT process is needed for the comparison.
-"""
+"""Measure end-to-end Redis RPC latency."""
 import argparse
 import os
-import socket
 import statistics
 import time
 import uuid
@@ -18,7 +9,6 @@ import uuid
 import redis
 
 from bigqmt_signal_trader.redis_rpc import call_redis_rpc
-from bigqmt_signal_trader.transports.zmq_transport import ZmqTransport
 
 
 def _load_redis_config():
@@ -50,14 +40,6 @@ def _load_redis_config():
 
 REDIS = _load_redis_config()
 ACCOUNT = os.environ.get("BIGQMT_ACCOUNT_ID", "")
-
-
-def _free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
 
 
 def _stats(name, lats):
@@ -94,48 +76,6 @@ def bench_redis(n):
     _stats("redis", lats)
 
 
-def bench_zmq(n):
-    port = _free_port()
-    addr = "tcp://127.0.0.1:%d" % port
-
-    def on_req(req):
-        return {
-            "schema_version": 1,
-            "request_id": req["request_id"],
-            "account_id": "zmq",
-            "method": req["method"],
-            "ok": True,
-            "data": {"pong": True},
-            "error": "",
-            "handled_at": "now",
-        }
-
-    server = ZmqTransport(bind_address=addr, account_id="zmq", recv_timeout_seconds=0.3)
-    server.start_receiving(on_req, background_threads=True)
-    time.sleep(0.3)
-    client = ZmqTransport(connect_address=addr, account_id="zmq")
-    time.sleep(0.2)
-    lats = []
-    for _ in range(n):
-        req = {
-            "schema_version": 1,
-            "request_id": uuid.uuid4().hex,
-            "account_id": "zmq",
-            "method": "ping",
-            "params": {},
-            "reply_channel": "",
-            "reply_list": "",
-            "reply_key": "",
-            "ttl_seconds": 5,
-        }
-        t0 = time.time()
-        client.send_request(req, timeout_seconds=3.0)
-        lats.append((time.time() - t0) * 1000)
-    _stats("zmq", lats)
-    server.stop()
-    client.stop()
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-n", "--count", type=int, default=100, help="requests per transport")
@@ -144,7 +84,6 @@ def main():
     print("=== transport latency comparison (n=%d each) ===" % args.count)
     if not args.skip_redis:
         bench_redis(args.count)
-    bench_zmq(args.count)
 
 
 if __name__ == "__main__":

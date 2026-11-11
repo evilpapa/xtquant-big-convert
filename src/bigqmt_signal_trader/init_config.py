@@ -30,22 +30,16 @@ import sys
 
 
 ACCOUNT_TYPES = ("STOCK", "CREDIT", "FUTURE", "STOCK_OPTION", "HUGANGTONG", "SHENGANGTONG")
-TRANSPORTS = ("redis", "zmq")
-DEPLOYMENTS = ("package", "single_file", "single_file_no_redis")
+TRANSPORTS = ("redis",)
+DEPLOYMENTS = ("package", "single_file")
 
 DEPLOYMENT_LABELS = {
     "package": "标准包部署（把 src/ 同步到 QMT 的 python 目录）",
-    "single_file": "单文件（base64 内嵌，redis 或 zmq 均可）",
-    "single_file_no_redis": "单文件（明文代码，强制 zmq；沙箱拒绝 import redis 时用）",
+    "single_file": "单文件（base64 内嵌）",
 }
 
 BUILDERS = {
     "single_file": ("build_single_file.py", "BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py", "utf-8"),
-    "single_file_no_redis": (
-        "build_no_redis_single_file_flat.py",
-        "BIGQMT_DRYRUN_NO_REDIS_FLAT_ALL_IN_ONE.py",
-        "gbk",
-    ),
 }
 
 DEFAULTS = {
@@ -68,54 +62,10 @@ DEFAULTS = {
 # rendering
 # ----------------------------------------------------------------------
 
-def _zmq_default_port(account_id):
-    """The zmq transport derives its port from the account id when no explicit
-    address is configured; mirror that so the client block points somewhere
-    real instead of a placeholder."""
-    # Keep one source of truth for the derivation.  Duplicating the constants
-    # here previously made bigqmt-init generate a client address in the 15000
-    # range while the QMT-side ZmqTransport listened in the 15560 range.
-    from .transports.zmq_transport import _default_zmq_port
-
-    return _default_zmq_port(account_id)
-
-
-def _zmq_server_bind_host(client_host):
-    """Bind loopback for same-host clients, wildcard for a remote QMT host.
-
-    ``client_host`` is the address the external program uses to reach the QMT
-    machine.  A server cannot bind that public/DNS name reliably, so a remote
-    deployment listens on all local interfaces and leaves interface/firewall
-    restriction to the operator.
-    """
-    normalized = str(client_host or "").strip().lower()
-    if normalized in ("", "127.0.0.1", "localhost"):
-        from .transports.zmq_transport import DEFAULT_ZMQ_HOST
-
-        return DEFAULT_ZMQ_HOST
-    return "0.0.0.0"
-
-
 def _background_threads_for(transport):
     """Which rpc_background_threads value this transport wants: False, all of them.
 
-    Not a safety choice -- trade-context methods are excluded from listener
-    processing no matter what this says (#244) -- purely latency. The adjust
-    drain costs at most one tick; a background thread costs one tick per
-    GIL acquisition, and a round trip has several. Measured on the live
-    terminal 2026-09-22 (0.3.50, 100ms tick, min/median/max ms, #343):
-
-        method                  redis+bg      zmq+bg        zmq+drain    redis+drain
-        ping                    199/407/605   98/103/303    10/87/108    23/102/106
-        get_full_tick           199/338/473   8/196/306     8/90/107     26/102/107
-        query_stock_positions   102/197/320   396/490/600   8/88/103     85/103/109
-        query_stock_orders      33/175/200    399/493/613   4/88/105     86/102/109
-
-    redis used to be the exception ("brpop wakes immediately", 3.4ms in the
-    0.3.28 table) -- but that table was measured right after restarting the
-    strategy, inside QMT's history replay, when adjust runs ~5000 times a
-    second and every hop is sub-millisecond. At the steady 10Hz that follows
-    the replay, redis+background is the slowest of the four (#351).
+    Trade-context methods always run on the adjust thread.
     """
     return False
 
@@ -142,14 +92,6 @@ def render_server_config(answers):
         '    "username": %r,' % str(answers["username"]),
         '    "password": %r,' % str(answers["password"]),
     ]
-    if str(answers["transport"]) == "zmq":
-        port = _zmq_default_port(answers["account_id"])
-        bind_host = _zmq_server_bind_host(answers["host"])
-        lines.extend([
-            "    # Same-host ZMQ stays on loopback. A remote QMT address makes the",
-            "    # server bind all interfaces; restrict that port with a firewall.",
-            '    "zmq": {"bind_address": "tcp://%s:%d"},' % (bind_host, port),
-        ])
     if answers["allow_order_methods"]:
         lines.append("    # Remote order/cancel is ON. Turn it off if you only need queries.")
     else:
@@ -207,18 +149,6 @@ def render_client_config(answers):
         '    "username": %r,' % str(answers["username"]),
         '    "password": %r,' % str(answers["password"]),
     ]
-    if transport == "zmq":
-        port = _zmq_default_port(answers["account_id"])
-        lines.extend([
-            "    # QMT host/port are explicit so RPC and quote-push clients use the",
-            "    # same machine. The server config generated alongside this file",
-            "    # binds loopback for local use or 0.0.0.0 for a remote QMT host.",
-            '    "zmq": {',
-            '        "host": %r,' % str(answers["host"]),
-            '        "port": %d,' % port,
-            '        "connect_address": "tcp://%s:%d",' % (str(answers["host"]), port),
-            "    },",
-        ])
     lines.extend([
         "}",
         "",
@@ -249,17 +179,6 @@ def render_single_file_config_block(answers):
     and this does not is simply lost, silently, and editing local_config.py on
     the QMT machine changes nothing (issue #153).
 
-    Two keys used to be missing:
-
-      * ``zmq`` -- so the transport fell back to DEFAULT_ZMQ_HOST and bound
-        tcp://127.0.0.1 no matter what address was answered. The reporter saw
-        `zmq started bound=tcp://127.0.0.1:15618` while their local_config said
-        0.0.0.0, and had to patch DEFAULT_ZMQ_HOST in the generated file.
-      * ``transport`` -- the no-redis FLAT build forces zmq afterwards so it
-        got away with it, but the base64 single_file build does not: answering
-        transport=zmq there produced a server that ran redis while the client
-        spoke zmq, which is exactly the "客户端 transport 和服务端不匹配"
-        timeout the ping check reports.
     """
     transport = str(answers["transport"])
     lines = [
@@ -275,16 +194,6 @@ def render_single_file_config_block(answers):
         '    "username": %r,' % str(answers["username"]),
         '    "password": %r,' % str(answers["password"]),
     ]
-    if transport == "zmq":
-        port = _zmq_default_port(answers["account_id"])
-        bind_host = _zmq_server_bind_host(answers["host"])
-        lines.extend([
-            "    # Same-host ZMQ stays on loopback. A remote QMT address makes the",
-            "    # server bind all interfaces; restrict that port with a firewall.",
-            "    # A single-file build has no local_config.py to read, so this",
-            "    # block is the only place the bind address can come from (#153).",
-            '    "zmq": {"bind_address": "tcp://%s:%d"},' % (bind_host, port),
-        ])
     lines.extend([
         '    "rpc_allow_order_methods": %r,' % bool(answers["allow_order_methods"]),
         '    "rpc_process_in_listener": True,',
@@ -400,20 +309,6 @@ def prompt_answers(write, read, read_secret=None):
         answers["password"] = _ask(
             write, read, "Redis 密码（无则回车，输入不回显）", "",
             secret=True, read_secret=read_secret)
-    else:
-        answers["host"] = _ask(
-            write, read,
-            "QMT 终端地址（同机用 127.0.0.1；跨机填 QMT 主机 IP/主机名）",
-            DEFAULTS["host"],
-        )
-        answers["port"] = _zmq_default_port(answers["account_id"])
-        write("  zmq 端口按账号推导为 %d（服务端日志会打印实际绑定端口）。\n"
-              % answers["port"])
-        if _zmq_server_bind_host(answers["host"]) == "0.0.0.0":
-            write(
-                "  跨机 ZMQ 会让 QMT 服务端绑定 0.0.0.0；请用 Windows "
-                "防火墙把该端口限制到可信客户端。\n"
-            )
 
     write("\n远程下单/撤单默认关闭。打开后，任何能连上这条通道的程序都可以下单。\n")
     answers["allow_order_methods"] = _ask_bool(
@@ -421,10 +316,6 @@ def prompt_answers(write, read, read_secret=None):
 
     answers["deployment"] = _ask(
         write, read, "部署方式", default="package", choices=DEPLOYMENTS)
-
-    if answers["deployment"] == "single_file_no_redis":
-        answers["transport"] = "zmq"
-        write("  单文件无 redis 版强制使用 zmq 传输。\n")
 
     answers["qmt_python_dir"] = _ask(
         write, read, "QMT 的 python 目录（回车则写到当前目录）", "")

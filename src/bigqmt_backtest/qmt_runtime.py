@@ -1,9 +1,4 @@
-"""QMT-native backtest service exposed to external strategies over ZMQ.
-
-QMT remains the only backtest engine and matching system.  The ZMQ listener
-thread only queues commands; every QMT API call is executed by ``handlebar`` on
-QMT's callback thread.
-"""
+"""QMT-native backtest sessions and bar extraction."""
 
 import datetime as dt
 import threading
@@ -12,7 +7,6 @@ import uuid
 from .data_feed import StreamingBarFeed, parse_datetime
 from .models import normalize_symbol
 from .protocol import BacktestBridgeProtocol
-from .zmq_server import ZmqBacktestServer
 
 
 _CONFIG = {}
@@ -286,7 +280,7 @@ class QmtNativeBacktestSession(object):
         run_id = str(options.get("run_id") or ("qmt-native-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S")))
         self.config = NativeSessionConfig(
             run_id=run_id,
-            strategy_name=options.get("strategy_name") or "ZMQ_BACKTEST",
+            strategy_name=options.get("strategy_name") or "QMT_BACKTEST",
             account_id=options.get("account_id") or "",
         )
         self.account_type = str(options.get("account_type") or "STOCK")
@@ -381,7 +375,7 @@ class QmtNativeBacktestSession(object):
         limit_price = payload.get("limit_price")
         if order_type == "LIMIT" and limit_price in (None, ""):
             raise ValueError("limit_price is required for LIMIT order")
-        client_order_id = str(payload.get("client_order_id") or ("zmq:" + uuid.uuid4().hex[:20]))
+        client_order_id = str(payload.get("client_order_id") or ("backtest:" + uuid.uuid4().hex[:20]))
         record = {
             "order_id": client_order_id,
             "client_order_id": client_order_id,
@@ -469,7 +463,7 @@ class QmtNativeBacktestSession(object):
                     if record is not None:
                         record["status"] = "REJECTED"
                         record["reject_reason"] = "%s: %s" % (exc.__class__.__name__, exc)
-                print("[bigqmt_backtest] QMT command failed kind=%s error=%s" % (command.get("kind"), exc))
+                print("[bigqmt_backtest] QMT 命令执行失败 kind=%s error=%s" % (command.get("kind"), exc))
 
     def on_bar(self, context):
         self.bind_context(context)
@@ -499,7 +493,7 @@ class QmtNativeBacktestSession(object):
         self._execute_commands(commands, context)
         self._refresh_qmt_state()
         print(
-            "[bigqmt_backtest] QMT native bar released index=%d datetime=%s symbol=%s commands=%d"
+            "[bigqmt_backtest] QMT 原生 K 线已释放 index=%d datetime=%s symbol=%s commands=%d"
             % (index, row["datetime"], row["symbol"], len(commands))
         )
         return True
@@ -615,7 +609,7 @@ class QmtNativeBacktestSession(object):
             self._published_fill_keys.update(new_fill_keys)
             self.qmt_completed = True
             self._condition.notify_all()
-        print("[bigqmt_backtest] QMT native backtest completed bars=%d" % len(self.feed))
+        print("[bigqmt_backtest] QMT 原生回测完成 bars=%d" % len(self.feed))
 
     def on_order(self, order):
         item = {
@@ -669,7 +663,7 @@ class QmtNativeBacktestSession(object):
                 return list(call() or [])
             except Exception as exc:
                 last_error = exc
-        print("[bigqmt_backtest] QMT query failed type=%s error=%s" % (detail_type, last_error))
+        print("[bigqmt_backtest] QMT 查询失败 type=%s error=%s" % (detail_type, last_error))
         return []
 
     def _refresh_qmt_state(self):
@@ -701,134 +695,3 @@ class QmtNativeBacktestSession(object):
             self.on_order(row)
         for row in trade_rows:
             self.on_trade(row)
-
-
-class QmtBacktestBridgeRuntime(object):
-    def __init__(self, config=None, qmt_api=None):
-        config = dict(config or {})
-        bind_endpoint = str(config.pop("bind_endpoint", "tcp://127.0.0.1:16662"))
-        self.stop_grace_seconds = float(
-            config.pop("stop_grace_seconds", _STOP_GRACE_SECONDS))
-        self.engine = QmtNativeBacktestSession(config=config, qmt_api=qmt_api)
-        self.protocol = BacktestBridgeProtocol(self.engine)
-        self.server = ZmqBacktestServer(self.protocol, endpoint=bind_endpoint, exit_on_finish=True)
-        self.server_thread = None
-
-    def start(self, context):
-        if self.server_thread is not None:
-            return
-        self.engine.bind_context(context)
-        self.server_thread = threading.Thread(
-            target=self.server.serve_forever,
-            name="bigqmt-native-backtest-zmq",
-            daemon=True,
-        )
-        self.server_thread.start()
-        if not self.server.wait_until_ready(5.0) or not self.server.actual_endpoint:
-            reason = self.server.bind_error
-            raise RuntimeError(
-                "QMT native backtest ZMQ service failed to bind %s%s"
-                % (self.server.endpoint,
-                   ": %s. A previous run may still hold the port -- stop it, "
-                   "or wait a moment and start again" % reason if reason else ""))
-        print(
-            "[bigqmt_backtest] QMT native service started run_id=%s endpoint=%s account=%s live_ready=False"
-            % (self.engine.config.run_id, self.server.actual_endpoint, self.engine.config.account_id)
-        )
-
-    def on_bar(self, context):
-        return self.engine.on_bar(context)
-
-    def on_order(self, order):
-        return self.engine.on_order(order)
-
-    def on_trade(self, trade):
-        return self.engine.on_trade(trade)
-
-    def on_qmt_stop(self):
-        self.engine.on_qmt_stop()
-
-    def wait_for_client_result(self, timeout_seconds=None):
-        """Give a running client time to read ``done`` and collect finish().
-
-        Bounded on purpose: a client that walked away must not strand the
-        port (issue #109). Returns True only if the client actually collected.
-        """
-        if timeout_seconds is None:
-            timeout_seconds = self.stop_grace_seconds
-        return self.engine.wait_for_result_collected(timeout_seconds)
-
-    def stop_server(self, timeout_seconds=5.0):
-        """Stop serving and wait for the port to be released.
-
-        Without the wait, a re-run binds while the previous socket is still
-        open and fails with EADDRINUSE -- the endpoint is a fixed port, so
-        there is no fallback to a free one (issue #109).
-        """
-        self.server.stop()
-        thread = self.server_thread
-        if thread is not None and thread.is_alive():
-            self.server.wait_until_stopped(timeout_seconds)
-            thread.join(timeout_seconds)
-        self.server_thread = None
-
-
-def reset_runtime():
-    global _RUNTIME
-    if _RUNTIME is not None:
-        _RUNTIME.stop_server()
-    _RUNTIME = None
-
-
-def get_runtime():
-    return _RUNTIME
-
-
-def init(ContextInfo):
-    global _RUNTIME
-    reset_runtime()
-    _RUNTIME = QmtBacktestBridgeRuntime(_CONFIG, _QMT_API)
-    _RUNTIME.start(ContextInfo)
-    return _RUNTIME
-
-
-def handlebar(ContextInfo):
-    if _RUNTIME is None:
-        init(ContextInfo)
-    return _RUNTIME.on_bar(ContextInfo)
-
-
-def order_callback(ContextInfo, orderInfo):
-    if _RUNTIME is not None:
-        return _RUNTIME.on_order(orderInfo)
-    return None
-
-
-def deal_callback(ContextInfo, dealInfo):
-    if _RUNTIME is not None:
-        return _RUNTIME.on_trade(dealInfo)
-    return None
-
-
-def stop(ContextInfo=None):
-    """QMT calls this when the strategy is stopped -- including the stop
-    button next to the chart.
-
-    This used to tell the engine and leave the ZMQ service running, so the
-    port stayed bound to a strategy that was no longer there and the next
-    run failed to bind (issue #109).
-    """
-    if _RUNTIME is not None:
-        _RUNTIME.on_qmt_stop()
-        # Hand the client its ending before the socket goes away. on_qmt_stop
-        # wakes a next_bar parked in wait_for, but that reply still has to
-        # travel back over ZMQ, and run() calls finish() immediately after it
-        # breaks on `done` -- tearing down first loses both, and the client
-        # sees "backtest ZMQ request timed out: next_bar" at the end of a run
-        # that actually completed (issue #150).
-        _RUNTIME.wait_for_client_result()
-        _RUNTIME.stop_server()
-
-
-def after_backtest(ContextInfo=None):
-    return stop(ContextInfo)

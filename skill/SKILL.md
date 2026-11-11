@@ -26,9 +26,9 @@ description: "通过统一 CLI 脚本驱动大 QMT 迅投量化交易端的全�
 ### 第 1 步：客户端安装包
 
 ```bash
-pip install "xtquant-big-convert[redis]"   # redis 传输（默认，推荐）
-# 或 zmq 同机低延迟：pip install xtquant-big-convert（基础版已含 pyzmq）
+pip install "xtquant-big-convert[redis]"
 ```
+
 
 > 没发布到 PyPI 的私有 fork 用源码安装：`git clone <repo> && cd xtquant_big_convert && pip install -e .[redis]`
 
@@ -49,33 +49,25 @@ pip 安装后的文件位置可以用这条命令定位（输出目录里就有�
 python -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(m.__file__))"
 ```
 
-> QMT 沙箱若拒绝 `import redis`（部分券商白名单拦截），改用仓库里的 `bigqmt_no_redis/` 无 redis 版本（自包含 ZMQ 传输）。
 
 ### 第 3 步：创建 QMT 端私有配置
 
 在 QMT 的 `python` 目录创建 `bigqmt_signal_trader_local_config.py`（含账号密码，**不要提交 git**）：
 
 ```python
-# coding: utf-8
 BIGQMT_ACCOUNT_ID = "资金账号"
 BIGQMT_REDIS_CONFIG = {
     "host": "Redis地址", "port": 6379, "db": 5, "password": "Redis密码",
-    "rpc_allow_order_methods": False,     # 下单开关，默认关闭；确认风控后改 True
+    "rpc_allow_order_methods": False,
     "rpc_process_in_listener": True,
     "rpc_listener_methods": ("*",),
-    "rpc_background_threads": True,       # redis 用后台收包线程最快；zmq/pipe 要改 False
+    "rpc_background_threads": False,
     "schedule_adjust": True,
     "schedule_adjust_interval": "100nMilliSecond",
 }
 ```
 
-> **这个开关按传输选，选反了差几十倍**（实测见 docs/USER_GUIDE.md 的传输对比表）：
-> redis 用 `True`（3.4ms），zmq 用 `False` 走 adjust drain（zmq 15.8ms）。
-> zmq 配 `True` 是 592.9ms —— 慢 37 倍。原因是 zmq / pipe 的后台线程每次都要付
-> 跨线程 GIL 交接（约一个 adjust tick），redis 的 `brpop` 唤醒没有这一步。
->
-> 切 zmq：配置里加 `"transport": "zmq"` 并把 `rpc_background_threads` 改 `False`
-> （QMT 端需装 pyzmq 19.0.2，Python 3.6 最后支持的版本）。
+
 
 ### 第 4 步：在 QMT 策略编辑器运行入口
 
@@ -103,7 +95,6 @@ $env:BIGQMT_REDIS_HOST="Redis地址"; $env:BIGQMT_REDIS_PORT="6379"
 $env:BIGQMT_REDIS_DB="5"; $env:BIGQMT_REDIS_PASSWORD="Redis密码"
 ```
 
-然后验证（redis ~3ms / zmq+drain ~16ms 为正常，实测口径见 docs/USER_GUIDE.md 传输对比表）：
 
 ```bash
 python scripts/qmt.py ping
@@ -113,8 +104,7 @@ python scripts/qmt.py ping
 
 | 现象 | 排查 |
 |------|------|
-| `ping` 超时 | 客户端/服务端 transport 不一致（一边 redis 一边 zmq）；QMT 端服务没启动；Redis 地址/密码/db 不一致 |
-| QMT 面板报 `import redis` 被拒 | 换 `bigqmt_no_redis/` 无 redis 版本 |
+| QMT 面板报 `import redis` 被拒 | 检查券商限制；Windows 同机可评估命名管道 |
 | 启动了但查询全空 | 账号没对上：服务端 `BIGQMT_ACCOUNT_ID` vs 客户端 `BIGQMT_ACCOUNT_ID`；QMT 需在实盘模式 |
 | 下单报 `ORDER_DISABLED` | 正常保护，服务端配置 `rpc_allow_order_methods` 改 `True` 才放行 |
 | 详细错误日志 | QMT python 目录下 `logs/bigqmt_*.log`（保留 7 天），排错首选 |
@@ -127,7 +117,6 @@ python scripts/qmt.py ping
 python scripts/qmt.py ping
 ```
 
-返回 `ok: true` 且 `latency_ms` 合理（redis ~3ms / zmq+drain ~16ms）即表示服务端就绪。
 
 ### 第 1 步：一键快照（资产+持仓+委托+成交）
 

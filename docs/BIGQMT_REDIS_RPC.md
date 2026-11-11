@@ -390,18 +390,9 @@ p50 1012~1013ms（与 interval 无关），2026-09-22 同一终端 drain 下 103
 自身的开销（当天委托/成交行数），调 interval 无效。要低延迟拿持仓,走**客户端 redis
 缓存**(position_sync 已在写)而非每次实时查。
 
-### zmq 真机实测(同机 localhost)
-
-- inline:`ping` p50 **0.4-0.5ms**;`get_market_data_ex` 因 handler 较重几乎必吃满一个尾窗口
-  (500ms 档 p50≈495ms,100ms 档 p50≈96ms)。
-- deferred:持仓/委托/成交 p50 **~1s**。
-- 下单/撤单已在**实盘**验证:`order_stock` 挂单(status=50 已报)→ `query_stock_orders` 拿到
-  sysid → `cancel_order_stock` 成功、无残留。
-
 ### 传输与后台线程
 
 - **redis**(默认,跨机):`rpc_process_in_listener=True`。
-- **zmq**(同机免 Redis):只加 `transport="zmq"` 一行,端口按账号派生 `tcp://127.0.0.1:1556x`。
 - **`rpc_background_threads` 一律 `False`**(adjust drain)。后台收包线程每拿一次 GIL 付一个
   adjust tick,redis 回包 8 次往返就是 ~400ms(#343);drain 下所有传输都是 ≤1 tick。不写这个
   键时能 drain 的传输默认就是 drain,只有没有 drain 实现的保留收包线程。
@@ -410,7 +401,7 @@ p50 1012~1013ms（与 interval 无关），2026-09-22 同一终端 drain 下 103
   从 adjust 上拿掉的原因。现在按方法(`get_financial_data` / `get_raw_financial_data`、
   `call_formula` / `gen_factor_index` 等)或按大小(市场令牌的 `get_full_tick`、超过
   `rpc_heavy_codes_threshold`=20 个代码、`period="tick"`、按日期窗口取 K 线)判定为重的读请求交给
-  一条工作线程,回包由 adjust 线程在下一拍发出(zmq 的 ROUTER socket 不能跨线程用)。
+  一条工作线程,回包由 adjust 线程在下一拍发出。
   重读的往返多付 1~2 拍;轻读和所有交易查询照旧一拍、照旧在 adjust 线程。
   实测（2026-09-22，100ms 拍，每种读在工作线程上连打，看终端 `adjust cadence` 的 avg / max）：
   全市场 `get_full_tick(["SH","SZ"])` 读本身 ~200ms，拍 0.100 / 0.25–0.33s；三只 4 个月 1m 窗口
@@ -420,7 +411,6 @@ p50 1012~1013ms（与 interval 无关），2026-09-22 同一终端 drain 下 103
   照旧 adjust 线程。
   `probe_capabilities` 的 `thread_routing.heavy_sample` 报每类走哪边。后台线程模式下没有这条线程
   (收包线程本来就在 adjust 之外跑)。
-- QMT 编辑器可直接加载 `BIGQMT_ZMQ_DRYRUN.py`；该入口强制使用 ZMQ，并复用原有 Bridge 加载逻辑。
 - 内置 Redis 客户端读取含股票代码的原始 JSON 会触发 `Sensitive Data Detected`;客户端 helper 默认
   对请求做安全编码。
 

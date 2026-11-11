@@ -104,7 +104,8 @@ class SecondaryExecPoller(object):
             except Exception as exc:
                 self._failures += 1
                 if self._failures <= 3 or self._failures % 100 == 0:
-                    self._log("secondary exec poll failed for %s***: %s" % (account[:3], exc))
+                    self._log("次级账户 %s*** 成交回报轮询失败：%s"
+                              % (account[:3], exc))
                 continue
             first = not state["baselined"]
             for row in orders:
@@ -135,7 +136,8 @@ class SecondaryExecPoller(object):
         except Exception as exc:
             self._failures += 1
             if self._failures <= 3 or self._failures % 100 == 0:
-                self._log("secondary exec publish %s failed for %s***: %s" % (kind, account[:3], exc))
+                self._log("次级账户 %s*** 发布 %s 成交回报失败：%s"
+                          % (account[:3], kind, exc))
             return 0
 
     def status(self):

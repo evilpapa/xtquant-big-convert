@@ -129,22 +129,6 @@ class FlagHygieneTest(unittest.TestCase):
 
         self.assertIn("response.pop(TYPED_PAYLOAD_FLAG, None) is False", source)
 
-    def test_an_absent_flag_means_walk(self):
-        """In-process routing never sees the text. Assuming "nothing to do"
-        there would skip a rebuild that was needed."""
-        import io
-        path = os.path.join(ROOT, "src", "bigqmt_signal_trader", "transports",
-                            "zmq_transport.py")
-        with io.open(path, encoding="utf-8") as handle:
-            source = handle.read()
-        start = source.index("def _loads(raw):")
-        end = source.index("\nclass ", start)
-        body = source[start:end]
-
-        # The already-a-dict branch returns before any flag is set.
-        self.assertIn("return dict(raw)", body)
-        self.assertLess(body.index("return dict(raw)"),
-                        body.index("TYPED_PAYLOAD_FLAG"))
 
 
 class ServerSideCostTest(unittest.TestCase):
