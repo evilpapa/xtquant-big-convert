@@ -1,12 +1,10 @@
 # RPC 传输层
 
-RPC 支持 `redis`、`mysql` 和 Windows 命名管道 `pipe`；`shm` 是占位实现。两端的 `transport` 配置必须一致。
+RPC 使用 `redis`；`shm` 是占位实现。两端的 `transport` 配置必须一致。
 
 - Redis 使用请求队列及响应通道；安装 `xtquant-big-convert[redis]`。
-- MySQL 使用数据库轮询；安装 `xtquant-big-convert[mysql]`。
-- 命名管道仅支持 Windows 同机通信，双方须配置相同的 `pipe_name`。
 
-默认使用 Redis。服务端在 `bigqmt_signal_trader_local_config.py` 配置 `BIGQMT_REDIS_CONFIG`，客户端在 `bigqmt_signal_trader_client_config.py` 配置相应传输。调用 `bigqmt-init` 可生成 Redis 配置。
+服务端在 `bigqmt_signal_trader_local_config.py` 配置 `BIGQMT_REDIS_CONFIG`，客户端在 `bigqmt_signal_trader_client_config.py` 配置相应传输。调用 `bigqmt-init` 可生成 Redis 配置。
 
 ```python
 BIGQMT_REDIS_CONFIG = {
@@ -19,7 +17,7 @@ BIGQMT_REDIS_CONFIG = {
 }
 ```
 
-命名管道单文件可通过 `python tools/build_pipe_single_file_flat.py` 生成。部署和交易环境须符合券商要求。
+部署前请确认券商要求。部署和交易环境须符合券商要求。
 
 ## 策略名与重启恢复
 

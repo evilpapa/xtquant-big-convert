@@ -278,36 +278,10 @@ def _quote_client_id():
 
 
 def _build_quote_push_channel(client):
-    """Build the push-channel subscriber matching the RPC transport: redis
-    deployments derive the channel locally; zmq deployments connect to the
-    server PUB socket (host from zmq config, RPC port + 1).
-
-    Module-level on purpose: BigQmtXtTrader's exec-event listener needs it too,
-    and when it lived only on BigQmtXtData the trader's call raised
-    AttributeError into a silent retry loop — zmq deployments never got a
-    single exec callback (#366, broken since #76).
-
-    pipe/mysql 且没有显式 redis 配置时直接报错而不是拨默认的
-    127.0.0.1:6379——外连即杀的沙箱里那一次拨号就是杀进程（2026-09-24
-    实盘逐行核对）。
-    """
+    """Build a Redis push subscriber when Redis is configured."""
     from .quote_push_channel import RedisQuotePushChannel
 
     transport_name = str(getattr(client, "transport_name", "redis") or "redis").lower()
-    if transport_name in ("pipe",):
-        # #408: the events pipe path derives from the RPC pipe block exactly
-        # as the server derives it -- no discovery needed. An explicit redis
-        # block keeps winning (config is an opt-in): the pipe channel is the
-        # no-redis default precisely because a named pipe is not a socket and
-        # cannot trip the connection-killing sandbox the gate guards.
-        if not getattr(client, "_redis_explicit", False):
-            from .transports.pipe_push_channel import (
-                PipeQuotePushChannel, pipe_events_path,
-            )
-
-            pipe_config = dict(getattr(client, "pipe_config", {}) or {})
-            address = pipe_events_path(pipe_config.get("pipe_name"), client.account_id)
-            return PipeQuotePushChannel(connect_address=address)
     if (transport_name not in ("redis", "", "default")
             and not getattr(client, "_redis_explicit", True)):
         raise RuntimeError(
@@ -1371,7 +1345,7 @@ class BigQmtRpcClient:
         )
         self.redis_client = redis_client
         # 「用户显式配了 redis」和「默认填充」要分得开：非 redis 传输的客户端
-        # （pipe/mysql）默认没有 redis 可连，事件线程每轮开头那次 ping 会照
+        # 默认没有 redis 可连，事件线程每轮开头那次 ping 会照
         # 127.0.0.1:6379 拨——在外连即杀的沙箱里一次探测就死（2026-09-24
         # 实盘逐行核对）。显式信号：合并后的配置或环境变量里给了 host /
         # username / password 任何一个。
@@ -1470,7 +1444,6 @@ class BigQmtRpcClient:
             or os.environ.get("BIGQMT_RPC_TRANSPORT")
             or "redis"
         ).lower()
-        self.pipe_config = dict(merged_redis_config.get("pipe") or {})
         self._transport_instance = None  # lazily built by _transport()
         # FormulaServer read fast-path. QMT's C++ quote service (port 58600)
         # answers reference/history reads in ~0.07ms without touching the QMT
@@ -1511,16 +1484,9 @@ class BigQmtRpcClient:
                 return None
             from .transports.factory import build_transport
 
-            client_config = load_client_config()
-            config_redis = dict(client_config.get("redis_config") or {})
-            factory_config = {
-                # 管道名两侧必须一致，否则客户端连的是另一条线 —— 表现为
-                # 「连不上」而不是「配错了」，最难查的那种。
-                "pipe": dict(config_redis.get("pipe") or {}),
-            }
             self._transport_instance = build_transport(
                 self.transport_name,
-                factory_config,
+                {},
                 account_id=self.account_id,
                 print_prefix="[bigqmt_client]",
             )
@@ -1529,12 +1495,8 @@ class BigQmtRpcClient:
     def close(self):
         """Release the swappable transport's connections, if one was built.
 
-        The transport is built lazily and otherwise lives until process exit:
-        every per-thread pipe connection it opened stays up, and a pipe
-        connection costs the server a worker thread each (#431). Called by
-        ``BigQmtXtTrader.stop()``; xtdata-only clients that want the same
-        teardown can call it directly. Safe to call more than once -- the
-        transport is rebuilt lazily if the client is used again afterwards.
+        Called by ``BigQmtXtTrader.stop()``. Safe to call more than once;
+        the transport is rebuilt lazily if the client is used again.
         """
         transport = self._transport_instance
         self._transport_instance = None
@@ -4829,8 +4791,7 @@ class BigQmtXtTrader:
             thread.join(1.0)
         self._event_thread = None
         # The trader built its client in __init__, so it owns the transport
-        # too: without this, every per-thread pipe connection lives until
-        # process exit, and each one costs the server a worker thread (#431).
+        # too, and releases its transport connections.
         try:
             self.client.close()
         except Exception:
@@ -4904,44 +4865,10 @@ class BigQmtXtTrader:
         except Exception:
             log.exception("用户回调执行失败：on_account_status")
 
-    def _event_loop_push_channel(self):
-        """One push-channel round: zmq exec events arrive on the same PUB
-        socket as whole-quote data.
-
-        Reuses _build_quote_push_channel so the address derivation stays in one
-        place. Single round: returns when the account changes or the channel
-        dies, so the caller's per-round channel selection runs again (Redis may
-        have come back, or gone away).
-        """
-        from .exec_events import EXEC_TOPICS
-
-        topics = sorted(set(EXEC_TOPICS.values()))
-        channel = None
-        account_id = str(self.client.account_id or "")
-        try:
-            channel = _build_quote_push_channel(self.client)
-            channel.start_subscriber(topics, self._on_push_exec_event)
-            self._event_ready.set()          # see the redis path (#247)
-            while self._event_running:
-                if str(self.client.account_id or "") != account_id:
-                    return       # account changed -> rebuild against the new address
-                time.sleep(0.5)
-        except Exception:
-            # 静默重试养大了 #366（方法不存在 -> AttributeError -> 永远收不到
-            # 回调，外面什么都看不见）。失败必须留痕。
-            log.exception("成交回报推送通道本轮失败，正在重试")
-            time.sleep(1.0)
-        finally:
-            if channel is not None:
-                try:
-                    channel.stop()
-                except Exception:
-                    pass
-
     def _event_loop_poll(self):
         """One poll-loop round: synthesize exec events by diffing queries (#372).
 
-        pipe / mysql 没有推送通道、redis 也不可达时，查询 RPC 仍然通——按
+        没有推送通道、redis 也不可达时，查询 RPC 仍然通——按
         「服务端给副账号做的 #320 轮询」同一个模式，在客户端按 sysid+status
         diff，合成与推送完全同形的 on_stock_order / on_stock_trade /
         on_order_error。首轮只建状态不补发（已有委托不是「新事件」）；回调
@@ -5085,17 +5012,11 @@ class BigQmtXtTrader:
             redis_client = self._exec_events_redis_or_none()
             if redis_client is not None:
                 self._event_loop_redis(redis_client)
-            elif self._exec_transport_uses_push_channel():
-                self._event_loop_push_channel()
             else:
                 # mysql 没有推送通道（redis 传输的 redis 宕了也是）——
                 # 查询 RPC 还通，就轮询合成回调（#372）；查询也连续失败时
                 # 它会自己退回来，外层重新探 redis。
                 self._event_loop_poll()
-
-    def _exec_transport_uses_push_channel(self):
-        # zmq and pipe both carry exec events on their push channel (#76, #408).
-        return str(getattr(self.client, "transport_name", "redis") or "redis").lower() in ("pipe",)
 
     def _exec_events_redis_or_none(self):
         """A REACHABLE Redis client for the exec-event channels, or None.
@@ -5105,8 +5026,7 @@ class BigQmtXtTrader:
         choice must reflect reachability, not configuration.
 
         非 redis 传输且没有显式 redis 配置时整步跳过（不建 client、不
-        ping）：pipe/mysql 客户端默认没有 redis 可连，照默认 127.0.0.1:6379
-        拨的那一下在外连即杀的沙箱里就是杀进程（2026-09-24 实盘核对）。
+        ping），避免连接未配置的 Redis。
         """
         transport_name = str(getattr(self.client, "transport_name", "redis") or "redis").lower()
         if (transport_name not in ("redis", "", "default")
@@ -6435,9 +6355,8 @@ class BigQmtXtTrader:
     def _has_push_channel(self):
         """Whether exec events can reach this client at all (#345).
 
-        redis carries them on pub/sub, zmq on the PUB socket; pipe / mysql /
-        shm have no push path, so nothing the server emits after the reply
-        ever arrives.
+        Redis carries them on pub/sub; transports without a push path cannot
+        deliver events emitted after the reply.
         """
         transport_name = str(getattr(self.client, "transport_name", "redis") or "redis").lower()
         return transport_name in ("redis", "", "default")
@@ -6452,7 +6371,7 @@ class BigQmtXtTrader:
             # 服务端结算（那是 #69 要的吞吐）。委托号从推送事件学——屏障暂存的
             # 委托事件里会带上（触发 response 前至多等 2s，学不到就回落 remark）。
             #
-            # 没有推送通道的传输（pipe / mysql）学不到任何事件，服务端为拒单
+            # 没有推送通道的传输学不到任何事件，服务端为拒单
             # 推的 order_error 也到不了（#345）。那里让 worker 等服务端结算：
             # 调用方本来就不阻塞，而 server_error 会走下面的 except 变成
             # on_order_error，否则一张资金不足被终端拦下的单永远没有回音。

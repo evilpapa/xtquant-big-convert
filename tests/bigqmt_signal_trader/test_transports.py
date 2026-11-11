@@ -158,46 +158,6 @@ class MysqlTransportTest(unittest.TestCase):
             except Exception:
                 pass
 
-    def test_round_trip(self):
-        from bigqmt_signal_trader.transports.mysql_transport import MysqlTransport
-
-        cfg = {
-            "driver": "sqlite3",
-            "connect_kwargs": {"database": self.db_path, "check_same_thread": False},
-            "account_id": "acct",
-            "poll_interval_seconds": 0.01,
-            # sqlite connections are thread-bound; keep them single-threaded in
-            # the pool. Real MySQL doesn't need this.
-            "pool_config": {"mincached": 1, "maxcached": 2, "maxshared": 0, "maxconnections": 2},
-        }
-        server = MysqlTransport.from_config(cfg, account_id="acct")
-        server._ensure_schema()
-
-        def on_req(req):
-            return {
-                "schema_version": 1,
-                "request_id": req["request_id"],
-                "account_id": "acct",
-                "method": req["method"],
-                "ok": True,
-                "data": {"pong": True},
-                "error": "",
-                "handled_at": "now",
-            }
-
-        server.start_receiving(on_req, background_threads=True)
-        try:
-            client = MysqlTransport.from_config(cfg, account_id="acct")
-            req = _build_request()
-            resp = client.send_request(req, timeout_seconds=3.0)
-            self.assertTrue(resp["ok"])
-            self.assertEqual(resp["request_id"], req["request_id"])
-            self.assertTrue(resp["data"]["pong"])
-            client.stop()
-        finally:
-            server.stop()
-
-
 class RedisAdjustDrainTest(unittest.TestCase):
     def test_redis_adjust_lpop_skipped_when_brpop_thread_alive(self):
         """Background BRPOP owns the list; adjust LPOP must not steal it."""

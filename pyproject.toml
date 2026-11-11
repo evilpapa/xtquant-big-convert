@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "xtquant-big-convert"
 version = "0.3.78"
-description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (redis/mysql transports)"
+description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (redis transports)"
 readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
@@ -35,7 +35,6 @@ dependencies = []
 # 一次下单可能派发两次（#245）。服务端 0.3.29 起按 request_id 去重兜住了，
 # 但没有理由把默认重试抬到 10。5.2.1/6.4.0/7.4.0 实测 protocol 默认都是 2。
 redis = ["redis>=5.0.0,<8.0.0"]
-mysql = ["pymysql>=1.0.0", "DBUtils>=3.0.0"]
 # Faster/smaller wire encoding for whole-quote push (falls back to json if absent).
 msgpack = ["msgpack>=1.0.0"]
 dev = [

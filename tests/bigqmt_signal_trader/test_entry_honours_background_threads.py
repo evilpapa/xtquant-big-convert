@@ -22,7 +22,6 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FILES = (
     os.path.join(ROOT, "src", "BIGQMT_REDIS_DRYRUN.py"),
-    os.path.join(ROOT, "tools", "build_no_redis_single_file_flat.py"),
 )
 
 

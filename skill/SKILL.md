@@ -104,7 +104,7 @@ python scripts/qmt.py ping
 
 | 现象 | 排查 |
 |------|------|
-| QMT 面板报 `import redis` 被拒 | 检查券商限制；Windows 同机可评估命名管道 |
+| QMT 面板报 `import redis` 被拒 | 检查券商限制及 Redis 依赖 |
 | 启动了但查询全空 | 账号没对上：服务端 `BIGQMT_ACCOUNT_ID` vs 客户端 `BIGQMT_ACCOUNT_ID`；QMT 需在实盘模式 |
 | 下单报 `ORDER_DISABLED` | 正常保护，服务端配置 `rpc_allow_order_methods` 改 `True` 才放行 |
 | 详细错误日志 | QMT python 目录下 `logs/bigqmt_*.log`（保留 7 天），排错首选 |

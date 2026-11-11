@@ -40,7 +40,7 @@ import bigqmt_signal_trader_redis_rpc_runtime as runtime
 
 class _RuntimeState(unittest.TestCase):
     KEYS = ("REDIS_ENABLED", "RPC_TRANSPORT", "REDIS_HOST", "REDIS_PORT", "REDIS_DB",
-            "REDIS_ENABLED_EXPLICIT", "RPC_PIPE_CONFIG")
+            "REDIS_ENABLED_EXPLICIT")
 
     def setUp(self):
         self._saved = {k: getattr(runtime, k) for k in self.KEYS}
@@ -58,8 +58,8 @@ class _RuntimeState(unittest.TestCase):
 class RedisBlockTest(_RuntimeState):
 
 
-    def test_disabled_on_mysql_and_shm_too(self):
-        for transport in ("mysql", "shm"):
+    def test_disabled_on_shm(self):
+        for transport in ("shm",):
             self._configure(False, transport)
 
             self.assertEqual(runtime._redis_block(), {}, transport)
@@ -154,62 +154,39 @@ class ExampleConfigTest(unittest.TestCase):
 
 
 
-class PipeDropsRedisByDefaultTest(_RuntimeState):
-    """2026-09-24 实盘：pipe 部署（沙箱禁 socket，EDR 抓 connect() 杀进程）
-    的 redis 块默认还在，exec 事件链路的懒 client 首个命令就拨号。pipe 下
-    默认不下发；显式 redis_enabled=True 才是真的要 redis 附加能力。"""
-
-    def test_pipe_drops_the_block_by_default(self):
-        self._configure(True, "pipe", explicit=False)
-
-        self.assertEqual(runtime._redis_block(), {})
-
-    def test_pipe_keeps_the_block_when_explicitly_enabled(self):
-        self._configure(True, "pipe", explicit=True)
-
-        block = runtime._redis_block()
-
-        self.assertEqual(block["host"], runtime.REDIS_HOST)
 
 
 
-class PipeConfigReadingTest(_RuntimeState):
-    def test_configure_runtime_redis_reads_the_pipe_block(self):
-        runtime.configure_runtime_redis(
-            {"transport": "pipe", "pipe": {"pipe_name": "probe_pipe"}})
-
-        self.assertEqual("pipe", runtime.RPC_TRANSPORT)
-        self.assertEqual({"pipe_name": "probe_pipe"}, runtime.RPC_PIPE_CONFIG)
+class RuntimeConfigReadingTest(_RuntimeState):
+    pass
 
     def test_redis_enabled_explicit_flag_is_tracked(self):
         runtime.REDIS_ENABLED_EXPLICIT = False
-        runtime.configure_runtime_redis({"transport": "pipe"})
+        runtime.configure_runtime_redis({"transport": "shm"})
         self.assertFalse(runtime.REDIS_ENABLED_EXPLICIT)
 
-        runtime.configure_runtime_redis({"transport": "pipe", "redis_enabled": True})
+        runtime.configure_runtime_redis({"transport": "shm", "redis_enabled": True})
         self.assertTrue(runtime.REDIS_ENABLED_EXPLICIT)
 
 
 class ModuleLevelReadTest(unittest.TestCase):
     """直接挂 runtime（不经 DRYRUN 外壳）的部署在模块级读配置——漏读
-    transport 就是「配了 pipe 实际还在跑 redis」（2026-09-24 实盘根因之一）。
+    transport 会使配置和实际使用的传输不一致。
     reload 一次 runtime 来验证模块级读取。"""
 
-    def test_module_level_reads_transport_and_pipe_block(self):
+    def test_module_level_reads_transport(self):
         import importlib
         import types
 
         stub = types.ModuleType("bigqmt_signal_trader_local_config")
         stub.BIGQMT_ACCOUNT_ID = ""
-        stub.BIGQMT_REDIS_CONFIG = {"transport": "pipe",
-                                    "pipe": {"pipe_name": "probe_mod"},
+        stub.BIGQMT_REDIS_CONFIG = {"transport": "shm",
                                     "redis_enabled": False}
         saved_module = sys.modules.get("bigqmt_signal_trader_local_config")
         sys.modules["bigqmt_signal_trader_local_config"] = stub
         try:
             importlib.reload(runtime)
-            self.assertEqual("pipe", runtime.RPC_TRANSPORT)
-            self.assertEqual({"pipe_name": "probe_mod"}, runtime.RPC_PIPE_CONFIG)
+            self.assertEqual("shm", runtime.RPC_TRANSPORT)
             self.assertTrue(runtime.REDIS_ENABLED_EXPLICIT)
             self.assertFalse(runtime.REDIS_ENABLED)
         finally:
@@ -220,31 +197,6 @@ class ModuleLevelReadTest(unittest.TestCase):
             importlib.reload(runtime)   # 恢复默认状态，别污染其它用例
 
 
-class PipeBuildTest(unittest.TestCase):
-    """pipe 单文件打包器：和 no-redis 版同款钉法（PR #134 的教训是这类
-    强制块会漂移）。"""
-
-    BUILDER = os.path.join("tools", "build_pipe_single_file_flat.py")
-
-    def _read(self, relative):
-        import io
-
-        if relative == self.BUILDER:
-            import importlib.util
-            import sys
-            sys.path.insert(0, os.path.join(ROOT, "tools"))
-            import build_no_redis_single_file_flat
-            return build_no_redis_single_file_flat.FLAT_TEMPLATE
-        with io.open(os.path.join(ROOT, relative), encoding="utf-8") as handle:
-            return handle.read()
-
-    def test_the_builder_forces_pipe(self):
-        self.assertIn('"transport"] = "pipe"', self._read(self.BUILDER))
-
-    def test_the_builder_disables_redis_and_quote_push(self):
-        text = self._read(self.BUILDER)
-        self.assertIn('"redis_enabled"] = False', text)
-        self.assertIn('"quote_push"] = {"enabled": False}', text)
 
 
 

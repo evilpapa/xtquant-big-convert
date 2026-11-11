@@ -601,25 +601,11 @@ def _config_bool(value, default=False):
 
 
 def _native_xtdata_enabled(rpc_config):
-    """May the RPC-side market provider use the native xtdata SDK?
-
-    Mirrors ``adapter_factory.build_app``: native SDK calls dial the local
-    quote service (127.0.0.1:58610). On a pipe deployment -- the transport
-    whose whole purpose is "sandbox that kills outbound connects" -- that dial
-    is never acceptable, so native stays off unless the config asks for it
-    explicitly.
-
-    This has to be applied to the provider built for the RPC handlers too,
-    not just the one inside the app: ``_build_rpc_service`` constructs its own
-    provider, and without the gate it defaults to native-on. A pipe strategy
-    in that state answers ``get_instrument_detail`` by dialing 58610, which
-    the QMT terminal reports as ``非法IP:127.0.0.1:58610`` and blocks the
-    strategy thread behind a modal dialog until every later RPC times out.
-    """
+    """Resolve whether the RPC-side market provider may use native xtdata."""
     rpc_config = dict(rpc_config or {})
     enabled = rpc_config.get("native_xtdata_enabled")
     if enabled is None:
-        enabled = str(rpc_config.get("transport") or "redis").lower() != "pipe"
+        enabled = True
     return bool(enabled)
 
 
@@ -653,11 +639,7 @@ def _resolve_background_threads(transport_name, configured):
     override; anything else keeps the receiver thread it needs to be polled by.
     Redis honors either value (blocking brpop path AND an adjust lpop drain).
 
-    The list used to be a hardcoded ("zmq", "mysql") and a new transport had to
-    remember to add itself -- pipe did not, so an explicit False was silently
-    forced back to True and the drain never ran (the log said
-    ``background_threads=True`` while the config said False). Ask the transport
-    class instead: it is the thing that knows.
+    Ask the transport class whether it implements draining.
     """
     normalized = str(transport_name or "redis").lower()
     if _is_redis_transport(normalized):
@@ -670,7 +652,7 @@ def _resolve_background_threads(transport_name, configured):
 def _transport_can_drain(transport_name):
     """这个传输自己实现了 drain_request_queue 吗。
 
-    问传输类本身，而不是维护一张名单 —— 名单会漏，pipe 就漏过一次。
+    问传输类本身，而不是维护另一张名单。
     基类的实现返回 0（占位），所以只认子类自己覆盖过的。
     """
     try:
@@ -700,11 +682,6 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
 
     _qsm = importlib.reload(_qsm)
     heartbeat_timeout = float(quote_config.get("heartbeat_timeout_seconds", 30.0))
-    # #408: the events pipe derives its name from the RPC pipe block so both
-    # sides compute the same path from the same config.
-    pipe_name = dict(config.get("rpc") or {}).get("pipe", {}).get("pipe_name")
-    if pipe_name is None:
-        pipe_name = dict(config.get("pipe") or {}).get("pipe_name")
     return _qsm.build_quote_subscription_service(
         context_info,
         transport_name=transport_name,
@@ -712,7 +689,6 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
         redis_client=redis_client,
         enabled=True,
         heartbeat_timeout_seconds=heartbeat_timeout,
-        pipe_name=pipe_name,
     )
 
 
@@ -806,7 +782,7 @@ def _build_rpc_service(context_info, app, config):
             context_info,
             qmt_api=qmt_api,
             # The handlers build their own provider; without this it defaults
-            # to native-on even on transport=pipe and dials 58610.
+            # to native-on and dials 58610.
             native_xtdata_enabled=_native_xtdata_enabled(rpc_config),
         ),
         position_provider=BigQmtPositionProvider(
@@ -850,7 +826,7 @@ def _build_rpc_service(context_info, app, config):
     handlers.order_identity_redis_client = _store_redis
     handlers.order_remark_redis_client = _exec_events.bounded_identity_client(_store_redis)
     if _store_redis is None:
-        # Pipe and other Redis-free transports need a durable source after a
+        # Redis-free deployments need a durable source after a
         # real strategy/process restart, when the in-memory journal is gone.
         handlers.enable_order_identity_persistence(
             directory=rpc_config.get("order_identity_dir"))

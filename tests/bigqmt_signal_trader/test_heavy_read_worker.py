@@ -9,8 +9,7 @@ and, with it, the one-tick answers. The two were never in conflict:
 
   light read   -> adjust thread, answered inline, one tick
   heavy read   -> one worker thread; the reply is parked and SENT by the
-                  adjust thread on its next tick (a zmq ROUTER socket / pipe
-                  handle is not shared between threads)
+                  adjust thread on its next tick
   trade query  -> adjust thread, as always (LISTENER_DEFERRED_METHODS)
 
 "Heavy" is by method (financial data, formulas) or by size (market token,

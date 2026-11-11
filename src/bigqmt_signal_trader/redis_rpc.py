@@ -1031,7 +1031,6 @@ class BigQmtRpcHandlers:
             "cached_rows": len(getattr(self, "_credit_account_rows", []) or []),
             "last_callback_thread": getattr(self, "_credit_account_callback_thread", ""),
         }
-        info["ctypes_probe"] = self._probe_ctypes_named_pipe()
         info["thread_routing"] = self._probe_thread_routing()
         info["sector_probe"] = self._probe_sector_channels()
         info["download_probe"] = self._probe_download_channels(params)
@@ -1259,73 +1258,6 @@ class BigQmtRpcHandlers:
                               "之外就是这个样子，查 thread_routing")
         return report
 
-    def _probe_ctypes_named_pipe(self):
-        """QMT 的导入白名单放不放行 ctypes + kernel32 命名管道。
-
-        白名单拒过 socket（还包括 logging.handlers 间接引入的那次），所以在
-        某些券商终端上 redis / pyzmq 都装不进去，桥根本没有线可用。命名管道
-        走 ctypes.WinDLL("kernel32")，是标准库、也不是 socket —— 如果放行，
-        它就是那类终端上唯一能用的传输。
-
-        这一条只能在 QMT 沙箱里问：用终端自带解释器 import 只测得到解释器，
-        测不到 QMT 运行时的白名单。逐级探测，每一级失败都记下原因，因为
-        「import 过了」不等于「建得出管道」——DLL 载入和内核对象创建是两回事。
-        """
-        report = {}
-        try:
-            import ctypes
-            report["import_ctypes"] = True
-        except Exception as exc:
-            report["import_ctypes"] = False
-            report["error"] = "%s: %s" % (exc.__class__.__name__, exc)
-            return report
-        try:
-            from ctypes import wintypes  # noqa: F401
-            report["import_wintypes"] = True
-        except Exception as exc:
-            report["import_wintypes"] = False
-            report["error"] = "%s: %s" % (exc.__class__.__name__, exc)
-            return report
-        try:
-            dll = ctypes.WinDLL("kernel32", use_last_error=True)
-            report["load_kernel32"] = True
-        except Exception as exc:
-            report["load_kernel32"] = False
-            report["error"] = "%s: %s" % (exc.__class__.__name__, exc)
-            return report
-        for func in ("CreateNamedPipeW", "ConnectNamedPipe", "ReadFile",
-                     "WriteFile", "CancelIoEx", "CreateFileW"):
-            try:
-                report["fn_" + func] = bool(getattr(dll, func))
-            except Exception:
-                report["fn_" + func] = False
-        # 真去建一个管道再立刻关掉。这一步才是「能不能用」的答案：DLL 载入
-        # 成功不代表内核允许创建命名管道对象（组策略/沙箱可能单独拦）。
-        try:
-            from ctypes import wintypes
-
-            dll.CreateNamedPipeW.restype = wintypes.HANDLE
-            path = "%s%s" % (chr(92) * 2 + "." + chr(92) + "pipe" + chr(92),
-                             "bigqmt_whitelist_probe")
-            handle = dll.CreateNamedPipeW(path, 0x00000003,
-                                          0x00000004 | 0x00000002 | 0x00000000,
-                                          1, 4096, 4096, 0, None)
-            invalid = ctypes.c_void_p(-1).value
-            if handle == invalid:
-                report["create_pipe"] = False
-                report["create_pipe_error"] = ctypes.get_last_error()
-            else:
-                report["create_pipe"] = True
-                report["pipe_path"] = path
-                try:
-                    dll.CloseHandle(handle)
-                except Exception:
-                    pass
-        except Exception as exc:
-            report["create_pipe"] = False
-            report["create_pipe_error"] = "%s: %s" % (exc.__class__.__name__, exc)
-        return report
-
     def _probe_thread_routing(self):
         """哪些方法跑在后台 listener 线程上，哪些被推回 adjust 主线程。
 
@@ -1505,11 +1437,10 @@ class BigQmtRpcHandlers:
         }
 
         native = None
-        # pipe（外连即杀的沙箱）：native SDK 的调用会拨 58610，探测也一样死，
-        # 直接跳过并写明——否则 probe_capabilities 本身就杀进程。
+        # Skip native SDK probing when explicitly disabled.
         if getattr(self.market_data, "native_xtdata_enabled", True) is False:
             report["native_xtdata_loaded"] = False
-            report["native_xtdata_skipped"] = "native_xtdata_enabled=False (pipe transport)"
+            report["native_xtdata_skipped"] = "native_xtdata_enabled=False"
         else:
             try:
                 from .adapters.market_bigqmt import _load_native_xtdata
@@ -3809,11 +3740,7 @@ class RedisPubSubRpcService:
         self.heavy_offload = bool(heavy_offload)
         self.heavy_codes_threshold = max(1, int(heavy_codes_threshold))
         self._heavy_queue = queue.Queue()
-        # Replies the worker built. They are SENT from the adjust thread on
-        # its next tick, never from the worker: a zmq ROUTER socket and a
-        # named pipe handle are not shared between threads (the adjust thread
-        # is in recv on the same socket), and on redis a send from the worker
-        # would pay the same GIL tick the adjust send does.
+        # Send worker replies on the adjust thread at its next tick.
         self._heavy_replies = queue.Queue()
         self._heavy_thread = None
         self._heavy_count = 0
@@ -4351,7 +4278,7 @@ class RedisPubSubRpcService:
 
         Same channels the 废单 callback path uses: the redis exec-event
         channels when there is a redis client, else the quote push channel's
-        exec:* topic. A deployment with neither (pipe / mysql) cannot carry
+        exec:* topic. A deployment with neither channel cannot carry
         it -- the client falls back to a synchronous settlement there.
         """
         request = settlement.order_request

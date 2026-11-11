@@ -135,13 +135,11 @@ def build_app(context_info=None, config=None):
 
         qmt_api = config.get("qmt_api") or {}
         get_trade_detail_data_func = qmt_api.get("get_trade_detail_data")
-        # native xtdata SDK 的调用会拨本地行情服务（58610）——pipe 这类
-        # 「外连即杀」的沙箱部署一次 SDK 调用就死，默认关掉（2026-09-24
-        # 实盘逐行核对发现）。
+        # native xtdata SDK 调用本地行情服务，可通过配置关闭。
         _rpc_cfg = dict(config.get("rpc") or {})
         _native_enabled = _rpc_cfg.get("native_xtdata_enabled")
         if _native_enabled is None:
-            _native_enabled = str(_rpc_cfg.get("transport") or "redis").lower() != "pipe"
+            _native_enabled = True
         market_data = market_data or BigQmtMarketDataProvider(
             context_info, qmt_api=qmt_api, native_xtdata_enabled=bool(_native_enabled))
         position_provider = position_provider or BigQmtPositionProvider(

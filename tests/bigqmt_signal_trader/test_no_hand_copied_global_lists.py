@@ -104,14 +104,10 @@ class NoHandCopiedListTest(unittest.TestCase):
 
 
 # 单文件外壳也是被 QMT 挂载的入口 —— 模板是构建器里的字符串，同样不许手抄。
-# pipe 构建器复用 flat 的 FLAT_TEMPLATE，不单列。
 SINGLE_FILE_TEMPLATES = (
     os.path.join('tools', 'build_single_file.py'),
-    os.path.join('tools', 'build_no_redis_single_file_flat.py'),
     os.path.join('src', 'bigqmt_signal_trader', '_singlefile',
                  'build_single_file.py.txt'),
-    os.path.join('src', 'bigqmt_signal_trader', '_singlefile',
-                 'build_no_redis_single_file_flat.py.txt'),
 )
 
 

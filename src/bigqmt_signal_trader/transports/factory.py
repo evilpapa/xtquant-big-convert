@@ -2,16 +2,14 @@
 
 ``build_transport(name, config, ...)`` returns a ready transport instance.
 ``name`` is the ``rpc.transport`` config value (default ``"redis"``). Unknown
-names raise :class:`ValueError`. Optional dependencies (a mysql
-driver) are imported lazily; a missing dependency surfaces as a clear
-``ImportError`` only when that transport is actually selected.
+names raise :class:`ValueError`.
 """
 
 from .base import RpcTransport
 from .redis_transport import RedisTransport
 
 
-KNOWN_TRANSPORTS = ("redis", "shm", "pipe")
+KNOWN_TRANSPORTS = ("redis", "shm")
 
 
 def transport_supports_drain(name):
@@ -22,7 +20,7 @@ def transport_supports_drain(name):
     模块、比对类属性，不 build。
 
     工厂是「有哪些传输」的唯一来源，这个判断也该在这里，而不是让调用方
-    各自维护一张名单（pipe 就是在别处的名单里漏掉，导致 drain 从未生效）。
+    各自维护一张名单。
     """
     from .base import RpcTransport
 
@@ -30,8 +28,6 @@ def transport_supports_drain(name):
     try:
         if name in ("redis", "", "default"):
             from .redis_transport import RedisTransport as cls
-        elif name == "pipe":
-            from .pipe_transport import NamedPipeTransport as cls
         else:
             return False
     except ImportError:
@@ -59,20 +55,6 @@ def build_transport(
 
     if name in ("redis", "", "default"):
         return _build_redis(config, account_id, print_prefix)
-    if name == "pipe":
-        # Windows named pipe: no third-party package, no socket. The only wire
-        # that works on a terminal whose import whitelist rejects socket and
-        # whose bundled Python cannot pip install.
-        from .pipe_transport import NamedPipeTransport
-
-        pipe_config = dict(config.get("pipe") or {})
-        return NamedPipeTransport(
-            account_id=account_id,
-            print_prefix=print_prefix,
-            pipe_name=pipe_config.get("pipe_name") or "bigqmt_rpc",
-            connect_timeout_seconds=float(
-                pipe_config.get("connect_timeout_seconds") or 5.0),
-        )
     if name == "shm":
         return _build_shm(config, account_id, print_prefix)
     raise ValueError(

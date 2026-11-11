@@ -72,7 +72,7 @@ class QuotePushChannel(object):
 
 
 class NullQuotePushChannel(QuotePushChannel):
-    """No-op push channel for deployments with no push wire (pipe, or redis
+    """No-op push channel for deployments with no push wire (redis
     absent). Publishing is a silent no-op -- the alternative was
     RedisQuotePushChannel(None), whose publish raised AttributeError per event.
     """

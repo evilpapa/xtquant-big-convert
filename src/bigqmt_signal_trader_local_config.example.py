@@ -35,6 +35,7 @@ BIGQMT_REDIS_CONFIG = {
     #
     # 代价：查询里的 strategy_name 回填失效（那份记录只存在 redis 里，见 #133）；
     # 异步下载任务和全推快照缓存不可用（这两个在大 QMT 上本来就默认关闭）。
+    # 委托/成交回调不受影响
     # "redis_enabled": False,
     "host": "127.0.0.1",
     "port": 6379,

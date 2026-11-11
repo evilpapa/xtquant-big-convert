@@ -7,13 +7,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader_strategy import _is_redis_transport, _resolve_background_threads
-from bigqmt_signal_trader.transports.factory import build_transport
+from bigqmt_signal_trader.transports.factory import build_transport, transport_supports_drain
 
 
 class RemovedTransportTest(unittest.TestCase):
     def test_removed_transport_fails_with_clear_error(self):
         with self.assertRaisesRegex(ValueError, "unknown rpc transport"):
             build_transport("zmq")
+
+    def test_pipe_is_removed_and_has_no_drain(self):
+        with self.assertRaisesRegex(ValueError, "unknown rpc transport"):
+            build_transport("pipe")
+        self.assertFalse(transport_supports_drain("pipe"))
 
 
 class BackgroundThreadResolutionTest(unittest.TestCase):
@@ -26,13 +31,6 @@ class BackgroundThreadResolutionTest(unittest.TestCase):
         self.assertFalse(_resolve_background_threads(None, False))
 
 
-
-    def test_mysql_explicit_false_opts_into_adjust_drain(self):
-        # mysql also implements drain_request_queue, so the override stands.
-        self.assertFalse(_resolve_background_threads("mysql", None))
-        self.assertFalse(_resolve_background_threads("mysql", False))
-        self.assertTrue(_resolve_background_threads("mysql", True))
-
     def test_drainless_transports_ignore_the_override(self):
         # shm has no drain_request_queue: without the receiver thread requests
         # would never be picked up, so even an explicit False cannot turn it
@@ -40,7 +38,6 @@ class BackgroundThreadResolutionTest(unittest.TestCase):
         self.assertTrue(_resolve_background_threads("shm", None))
         self.assertTrue(_resolve_background_threads("shm", False))
         self.assertTrue(_resolve_background_threads("shm", True))
-
 
 
 if __name__ == "__main__":

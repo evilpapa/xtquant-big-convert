@@ -662,10 +662,7 @@ class BigQmtMarketDataProvider:
         # Allow injection for tests; otherwise resolve lazily on first use.
         self._native_xtdata = native_xtdata
         self.qmt_api = dict(qmt_api or {})
-        # pipe 这类沙箱传输的存在理由就是「禁 socket、外连即杀」的终端
-        # （2026-09-24 实盘）：原生 xtdata SDK 的调用会拨本地 58610 行情服务，
-        # 那种终端上一次 SDK 调用就死。关掉后 _native() 恒 None，所有 native
-        # 路径直接走既有回落。
+        # 禁用时跳过原生 SDK 加载，使用已有的回退路径。
         self.native_xtdata_enabled = bool(native_xtdata_enabled)
 
     def _context_method(self, method_name):

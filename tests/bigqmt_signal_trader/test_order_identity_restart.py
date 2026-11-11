@@ -39,7 +39,7 @@ def handlers(directory):
     return instance
 
 
-def test_pipe_without_redis_recovers_name_and_preserves_remark_after_restart(tmp_path):
+def test_without_redis_recovers_name_and_preserves_remark_after_restart(tmp_path):
     before = handlers(tmp_path)
     assert before._identity_redis() is None
     before._handle_submit_order({

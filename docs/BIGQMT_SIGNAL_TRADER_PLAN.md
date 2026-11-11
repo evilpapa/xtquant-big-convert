@@ -805,40 +805,7 @@ def test_auto_sell_price_uses_bid2_when_better_than_discount():
 
 该 adapter 才能访问 `ContextInfo.get_full_tick()` 和 `ContextInfo.get_instrumentdetail()`。`price_engine.py` 不能 import 或持有 `ContextInfo`。
 
-### Task 4: 实现 MySQL 信号源和状态存储 adapter
-
-**Files:**
-- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/signal_mysql.py`
-- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/state_mysql.py`
-- Test: `D:/gjzqqmt/jq2qmt-main/tests/bigqmt_signal_trader/test_signal_store_mysql.py`
-
-- [ ] **Step 1: 写 MySQL 原子领取测试**
-
-```python
-def test_mysql_state_store_claim_uses_conditional_pending_update(fake_conn):
-    store = MySqlStateStore(fake_conn)
-    signal = make_buy_signal("000001.SZ", amount=100)
-
-    fake_conn.next_affected_rows = 1
-
-    assert store.claim(signal, "consumer-a") is True
-    assert "status = 'CLAIMED'" in fake_conn.executed_sql[0]
-    assert "status = 'PENDING'" in fake_conn.executed_sql[0]
-```
-
-- [ ] **Step 2: MySQL `claim()` 必须用条件更新**
-
-实现必须满足：
-- 只允许 `PENDING -> CLAIMED`。
-- 过期信号不能 claim。
-- claim 失败不能下单。
-- `SignalTradingApp` 只能通过 `StateStore.claim()` 的 bool 结果决定是否下单。
-
-- [ ] **Step 3: MySQL 信号源只负责读取**
-
-`MySqlSignalSource.fetch(account_id, limit)` 只查询 `PENDING` 且未过期信号，返回 `TradeSignal` 列表，不修改状态。
-
-### Task 5: 实现 Redis Stream 消费
+### Task 4: 实现 Redis Stream 消费
 
 **Files:**
 - Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/signal_redis.py`
@@ -875,7 +842,7 @@ bigqmt:signal_status:{account_id}:{signal_id}
 
 `RedisStreamSignalSource` 只产出 `TradeSignal`，`RedisStateStore` 只写状态。任何 `passorder`、价格计算、持仓查询都不允许出现在 Redis adapter 中。
 
-### Task 6: 实现大 QMT 下单 gateway
+### Task 5: 实现大 QMT 下单 gateway
 
 **Files:**
 - Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/order_bigqmt.py`
@@ -932,7 +899,7 @@ OrderSubmitResult(
 
 `SignalTradingApp` 切换 dry-run 时只能替换 `OrderGateway`，不能改执行流程。
 
-### Task 7: 实现风控前置校验
+### Task 6: 实现风控前置校验
 
 **Files:**
 - Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/risk_guard.py`
@@ -980,11 +947,10 @@ max_daily_auto_orders = 2000
 
 `risk_guard.py` 只能读取 `PositionProvider` 返回的数据，不能直接调用 `get_trade_detail_data`。
 
-### Task 7.5: 实现持仓同步 sink
+### Task 6.5: 实现持仓同步 sink
 
 **Files:**
 - Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/position_sync_redis.py`
-- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/position_sync_mysql.py`
 - Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/services/position_sync_service.py`
 - Test: `D:/gjzqqmt/jq2qmt-main/tests/bigqmt_signal_trader/test_position_sync.py`
 

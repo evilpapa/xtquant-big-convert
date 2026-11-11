@@ -454,8 +454,6 @@ class CreditCallbackWiringTest(unittest.TestCase):
     GENERATED_ENTRIES = (
         ("tools/build_single_file.py",
          "src/BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py"),
-        ("tools/build_no_redis_single_file_flat.py",
-         "src/BIGQMT_DRYRUN_NO_REDIS_FLAT_ALL_IN_ONE.py"),
     )
 
     def _missing_credit_export(self, rel):
