@@ -398,7 +398,7 @@ def _report_missing_order_time(row):
     print(
         "[bigqmt_order] 未找到 order_time（已尝试 %s / %s）；ORDER 行现有字段：%s"
         % (", ".join(_ORDER_DATE_FIELDS), ", ".join(_ORDER_TIME_FIELDS),
-           ", ".join(available) or "<无>")
+           ", ".join(available) or "<none>")
     )
 
 

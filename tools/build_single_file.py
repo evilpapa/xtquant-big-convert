@@ -24,7 +24,7 @@ def resolve_source_dirs(root=ROOT):
     and is the root for the embedded relative paths; package_dir is the
     bigqmt_signal_trader package.
 
-    A repository checkout (root/src/...) wins. Otherwise fall back to an
+    A repository checkout (root/src/...) wins. Otherwise, fall back to an
     installed package: this is the pip-install layout, where the top-level
     modules sit beside the package directory.
     """
@@ -154,27 +154,27 @@ import types
 
 
 # =========================== config block ===========================
-BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
+BIGQMT_ACCOUNT_ID = "40226423"
 
 BIGQMT_ACCOUNT_TYPE = "STOCK"
 
 BIGQMT_REDIS_CONFIG = {
-    "host": "127.0.0.1",
+    "host": "192.168.2.112",
     "port": 6379,
     "db": 5,
     "username": "",
     "password": "",
     # Keep order RPC disabled unless you explicitly want remote order/cancel.
-    "rpc_allow_order_methods": False,
+    "rpc_allow_order_methods": True,
     # Requests drain through QMT's run_time("adjust", ...) callback, on the main
     # strategy thread. get_trade_detail_data returns EMPTY off that thread, so
     # order/query methods must not be moved to a background thread.
     "rpc_process_in_listener": True,
     "rpc_listener_methods": ("*",),
-    "rpc_background_threads": False,
+    "rpc_background_threads": True,
     "schedule_adjust": True,
     "schedule_adjust_interval": "100nMilliSecond",
-    "full_tick_cache_enabled": False,
+    "full_tick_cache_enabled": True,
     "full_tick_demand_ttl_seconds": 10,
     "full_tick_cache_ttl_seconds": 10,
     "full_tick_refresh_interval_seconds": 0.5,
@@ -186,7 +186,7 @@ BIGQMT_REDIS_CONFIG = {
     "download_job_max_wall_seconds": 0.5,
     "download_job_ttl_seconds": 3600,
     "exec_events_enabled": True,
-    "exec_events_debug_raw_fields": False,
+    "exec_events_debug_raw_fields": True,
 }
 # ===================================================================
 
@@ -378,7 +378,7 @@ except Exception as redis_config_error:
 try:
     _config = _load_local_config()
     BIGQMT_ACCOUNT_ID = getattr(_config, "BIGQMT_ACCOUNT_ID", "")
-    print("[bigqmt_shell] local account config loaded=%s" % bool(BIGQMT_ACCOUNT_ID))
+    print("[bigqmt_shell] 本地账户配置已加载=%s" % bool(BIGQMT_ACCOUNT_ID))
     _runtime.configure_runtime_account(BIGQMT_ACCOUNT_ID)
 except Exception as account_config_error:
     print("[bigqmt_shell] local account config load failed: %s" % account_config_error)

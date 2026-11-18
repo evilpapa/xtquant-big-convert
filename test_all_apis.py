@@ -84,7 +84,9 @@ TESTS = [
     ("get_market_data", {"field_list": ["close"], "stock_list": ["000001.SZ"], "period": "1d", "count": 3}, "md"),
     ("get_local_data", {"field_list": ["close"], "stock_list": ["000001.SZ"], "period": "1d", "count": 3}, "local-data"),
     # --- 板块 ---
-    ("get_sector_list", {}, "sector-list"),
+    # Big QMT may not expose the complete sector list; explicitly permit the
+    # documented curated list so this smoke test can exercise the RPC there.
+    ("get_sector_list", {"allow_fallback": True}, "sector-list"),
     ("get_stock_list_in_sector", {"sector_name": "沪深A股"}, "sector-stocks"),
     # --- 交易日历 ---
     ("get_trading_dates", {"market": "SH", "count": 3}, "trade-dates"),
@@ -289,6 +291,8 @@ def main():
             results["fail"].append((method, error))
             status = "FAIL"
         summary = data_summary(data) if ok else error[:50]
+        if ok and method == "get_sector_list" and params.get("allow_fallback"):
+            summary += " [允许常用板块兜底，可能不完整]"
         if server_err:
             summary += " [server_error: %s]" % server_err[:40]
         print("%-22s %-8s %6.0f   %s" % (method, status, dt, summary))

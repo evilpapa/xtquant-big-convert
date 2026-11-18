@@ -378,7 +378,7 @@ except Exception as redis_config_error:
 try:
     _config = _load_local_config()
     BIGQMT_ACCOUNT_ID = getattr(_config, "BIGQMT_ACCOUNT_ID", "")
-    print("[bigqmt_shell] local account config loaded=%s" % bool(BIGQMT_ACCOUNT_ID))
+    print("[bigqmt_shell] 本地账户配置已加载=%s" % bool(BIGQMT_ACCOUNT_ID))
     _runtime.configure_runtime_account(BIGQMT_ACCOUNT_ID)
 except Exception as account_config_error:
     print("[bigqmt_shell] local account config load failed: %s" % account_config_error)

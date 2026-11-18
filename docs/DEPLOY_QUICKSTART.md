@@ -2,48 +2,55 @@
 
 > 面向第一次部署和升级已有部署的最短路径。传输层和多账号说明见 [使用指南](USER_GUIDE.md)；排错见「日志与排错」。
 
-整条链路只有三件东西：**QMT 侧的服务端**（一个策略文件加一个包，跑在 QMT 进程里）、**外部的客户端**（pip 装的包）、**中间的 Redis**。部署就是把服务端放进 QMT、让两边的连接参数一致。
+整条链路只有三件东西：
 
-## 先看这张表：什么文件放哪、谁放
+- **QMT 侧的服务端：BIGQMT**（一个策略文件加一个包，跑在 QMT 内置 python 进程里）
+- **外部的客户端：LOCAL**（pip 装的包，你本地策略系统的 python 环境，可和 QMT 分数不同的环境，没有机器要求，可使用 linux/mac 环境）
+- **中间的 Redis**（需自行安装）
 
-两个 Python 互不相通：客户端的能 `pip install`，QMT 自带的 3.6 不能（旧 OpenSSL），所以服务端文件靠**拷**。
+部署就是把服务端放进 QMT、让两边的连接参数一致。
 
-| 文件 | 放哪 | 谁放 |
-|---|---|---|
-| `bigqmt_signal_trader` 包（客户端用的那份） | 客户端机器的 site-packages | 第 1 步 `pip install` |
-| `bigqmt_signal_trader_client_config.py` | 客户端：**和你运行的脚本同一目录** | 第 2 步 `bigqmt-init` 第二个目录问题（回车 = 当前目录） |
-| `bigqmt_signal_trader/`（整个包目录） | QMT 的 `python` 目录，如 `D:\QMT交易端\python\` | 第 3 步**你手动拷** |
-| `BIGQMT_REDIS_DRYRUN.py` | 同上 | 同上 |
-| `bigqmt_signal_trader_strategy.py` | 同上 | 同上 |
-| `bigqmt_signal_trader_redis_rpc_runtime.py` | 同上 | 同上 |
-| `BIGQMT_REDIS_DRYRUN.py`（入口） | 同上 | 同上 |
-| `bigqmt_signal_trader_local_config.py` | QMT 的 `python` 目录 | 第 2 步 `bigqmt-init` 第一个目录问题（**必须手填**，回车 = 当前目录） |
-
-`bigqmt-init` **只写两份配置**，不拷包、不装依赖、不会自己去找 QMT 装在哪。「QMT 的 `python` 目录」指 QMT 安装目录下叫 `python` 的子目录，不是 `bin.x64`。客户端配置跟着你的脚本走，不放 QMT 目录。
-
-## 前提
-
-准备 QMT 服务端、客户端 Python 环境及双方可访问的 Redis，并遵守券商要求。
-
-
-## 先选部署方式
-
-`bigqmt-init` 会问这个问题，先想好：
+## 部署方式
 
 | 方式 | 放进 QMT 的是什么 | 什么时候选 |
 |---|---|---|
-| `package`（默认） | 一个包目录 + 三个顶层 `.py`，共 4 项 | 常规选择。升级时可以 `reload_deployment` 热更新，不用重启策略 |
+| `package`（默认） | 一个包目录 + 三个顶层 `.py` + 一个入口文件，共 4 项 | 升级时可以 `reload_deployment` 热更新，不用重启策略 |
 | `single_file` | 一个 `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py`，包和配置都 base64 内嵌在里面 | QMT 目录不方便放多个文件、或想一个文件拷来拷去 |
 
 单文件模式的代价：包内嵌在文件里，升级只能整个文件替换再重启策略，`reload_deployment` 刷不动它。
 
-## 第 1 步：客户端装包
+## 文件汇总
+
+两个 Python 互不相通：本地客户端的能 `pip install`，QMT 自带的 3.6 不能（旧 OpenSSL），所以服务端文件靠**拷**。
+
+LOCAL 侧文件汇总
+
+| 文件 | 放哪 | 谁放 |
+|---|---|---|
+| `bigqmt_signal_trader` 包（客户端用的那份） | QMT-PYTHON 的 site-packages | 第 1 步 `pip install` |
+| `bigqmt_signal_trader_client_config.py` | 客户端：**和你运行的脚本同一目录** | 第 2 步 `bigqmt-init` 第二个目录问题（回车 = 当前目录） |
+
+BIGQMT `package` 模式下文件汇总
+| 文件 | 放哪 | 谁放 |
+|---|---|---|
+| `bigqmt_signal_trader/`（整个包目录） | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
+| `bigqmt_signal_trader_strategy.py` | 同上 | 同上 |
+| `bigqmt_signal_trader_redis_rpc_runtime.py` | 同上 | 同上 |
+| `BIGQMT_REDIS_DRYRUN.py`（入口） | 同上 | 同上 |
+| `bigqmt_signal_trader_local_config.py` | 同上 | 第 2 步 `bigqmt-init` 第一个目录问题（**必须手填**，回车 = 当前目录） |
+
+BIGQMT `single` 模式下文件汇总
+| 文件 | 放哪 | 谁放 |
+|---|---|---|
+| `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
+
+`bigqmt-init` **只写两份配置**，不拷包、不装依赖、不会自己去找 QMT 装在哪。「QMT 的 `python` 目录」指 QMT 安装目录下叫 `python` 的子目录，不是 `bin.x64`。
+
+## 第 1 步：LOCAL 装包
 
 ```powershell
 pip install "xtquant-big-convert[redis]"
 ```
-
-这一步装的是**客户端**。服务端代码也在这个包里，下一步会把它取出来。
 
 ## 第 2 步：用 `bigqmt-init` 生成配置
 
@@ -59,44 +66,6 @@ python -m bigqmt_signal_trader.init_config
 
 第一种是 pip 装包时注册的命令；`bigqmt-init` 找不到（PATH 没带上 Scripts 目录）或者你用的是源码检出，就用第二种。
 
-**它只能在终端里交互着答，不能用管道或脚本喂答案**：Redis 密码那一问走 `getpass`，直接读终端，从 stdin 喂会卡死。
-
-实际跑一遍长这样，`←` 后面是说明：
-
-```
-=== Big QMT 桥接配置 ===
-资金账号: 8886800503
-
-账号类型
-  1) STOCK (默认)
-  2) CREDIT
-  ...
-请选择 [1-6]: 1                         ← 信用户选 2
-
-传输方式
-  1) redis (默认)
-请选择 [1-2]: 1
-Redis 地址 [127.0.0.1]: 192.168.8.13
-Redis 端口 [6379]: 63790
-Redis db [5]: 5
-Redis 用户名（无则回车）:
-Redis 密码（无则回车，输入不回显）:
-
-远程下单/撤单默认关闭。打开后，任何能连上这条通道的程序都可以下单。
-允许远程下单/撤单？ [y/N]: n            ← 首次先 n，验证通过再开
-
-部署方式
-  1) 标准包部署（把 src/ 同步到 QMT 的 python 目录） (默认)
-  2) 单文件（base64 内嵌，redis）
-请选择 [1-3]: 1
-QMT 的 python 目录（回车则写到当前目录）: D:\QMT交易端\python   ← 别回车
-客户端配置写到哪个目录（回车则当前目录）: D:\my_client
-
-=== 已写入 ===
-  D:\QMT交易端\python\bigqmt_signal_trader_local_config.py
-  D:\my_client\bigqmt_signal_trader_client_config.py
-```
-
 选项题输数字或直接输名字都认，`STOCK`、`redis`、`package` 这样写也行。每个问题的说明：
 
 | 问题 | 说明 |
@@ -106,25 +75,10 @@ QMT 的 python 目录（回车则写到当前目录）: D:\QMT交易端\python  
 | Redis 地址 / 端口 / db / 用户名 / 密码 | 选 redis 才问。密码输入不回显，会写进配置文件 |
 | 允许远程下单/撤单？（否） | 打开前它会警告：任何能连上这条通道的程序都可以下单。首次部署先留 `否`，验证通过再打开 |
 | 部署方式（package） | 见上表 |
-| **QMT 的 python 目录（回车则写到当前目录）** | **这里最容易出错。** 填 QMT 安装目录下的 `python`，如 `D:\QMT交易端\python`。直接回车会写到你当前所在的目录，服务端找不到配置 |
+| **QMT 的 python 目录（回车则写到当前目录）** | **这里最容易出错。** 填 QMT 安装目录下的 `python`，如 `D:\gjzq_qmt\python`。直接回车会写到你当前所在的目录，服务端找不到配置 |
 | 客户端配置写到哪个目录（回车则当前目录） | **你外部程序（要运行的脚本）所在目录。** 客户端靠 `import bigqmt_signal_trader_client_config` 找它，得在 `sys.path` 上——和脚本同目录最省事；放别处要加 `PYTHONPATH` 或设 `BIGQMT_CLIENT_CONFIG_MODULE`。放进 QMT 的 python 目录只有从那里运行才碰巧能用（退回读服务端配置） |
 
-跑完它写出这些文件：
-
-| 文件 | 写到哪 | 谁用 |
-|---|---|---|
-| `bigqmt_signal_trader_local_config.py` | QMT 的 python 目录 | 服务端 |
-| `bigqmt_signal_trader_client_config.py` | 你指定的客户端目录 | 客户端 |
-| `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` | QMT 的 python 目录 | 只有单文件模式才生成，配置已烘焙进去 |
-
 已存在的文件会先问再覆盖，`--force` 跳过询问。
-
-**向导不做的事（这是它最容易被误解的地方）：** `package` 模式下它**只写配置，不拷包**。跑完它会打印一句「把 src/ 下的包同步到 QMT 的 python 目录」——如果你是 pip 装的，没有 `src/`，按下面第 3 步找文件。单文件模式则已经把文件生成到位，第 3 步跳过。
-
-几个不问、直接定死的：
-
-
-> 生成的文件带账号和凭据，**不要提交到版本库**。QMT 登录密码不落盘——`qmt_launcher` 从环境变量 `BIGQMT_LOGIN_PASSWORD` 读。
 
 ## 第 3 步：拷服务端文件到 QMT（`package` 模式）
 
@@ -135,18 +89,6 @@ QMT 的 python 目录（回车则写到当前目录）: D:\QMT交易端\python  
 ```powershell
 python -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(m.__file__))"
 ```
-
-把该目录里这 4 项复制到 QMT 的 `python` 目录（和第 2 步写配置的是同一个目录）：
-
-```
-bigqmt_signal_trader/                   整个包目录
-bigqmt_signal_trader_strategy.py
-bigqmt_signal_trader_redis_rpc_runtime.py
-BIGQMT_REDIS_DRYRUN.py                  编辑器里加载的入口
-```
-
-4 项缺一不可。少了包目录报 `No module named bigqmt_signal_trader`；少了入口面板没有任何输出。拷完 QMT 的 `python` 目录里应该同时有这 4 项加第 2 步写的 `bigqmt_signal_trader_local_config.py`，共 5 个名字。
-
 
 ## 第 4 步：QMT 里运行入口
 

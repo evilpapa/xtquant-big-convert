@@ -25,19 +25,9 @@ powershell -ExecutionPolicy Bypass -File .\deploy_qmt_bridge.ps1 `
     -Proxy   "http://127.0.0.1:7897"        # 没有代理就删掉这行
 ```
 
-脚本幂等，可重复跑。**pip / conda 包源 / Miniconda 安装器默认全部走清华镜像**（国内实测 ~2MB/s；
-需要换回官方源时传 `-PipIndex https://pypi.org/simple`，conda/Miniconda 同理见脚本内默认值）。
-做完的事：建客户端环境（`-Conda` 走 miniconda py3.13 前缀环境，否则系统 python venv）并装包 → 拷服务端 4 项进 QMT python 目录 →
-下载/解压 Redis → 注册 Windows 服务（bind 127.0.0.1 + 随机密码 + 192mb 上限）→
-生成服务端/客户端配置 → 放入 `qmt_cli.py`。
+脚本可重复运行：创建客户端环境并安装包，复制服务端文件，安装 Redis 服务，生成配置和 `qmt_cli.py`。Redis 默认绑定 `127.0.0.1`，使用随机密码，内存上限为 192 MB。pip、conda 和 Miniconda 默认使用清华镜像；可传 `-PipIndex https://pypi.org/simple` 切换 pip 源，其他选项见脚本。
 
-**Redis 下载慢/中断**（GitHub Releases 国内直连不稳）三种出路，按速度排序：
-1. `-RedisZip "C:\path\Redis-x64-5.0.14.zip"` 离线传入（最快，一次拷贝终身用）
-2. `-RedisUrl "https://<镜像>/...zip"` 自定义下载源（公共 gh 加速时快时慢，建议实测后固定）
-3. `-Proxy http://...` 走代理下载官方源
-
-**离线服务器**：先在别的机器下载 Redis zip，
-加参数 `-RedisZip "C:\temp\Redis-x64-5.0.14.zip"`（PyPI 下载仍需网络，或提前做好 venv 拷贝过去）。
+Redis 下载受阻时，可传 `-RedisZip "C:\path\Redis-x64-5.0.14.zip"` 使用离线文件，或通过 `-RedisUrl` 指定下载源、`-Proxy` 指定代理。离线使用还需提前准备 Python 环境和依赖。
 
 **下单默认关闭**：生成的服务端配置 `rpc_allow_order_methods=False`，新部署只应答查询；
 确认风控后加 `-AllowOrders` 重跑（或改配置为 True 并重启策略）才开放 buy/sell/cancel。

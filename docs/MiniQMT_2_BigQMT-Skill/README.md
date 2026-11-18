@@ -4,8 +4,6 @@
 
 > 本 Skill 配合 Cursor AI Agent 使用，覆盖从可行性评估到上线部署的完整流程，含自动化工具脚本和真实转换对照示例。
 
----
-
 ## 文件结构
 
 ```
@@ -23,8 +21,6 @@ templates/
   template_bar.py         行情驱动型骨架（K线/订阅回调策略）
 ```
 
----
-
 ## 快速上手
 
 ```bash
@@ -40,13 +36,9 @@ python scripts/check_converted.py 转换后策略.py
 python scripts/to_gbk.py 转换后策略.py 输出_gbk.py
 ```
 
----
-
 ## 在 智能体工具ClaudeCode/Cursor/OpenClaw/Hermes/Workbuddy 中使用
 
 在对话里 `@MiniQMT2bigQMT_Skill`（将本目录放入 `.cursor/skills/` 或个人 skill 目录），Agent 会自动按 7 步流程完成转换并输出报告。
-
----
 
 ## 适用范围
 
@@ -64,16 +56,9 @@ python scripts/to_gbk.py 转换后策略.py 输出_gbk.py
 | 重型 ML 依赖 / py3.6 装不了的库 | 模型外置，内置端只读信号执行 |
 | 7x24 守护 / 盘后批处理 | 保留外部计划任务喂文件给内置策略 |
 
----
+## 常见问题
 
-## 常见疑虑速答（详见 faq.md）
-
-- **外部数据还能取吗？** 能。内置端是完整 py3.6 非沙箱：本地文件通道（推荐）/ 直接网络请求（低频+超时）/ QMT 自身数据接口（比 mini 的 xtdata 更全）三选一。
-- **是不是最短一分钟跑一次？** 不是。`run_time` 支持毫秒级间隔且与 K 线周期无关，1 秒循环已实盘长期验证；`handlebar` 本身逐 tick 触发。
-- **同步下单没了怎么办？** 用 userOrderId 状态机等价改写（模板内置），实测下单后约 1 秒可查回委托号。
-- **能回测吗？** K线型策略可直接回测（mini 反而没有回测框架）；定时器型策略需把信号逻辑双入口挂载（回测挂 handlebar，详见 faq.md Q4）。
-
----
+外部数据、运行频率、异步下单和回测等问题见 [FAQ](faq.md)；限制与替代方案见 [constraints.md](constraints.md)。
 
 ## 关键实测结论（已用券商模拟环境双端交叉验证）
 
@@ -82,8 +67,6 @@ python scripts/to_gbk.py 转换后策略.py 输出_gbk.py
 - `m_strRemark`（userOrderId）只在下单客户端可见，跨客户端对账只能凭 sysid
 - `passorder` → `m_strRemark` 命中 + sysid 回传 + `cancel(sysid)` 链路均实弹验证通过
 - 资金/仓位字段两端精确一致；市值字段各自行情快照，仅供展示
-
----
 
 ## License
 

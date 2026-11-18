@@ -45,7 +45,7 @@ def build_transport(
 ):
     """Construct a transport by name.
 
-    ``config`` is the ``rpc`` config dict. Each backend reads its own sub-keys
+    ``config`` is the ``rpc`` config dict.
     Redis reads the legacy keys
     (``request_channel_template`` etc.) plus ``redis_client``/
     ``response_redis_client`` that the caller may inject.

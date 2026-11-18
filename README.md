@@ -6,8 +6,7 @@
 
 ## 项目状态
 
-**redis / mysql 等远程传输方案已被券商禁止，后续本项目不再更新。** 仓库中保留的相关代码与文档仅作历史记录，不要在新环境部署。
-
+**redis / zmq / mysql 等远程传输方案已被券商禁止，后续本项目不再更新。** 仓库中保留的相关代码与文档仅作历史记录，不要在新环境部署使用。
 
 ## 免责声明
 
@@ -31,12 +30,10 @@ pip install xtquant-big-convert
 
 ## 文档在哪里
 
-功能说明不放在这里。按需要查阅：
-
-- `docs/USER_GUIDE.md` — 使用指南（功能、配置、部署、排错）
-- `docs/` 其余文件 — RPC 协议、API 参考、传输层、延迟报告等专项文档
-- `src/` 下的代码注释与 docstring — 实现细节的第一手来源
-- `tests/` — 行为契约以测试为准
+- [使用指南](docs/USER_GUIDE.md)：功能、配置与排错
+- [部署快速开始](docs/DEPLOY_QUICKSTART.md)；[RPC API 参考](docs/RPC_API_REFERENCE.md)；[传输层](docs/RPC_TRANSPORTS.md)
+- [策略转换工具](docs/MiniQMT_2_BigQMT-Skill/README.md)；[延迟报告](docs/LATENCY_REPORT.md)
+- 实现细节和行为契约见 `src/` 与 `tests/`。
 
 ## License
 

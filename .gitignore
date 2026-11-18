@@ -36,3 +36,6 @@ src/BIGQMT_DRYRUN_PIPE_FLAT_ALL_IN_ONE.py
 
 .idea/
 bigqmt_signal_trader_client_config.py
+/src/bigqmt_signal_trader_local_config.py
+/src/BIGQMT_REDIS_DRYRUN_ALL_IN_ONE_EXAMPLE.py
+/copy.sh

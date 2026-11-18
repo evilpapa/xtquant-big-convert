@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在大 QMT 策略环境内新增一套独立的买入/卖出信号消费与下单包，用 Redis 或 MySQL 同步外部交易信号，未来用于替换 miniQMT 的真实下单，但本阶段不改、不删除现有 miniQMT 下单逻辑。
+**Goal:** 在大 QMT 策略环境内新增一套独立的买入/卖出信号消费与下单包，用 Redis 同步外部交易信号，未来用于替换 miniQMT 的真实下单，但本阶段不改、不删除现有 miniQMT 下单逻辑。
 
 **Architecture:** miniQMT/仪表盘/策略端只产出标准化交易信号，大 QMT 策略作为唯一真实委托执行端。新系统必须写成可替代包：数据获取、信号读取、下单、撤单、委托查询、持仓同步、状态写回全部通过接口和 adapter 装配；大 QMT 运行文件只负责初始化、响应调度和回调，不直接写死业务细节。
 
@@ -14,7 +14,7 @@
 
 ### 1.1 大 QMT 示例项目可复用部分
 
-参考文件：`D:/gjzqqmt/jq2qmt-main/src/api/qmt_jq_trade`
+参考文件：`D:/gjzq_qmt/jq2qmt-main/src/api/qmt_jq_trade`
 
 可复用设计：
 - `adjust(ContextInfo)` 定时轮询执行。

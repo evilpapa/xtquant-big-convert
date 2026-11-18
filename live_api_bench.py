@@ -43,7 +43,7 @@ GROUPS = [
         ("get_divid_factors", {"stock_code": "000001.SZ", "end_time": "20250101"}),
     ]),
     ("板块", [
-        ("get_sector_list", {}),
+        ("get_sector_list", {"allow_fallback": True}),
         ("get_stock_list_in_sector", {"sector_name": "沪深A股"}),
         ("get_sector_info", {"sector_name": "沪深A股"}),
     ]),
@@ -123,7 +123,10 @@ for category, methods in GROUPS:
             data = client.call(method, params)
             ms = (time.time() - t0) * 1000
             status = "OK"
-            results.append((category, method, status, ms, summarize(data)))
+            summary = summarize(data)
+            if method == "get_sector_list" and params.get("allow_fallback"):
+                summary += " [允许常用板块兜底，可能不完整]"
+            results.append((category, method, status, ms, summary))
         except Exception as e:
             ms = (time.time() - t0) * 1000
             status = "FAIL"
