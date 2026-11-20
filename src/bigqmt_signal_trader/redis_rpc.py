@@ -1495,7 +1495,8 @@ class BigQmtRpcHandlers:
         连接超时），此时只报暴露情况，verdict 是 `exposed_untested`。
         """
         flag = (params or {}).get("download_probe", True)
-        dial = str(flag).strip().lower() not in ("0", "false", "no", "off")
+        dial = (getattr(getattr(self, "rpc_transport", None), "name", None) != "serial"
+                and str(flag).strip().lower() not in ("0", "false", "no", "off"))
         try:
             return self.market_data.probe_download_channels(dial=dial)
         except Exception as exc:
@@ -2780,6 +2781,9 @@ class BigQmtRpcHandlers:
     def _exec_event_sink(self):
         """Where an exec event this handler emits goes: redis, else the quote
         push channel, else None."""
+        transport = getattr(self, "rpc_transport", None)
+        if getattr(transport, "name", None) == "serial":
+            return transport if getattr(self, "exec_events_enabled", True) else None
         redis_client = self._identity_redis()
         if redis_client is not None:
             return redis_client
@@ -4797,6 +4801,7 @@ def call_redis_rpc(
         # How long this caller waits. The server refuses, rather than runs,
         # an order it only gets to after that (#303).
         "timeout_seconds": float(timeout_seconds),
+        "_sent_at": time.time(),
     }
     payload = encode_rpc_request_payload(request)
     if str(transport or "queue").lower() in ("queue", "list", "blpop"):

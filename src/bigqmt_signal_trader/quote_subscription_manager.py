@@ -395,6 +395,7 @@ def build_quote_subscription_service(
     heartbeat_timeout_seconds=30.0,
     time_func=None,
     account_ids=None,
+    push_channel=None,
 ):
     """Assemble the server-side whole-quote service: a ContextInfo-backed source,
     a push channel matching the RPC transport, and a QuoteSubscriptionManager
@@ -414,7 +415,10 @@ def build_quote_subscription_service(
     source = ContextInfoQuoteSource(context_info)
     transport_name = str(transport_name or "redis").lower()
     served = _served_account_ids(account_id, account_ids)
-    if redis_client is None:
+    if push_channel is not None:
+        channel = push_channel
+        push_endpoint = ""
+    elif redis_client is None:
         # Redis 被关掉的部署使用静默空通道，而不是
         # RedisQuotePushChannel(None) 每条事件一行 AttributeError。
         channel = NullQuotePushChannel()

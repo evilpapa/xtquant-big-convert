@@ -9,7 +9,7 @@ from .base import RpcTransport
 from .redis_transport import RedisTransport
 
 
-KNOWN_TRANSPORTS = ("redis", "shm")
+KNOWN_TRANSPORTS = ("redis", "serial", "shm")
 
 
 def transport_supports_drain(name):
@@ -28,6 +28,8 @@ def transport_supports_drain(name):
     try:
         if name in ("redis", "", "default"):
             from .redis_transport import RedisTransport as cls
+        elif name == "serial":
+            from .serial_transport import SerialTransport as cls
         else:
             return False
     except ImportError:
@@ -55,6 +57,11 @@ def build_transport(
 
     if name in ("redis", "", "default"):
         return _build_redis(config, account_id, print_prefix)
+    if name == "serial":
+        from .serial_transport import SerialTransport
+
+        return SerialTransport(account_id=account_id, print_prefix=print_prefix,
+                               **dict(config.get("serial") or {}))
     if name == "shm":
         return _build_shm(config, account_id, print_prefix)
     raise ValueError(

@@ -572,6 +572,14 @@ def capture_qmt_injected_funcs(namespace):
 
 def _build_config():
     config = dict(_config)
+    if str((config.get("rpc") or {}).get("transport") or "").lower() == "serial":
+        config["redis"] = {}
+        config["schedule_adjust"] = True
+        for key in ("signal_source_type", "source_type", "state_store_type", "position_sync_type"):
+            if str(config.get(key) or "").lower() == "redis":
+                config[key] = ""
+        for key in ("download_jobs", "full_tick_cache"):
+            config[key] = dict(config.get(key) or {}, enabled=False)
     if _account_id:
         config["account_id"] = _account_id
     qmt_api = dict(config.get("qmt_api") or {})
@@ -603,6 +611,8 @@ def _config_bool(value, default=False):
 def _native_xtdata_enabled(rpc_config):
     """Resolve whether the RPC-side market provider may use native xtdata."""
     rpc_config = dict(rpc_config or {})
+    if str(rpc_config.get("transport") or "").lower() == "serial":
+        return False
     enabled = rpc_config.get("native_xtdata_enabled")
     if enabled is None:
         enabled = True
@@ -642,6 +652,8 @@ def _resolve_background_threads(transport_name, configured):
     Ask the transport class whether it implements draining.
     """
     normalized = str(transport_name or "redis").lower()
+    if normalized == "serial":
+        return False
     if _is_redis_transport(normalized):
         return bool(configured)
     if not _transport_can_drain(normalized):
@@ -663,7 +675,8 @@ def _transport_can_drain(transport_name):
     return transport_supports_drain(transport_name)
 
 
-def _build_quote_subscription_service(context_info, config, transport_name, account_id, redis_client):
+def _build_quote_subscription_service(context_info, config, transport_name, account_id,
+                                      redis_client, push_channel=None):
     """Assemble the server-side whole-quote push service (manager + channel).
 
     Returns ``(manager, channel)`` or ``None`` when disabled. The channel publisher
@@ -689,6 +702,7 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
         redis_client=redis_client,
         enabled=True,
         heartbeat_timeout_seconds=heartbeat_timeout,
+        push_channel=push_channel,
     )
 
 
@@ -768,10 +782,19 @@ def _build_rpc_service(context_info, app, config):
     if not account_id:
         print("[bigqmt_rpc] 已禁用：account_id 为空")
         return None
+    transport = None
+    if not redis_transport:
+        if _load_bridge_module is not None:
+            build_transport = _load_bridge_module("bigqmt_signal_trader.transports.factory").build_transport
+        else:
+            from bigqmt_signal_trader.transports.factory import build_transport
+
+        transport = build_transport(transport_name, rpc_config, account_id=account_id)
     allow_order_methods = _config_bool(rpc_config.get("allow_order_methods"), False)
     global _quote_subscription_service
     _quote_subscription_service = _build_quote_subscription_service(
-        context_info, config, transport_name, account_id, redis_client
+        context_info, config, transport_name, account_id, redis_client,
+        transport if transport_name == "serial" else None,
     )
     quote_manager = (
         _quote_subscription_service[0] if _quote_subscription_service is not None else None
@@ -797,7 +820,8 @@ def _build_rpc_service(context_info, app, config):
         # Async settlement keeps passorder off the adjust thread's critical
         # path; set rpc_settle_orders_inline=True only for a runtime with no
         # adjust drain to retry on.
-        settle_orders_inline=_config_bool(rpc_config.get("settle_orders_inline"), False),
+        settle_orders_inline=(transport_name != "serial"
+                              and _config_bool(rpc_config.get("settle_orders_inline"), False)),
         order_settle_timeout_seconds=float(rpc_config.get("order_settle_timeout_seconds", 3.0)),
         quote_subscription_manager=quote_manager,
         # .get(key) not .get(key, default): "" is a real answer here (leave
@@ -844,6 +868,7 @@ def _build_rpc_service(context_info, app, config):
     # refused cancel, so the handlers' settle path publishes through this
     # hook, which rides the same sink/fallback machinery as native events.
     handlers.exec_event_publisher = _publish_synthesized_cancel_error
+    handlers.exec_events_enabled = _config_bool((config.get("exec_events") or {}).get("enabled"), True)
     handlers.download_jobs_enabled = _config_bool(
         (config.get("download_jobs") or {}).get("enabled"), False)
     handlers.download_job_chunk_size = int((config.get("download_jobs") or {}).get("chunk_size") or 10)
@@ -859,20 +884,6 @@ def _build_rpc_service(context_info, app, config):
     if background_threads and not configured_bg:
         print("[bigqmt_rpc] transport=%s 不支持 drain，已强制启用 background_threads"
               % transport_name)
-    # Build the transport. Redis is the default and reuses the existing clients/
-    # templates (zero behavior change). zmq/mysql/shm go through the factory and
-    # bypass the Redis clients entirely.
-    transport = None
-    if transport_name not in ("redis", "", "default"):
-        if _load_bridge_module is not None:
-            build_transport = _load_bridge_module("bigqmt_signal_trader.transports.factory").build_transport
-        else:
-            from bigqmt_signal_trader.transports.factory import build_transport
-
-        factory_config = dict(rpc_config)
-        factory_config["account_id"] = account_id
-        factory_config["print_prefix"] = "[bigqmt_rpc]"
-        transport = build_transport(transport_name, factory_config, account_id=account_id, print_prefix="[bigqmt_rpc]")
     print(
         "[bigqmt_rpc] transport=%s 模式配置 process_in_listener=%s listener_methods=%s allow_order_methods=%s background_threads=%s"
         % (transport_name, process_in_listener, listener_methods, allow_order_methods, background_threads)
@@ -897,6 +908,8 @@ def _build_rpc_service(context_info, app, config):
         heavy_offload=_config_bool(rpc_config.get("heavy_offload"), True),
         heavy_codes_threshold=int(rpc_config.get("heavy_codes_threshold", 20) or 20),
     )
+    if transport_name == "serial":
+        return service
     # Multi-account: when BIGQMT_ACCOUNT_TYPE_MAP has multiple entries,
     # build one RPC service per account sharing the same handlers.
     try:
@@ -920,9 +933,10 @@ def _start_rpc_service(context_info, app, config):
     global _rpc_service
     if _rpc_service is not None:
         return _rpc_service
-    _rpc_service = _build_rpc_service(context_info, app, config)
-    if _rpc_service is not None:
-        _rpc_service.start()
+    service = _build_rpc_service(context_info, app, config)
+    if service is not None:
+        service.start()
+        _rpc_service = service
         if _quote_subscription_service is not None:
             try:
                 _quote_subscription_service[1].start_publisher()
@@ -1280,6 +1294,10 @@ def init(ContextInfo):
     except Exception as exc:
         _log_startup_error("上下文预热启动失败：%s" % exc)
     return app
+
+
+def stop(ContextInfo):
+    reset_app()
 
 
 def _log_startup_error(message):
@@ -1727,6 +1745,9 @@ def _event_instrument_name(context_info, stock_code):
 
 
 def _push_channel_sink():
+    transport = getattr(_rpc_service, "_transport", None)
+    if getattr(transport, "name", None) == "serial":
+        return transport
     if _quote_subscription_service is None:
         return None
     try:
@@ -1855,6 +1876,8 @@ def _exec_event_redis(config):
     explicitly disabled; omitted flags retain the legacy enabled behavior.
     """
     global _exec_event_redis_client
+    if str((config.get("rpc") or {}).get("transport") or "").lower() == "serial":
+        return None
     existing = getattr(_rpc_service, "redis", None) if _rpc_service is not None else None
     if existing is not None:
         return existing

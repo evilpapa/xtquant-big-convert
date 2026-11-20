@@ -49,6 +49,7 @@ if _load_bridge_module is not None:
     order_callback = _strategy_module.order_callback
     reset_app = _strategy_module.reset_app
     set_account_id = _strategy_module.set_account_id
+    stop = _strategy_module.stop
     sync_positions = _strategy_module.sync_positions
 else:
     from bigqmt_signal_trader_strategy import (  # noqa: E402
@@ -63,6 +64,7 @@ else:
         order_callback,
         reset_app,
         set_account_id,
+        stop,
         sync_positions,
     )
 
@@ -124,6 +126,7 @@ RPC_LISTENER_METHODS = ("*",)
 # Transport selection: redis or shm.
 # Backend-specific configuration is forwarded to the factory.
 RPC_TRANSPORT = "redis"
+RPC_SERIAL_CONFIG = {}
 # None defaults to enabled; explicit True/False overrides it.
 RPC_NATIVE_XTDATA_ENABLED = None
 QUOTE_PUSH_CONFIG = {}
@@ -286,6 +289,7 @@ REDIS_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("redis_enabled", REDIS_ENABLED))
 REDIS_ENABLED_EXPLICIT = "redis_enabled" in BIGQMT_REDIS_CONFIG
 # Keep direct runtime configuration in sync with the selected transport.
 RPC_TRANSPORT = str(BIGQMT_REDIS_CONFIG.get("transport", RPC_TRANSPORT)).lower()
+RPC_SERIAL_CONFIG = dict(BIGQMT_REDIS_CONFIG.get("serial") or {})
 if BIGQMT_REDIS_CONFIG.get("native_xtdata_enabled") is not None:
     RPC_NATIVE_XTDATA_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("native_xtdata_enabled"))
 REDIS_HOST = BIGQMT_REDIS_CONFIG.get("host", REDIS_HOST)
@@ -361,7 +365,7 @@ def _redis_block():
     itself rather than the optional extras.
 
     """
-    if not REDIS_ENABLED and RPC_TRANSPORT not in ("redis", "", "default"):
+    if RPC_TRANSPORT == "serial" or (not REDIS_ENABLED and RPC_TRANSPORT not in ("redis", "", "default")):
         return {}
     return {
         "host": REDIS_HOST,
@@ -401,6 +405,8 @@ def _apply_config(account_id):
                                   if RPC_NATIVE_XTDATA_ENABLED is not None
                                   else True),
     }
+    if RPC_TRANSPORT == "serial":
+        rpc_block["serial"] = dict(RPC_SERIAL_CONFIG)
     # Forward order_settle_timeout_seconds ONLY when the local config named
     # it (#396 follow-up): the strategy/handlers default (3.0s) owns the unset
     # case, and forwarding None would crash its float() -- the chain used to
@@ -420,7 +426,7 @@ def _apply_config(account_id):
         account_type=ACCOUNT_TYPE,
         position_sync_type="redis" if RPC_TRANSPORT in ("redis", "", "default") else "",
         enable_rpc=True,
-        schedule_adjust=SCHEDULE_ADJUST_ENABLED,
+        schedule_adjust=SCHEDULE_ADJUST_ENABLED or RPC_TRANSPORT == "serial",
         schedule_adjust_interval=SCHEDULE_ADJUST_INTERVAL,
         redis=_redis_block(),
         rpc=rpc_block,
@@ -457,7 +463,9 @@ def configure_runtime_account(account_id):
 
 def configure_runtime_redis(redis_config):
     global REDIS_ENABLED, REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_USERNAME, REDIS_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, REDIS_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
+    global RPC_SERIAL_CONFIG
     redis_config = dict(redis_config or {})
+    RPC_SERIAL_CONFIG = dict(redis_config.get("serial") or {})
     RPC_BACKGROUND_THREADS_EXPLICIT = "rpc_background_threads" in redis_config
     REDIS_ENABLED_EXPLICIT = "redis_enabled" in redis_config
     if redis_config.get("native_xtdata_enabled") is not None:

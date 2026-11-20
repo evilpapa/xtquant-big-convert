@@ -143,7 +143,8 @@ embedded loader below resolves relative imports against the in-memory sources,
 so you can copy this one file to a QMT python directory and run it as a
 strategy without shipping the package alongside.
 
-Edit BIGQMT_ACCOUNT_ID / BIGQMT_REDIS_CONFIG below before running.
+Set the BIGQMT_ACCOUNT_ID environment variable before running.
+Edit BIGQMT_REDIS_CONFIG below for your deployment.
 """
 import base64 as _base64
 import builtins as _builtins
@@ -151,19 +152,24 @@ import importlib as _importlib
 import os
 import sys
 import types
+import warnings
 
 
 # =========================== config block ===========================
-BIGQMT_ACCOUNT_ID = "40226423"
+BIGQMT_ACCOUNT_ID = os.environ.get("BIGQMT_ACCOUNT_ID", "").strip()
+if not BIGQMT_ACCOUNT_ID:
+    warnings.warn("BIGQMT_ACCOUNT_ID is unset or empty; no account is configured.", RuntimeWarning)
 
 BIGQMT_ACCOUNT_TYPE = "STOCK"
 
 BIGQMT_REDIS_CONFIG = {
-    "host": "192.168.2.112",
-    "port": 6379,
-    "db": 5,
-    "username": "",
-    "password": "",
+    "transport": "serial",
+    "serial": {"port": "COM10", "baudrate": 921600},
+    # "host": "127.0.0.1",
+    # "port": 6379,
+    # "db": 5,
+    # "username": "",
+    # "password": "",
     # Keep order RPC disabled unless you explicitly want remote order/cancel.
     "rpc_allow_order_methods": True,
     # Requests drain through QMT's run_time("adjust", ...) callback, on the main
@@ -378,7 +384,7 @@ except Exception as redis_config_error:
 try:
     _config = _load_local_config()
     BIGQMT_ACCOUNT_ID = getattr(_config, "BIGQMT_ACCOUNT_ID", "")
-    print("[bigqmt_shell] 本地账户配置已加载=%s" % bool(BIGQMT_ACCOUNT_ID))
+    print("[bigqmt_shell] local account configured=%s" % bool(BIGQMT_ACCOUNT_ID))
     _runtime.configure_runtime_account(BIGQMT_ACCOUNT_ID)
 except Exception as account_config_error:
     print("[bigqmt_shell] local account config load failed: %s" % account_config_error)
@@ -407,6 +413,7 @@ except NameError:
 
 init = _runtime.init
 handlebar = _runtime.handlebar
+stop = _runtime.stop
 adjust = _runtime.adjust
 order_callback = _runtime.order_callback
 deal_callback = _runtime.deal_callback

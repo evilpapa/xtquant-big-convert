@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,8 +54,9 @@ def build(kind):
 
 class BuildsSucceedTest(unittest.TestCase):
     def test_redis_build_compiles(self):
-        path, source = build("redis")
-        compile(source, path, "exec")
+        path, _source = build("redis")
+        with open(path, "rb") as stream:
+            compile(stream.read(), path, "exec")
 
     pass
 
@@ -72,10 +74,23 @@ class ConfigBlockTest(unittest.TestCase):
     not ride along. The flat builder arrived carrying a real account id and
     rpc_allow_order_methods=True."""
 
-    def test_account_id_is_a_placeholder(self):
+    def test_account_id_is_read_when_the_strategy_runs(self):
         for kind in BUILDERS:
-            _path, source = build(kind)
-            self.assertIn('BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"', source, kind)
+            path, source = build(kind)
+            config = compile(source.split("# ========================= embedded sources")[0], path, "exec")
+            for value in (None, "  ", "  test-account  "):
+                with self.subTest(kind=kind, value=value), patch.dict(os.environ):
+                    if value is None:
+                        os.environ.pop("BIGQMT_ACCOUNT_ID", None)
+                    else:
+                        os.environ["BIGQMT_ACCOUNT_ID"] = value
+                    namespace = {}
+                    if value and value.strip():
+                        exec(config, namespace)
+                    else:
+                        with self.assertWarnsRegex(RuntimeWarning, "BIGQMT_ACCOUNT_ID"):
+                            exec(config, namespace)
+                    self.assertEqual(namespace["BIGQMT_ACCOUNT_ID"], (value or "").strip())
 
     def test_no_bare_digit_account_id(self):
         for kind in BUILDERS:

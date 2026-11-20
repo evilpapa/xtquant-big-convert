@@ -717,7 +717,7 @@ python tools/build_single_file.py
 | `build_single_file.py` | `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` | base64 | Redis |
 
 
-**用法**：编辑生成文件顶部的 config block（`BIGQMT_ACCOUNT_ID` / `BIGQMT_ACCOUNT_TYPE` / `BIGQMT_REDIS_CONFIG`），把这**一个文件**拷进 QMT 的 python 目录当策略加载即可，不需要一并拷贝整个包。默认值与 `src/bigqmt_signal_trader_local_config.example.py` 保持一致——**`rpc_allow_order_methods` 默认为 `False`**，需要远程下单/撤单时才显式打开。
+**用法**：编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_REDIS_CONFIG`，把这**一个文件**拷进 QMT 的 python 目录当策略加载即可。策略启动时读取环境变量 `BIGQMT_ACCOUNT_ID`；未设置或只有空白时会提示。首次验证请将 `rpc_allow_order_methods` 设为 `False`，需要远程下单或撤单时再打开。
 
 产物约 900KB / 700KB，已加入 `.gitignore`——**用时重新生成，不要提交**。改动包内代码后需重新运行生成器。
 

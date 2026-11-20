@@ -498,15 +498,6 @@ wheels = [
 ]
 
 [[package]]
-name = "dbutils"
-version = "3.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1f/92/dd56acef02f17cffdf1f332a5fd4486b34dec7896973156d5b5903eacda6/dbutils-3.2.0.tar.gz", hash = "sha256:dfe3f5eb6e383042d68ad07e4e9778b2abbcc4627a283f85efc8210319c075d2", size = 127992, upload-time = "2026-08-21T21:31:53.27Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/08/7b88774c4af482423684157374a90df8e0f54b04b63787c62fe45776f6f7/dbutils-3.2.0-py3-none-any.whl", hash = "sha256:5b512edbff29697d118359c1a7a48ce9f93b9b6e4ecebad25396b987b4bce947", size = 36210, upload-time = "2026-08-21T21:31:52.049Z" },
-]
-
-[[package]]
 name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -861,29 +852,12 @@ wheels = [
 ]
 
 [[package]]
-name = "pymysql"
-version = "1.1.2"
+name = "pyserial"
+version = "3.5"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version < '3.9'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/ae/1fe3fcd9f959efa0ebe200b8de88b5a5ce3e767e38c7ac32fb179f16a388/pymysql-1.1.2.tar.gz", hash = "sha256:4961d3e165614ae65014e361811a724e2044ad3ea3739de9903ae7c21f539f03", size = 48258, upload-time = "2025-08-24T12:55:55.146Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/7d/ae3f0a63f41e4d2f6cb66a5b57197850f919f59e558159a4dd3a818f5082/pyserial-3.5.tar.gz", hash = "sha256:3c77e014170dfffbd816e6ffc205e9842efb10be9f58ec16d3e8675b4925cddb", size = 159125, upload-time = "2020-11-23T03:59:15.045Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/4c/ad33b92b9864cbde84f259d5df035a6447f91891f5be77788e2a3892bce3/pymysql-1.1.2-py3-none-any.whl", hash = "sha256:e6b1d89711dd51f8f74b1631fe08f039e7d76cf67a42a323d3178f0f25762ed9", size = 45300, upload-time = "2025-08-24T12:55:53.394Z" },
-]
-
-[[package]]
-name = "pymysql"
-version = "1.2.4"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.11'",
-    "python_full_version == '3.10.*'",
-    "python_full_version == '3.9.*'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/69/808dc3d9bcc7d2841cdc2909b978c64eb1c450b7cd7b42d5907f7de7567d/pymysql-1.2.4.tar.gz", hash = "sha256:491558165b8e11f3644c5f9cfb30cc9c9111ffd54e53d3aa91b9a0a20be2294f", size = 51598, upload-time = "2026-11-09T09:37:09.356Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/60/acffa1e7261fdc68fadf6f196b66058e03dcb3df239f2c0acbfd11165845/pymysql-1.2.4-py3-none-any.whl", hash = "sha256:e169bed906168fffd0088925f45b3df024c2775c6fd128da0df773d47c458840", size = 46892, upload-time = "2026-11-09T09:37:07.987Z" },
+    { url = "https://files.pythonhosted.org/packages/07/bc/587a445451b253b285629263eb51c2d8e9bcea4fc97826266d186f96f558/pyserial-3.5-py2.py3-none-any.whl", hash = "sha256:c4451db6ba391ca6ca299fb3ec7bae67a5c55dde170964c7a14ceefec02f2cf0", size = 90585, upload-time = "2020-11-23T03:59:13.41Z" },
 ]
 
 [[package]]
@@ -1119,7 +1093,7 @@ wheels = [
 
 [[package]]
 name = "xtquant-big-convert"
-version = "0.3.78"
+version = "0.4.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -1135,23 +1109,20 @@ msgpack = [
     { name = "msgpack", version = "1.1.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.9.*'" },
     { name = "msgpack", version = "1.2.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
 ]
-mysql = [
-    { name = "dbutils" },
-    { name = "pymysql", version = "1.1.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
-    { name = "pymysql", version = "1.2.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
-]
 redis = [
     { name = "redis", version = "6.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },
     { name = "redis", version = "7.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.9'" },
 ]
+serial = [
+    { name = "pyserial" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "dbutils", marker = "extra == 'mysql'", specifier = ">=3.0.0" },
     { name = "msgpack", marker = "extra == 'msgpack'", specifier = ">=1.0.0" },
-    { name = "pymysql", marker = "extra == 'mysql'", specifier = ">=1.0.0" },
+    { name = "pyserial", marker = "extra == 'serial'", specifier = ">=3.5,<4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
     { name = "redis", marker = "extra == 'redis'", specifier = ">=5.0.0,<8.0.0" },
 ]
-provides-extras = ["redis", "mysql", "msgpack", "dev"]
+provides-extras = ["redis", "serial", "msgpack", "dev"]

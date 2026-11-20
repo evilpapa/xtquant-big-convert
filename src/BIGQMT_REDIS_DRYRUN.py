@@ -362,6 +362,7 @@ except NameError:
 
 init = _runtime.init
 handlebar = _runtime.handlebar
+stop = _runtime.stop
 adjust = _runtime.adjust
 order_callback = _runtime.order_callback
 deal_callback = _runtime.deal_callback

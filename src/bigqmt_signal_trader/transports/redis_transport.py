@@ -584,6 +584,8 @@ def _call_redis_rpc(
     request.setdefault("reply_list", response_list)
     request.setdefault("reply_key", response_key)
     request.setdefault("ttl_seconds", ttl_seconds)
+    request.setdefault("timeout_seconds", float(timeout_seconds))
+    request["_sent_at"] = time.time()
     request["request_id"] = request_id
     payload = encode_rpc_request_payload(request)
 
