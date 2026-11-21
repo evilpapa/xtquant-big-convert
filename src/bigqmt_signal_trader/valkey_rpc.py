@@ -21,7 +21,6 @@ from .adapters.valkey_common import decode_text
 from .code_utils import normalize_stock_code
 from . import exec_events as _exec_events
 from .models import AccountSnapshot, OrderRef, OrderRequest
-from . import order_identity_journal as _identity_journal
 
 
 # time.monotonic: unaffected by wall-clock jumps, so a settle deadline
@@ -1831,7 +1830,7 @@ class BigQmtRpcHandlers:
     _ORDER_IDENTITY_LOCAL_TTL_SECONDS = 7 * 86400.0
 
     def enable_order_identity_persistence(self, directory=None, account_types=None):
-        """Restore Valkey-free attribution before the RPC service starts."""
+        """Restore attribution for standalone callers with filesystem access."""
         from .account_type_map import get_account_type_map, primary_account_type
 
         self._order_identity_journals = {}
@@ -1851,7 +1850,9 @@ class BigQmtRpcHandlers:
         account_id = str(account_id or "")
         if account_id in stores:
             return stores[account_id]
-        store = _identity_journal.OrderIdentityJournal(
+        from .order_identity_journal import OrderIdentityJournal
+
+        store = OrderIdentityJournal(
             account_id,
             self._configured_account_type(account_id) if account_type is None else account_type,
             directory=self._order_identity_journal_directory,
@@ -2510,8 +2511,8 @@ class BigQmtRpcHandlers:
             "local_journal_size": len(journal),
         }
         store = self._load_order_identity_journal(account_id)
+        out["local_persistence_enabled"] = store is not None
         if store is not None:
-            out["local_persistence_enabled"] = True
             out["local_persistence_directory"] = store.directory
             out["local_persistence_error"] = store.error
             journal = self._order_identity_local

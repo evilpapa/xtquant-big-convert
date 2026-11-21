@@ -742,7 +742,6 @@ def _build_rpc_service(context_info, app, config):
         "bigqmt_signal_trader.full_tick_cache",
         "bigqmt_signal_trader.download_jobs",
         "bigqmt_signal_trader.order_remarks",
-        "bigqmt_signal_trader.order_identity_journal",
         "bigqmt_signal_trader.exec_events",
     ):
         try:
@@ -851,11 +850,6 @@ def _build_rpc_service(context_info, app, config):
     handlers.download_job_valkey_client = _store_valkey
     handlers.order_identity_valkey_client = _store_valkey
     handlers.order_remark_valkey_client = _exec_events.bounded_identity_client(_store_valkey)
-    if _store_valkey is None:
-        # Valkey-free deployments need a durable source after a
-        # real strategy/process restart, when the in-memory journal is gone.
-        handlers.enable_order_identity_persistence(
-            directory=rpc_config.get("order_identity_dir"))
     # Settlement reads the callback-fed watch table first (issue #164).
     handlers.order_watch_table = _order_watch_table
     # Whether _pump_download_jobs will actually run queued jobs. The submit RPC

@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import bigqmt_signal_trader_strategy as strategy
-from bigqmt_signal_trader import serial_valkey_bridge
+from bigqmt_signal_trader import order_identity_journal, serial_valkey_bridge
 from bigqmt_signal_trader.exec_events import order_channel, publish_exec_event
 from bigqmt_signal_trader.quote_push_channel import decode_push_payload
 from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc, encode_rpc_request_payload
@@ -220,7 +220,7 @@ def test_runtime_forwards_the_serial_port_without_a_valkey_connection(monkeypatc
 
 @pytest.mark.parametrize("allow_order_methods", [False, True])
 def test_existing_valkey_client_round_trip_and_execution_gate(
-        duplex, monkeypatch, tmp_path, allow_order_methods):
+        duplex, monkeypatch, allow_order_methods):
     qmt, windows = duplex
     valkey = MemoryValkey()
     bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
@@ -231,13 +231,18 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
     monkeypatch.setattr(strategy, "_exec_event_valkey_client", object())
     seen = []
 
+    def forbidden_journal(*args, **kwargs):
+        pytest.fail("QMT serial RPC attempted to open a filesystem identity journal")
+
+    monkeypatch.setattr(order_identity_journal, "OrderIdentityJournal", forbidden_journal)
+
     def submit(order):
         seen.append((threading.current_thread(), order.remark))
         return SimpleNamespace(order_sys_id="simulated")
 
     config = {"account_id": ACCOUNT, "valkey": {"host": "must-not-connect"}, "rpc": {
         "enabled": True, "transport": "serial", "allow_order_methods": allow_order_methods,
-        "order_identity_dir": str(tmp_path), "background_threads": True,
+        "order_identity_dir": "must-not-open", "background_threads": True,
         "native_xtdata_enabled": True, "heavy_offload": False,
     }}
     context = SimpleNamespace()
@@ -262,7 +267,8 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
         assert valkey.published[REPLY_PREFIX + "ping-1"]
 
         params = {"stock_code": "000001.SZ", "action": "BUY", "volume": 100,
-                  "remark": "simulated", "wait_settlement": False}
+                  "remark": "simulated", "strategy_name": "serial-test",
+                  "wait_settlement": False}
         response = call_valkey_rpc(valkey, ACCOUNT, "order_stock", params, request_id="order-1")
         assert response["ok"] == allow_order_methods
         if allow_order_methods:
@@ -274,6 +280,14 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
         else:
             assert "not allowed" in response["error"]
             assert seen == []
+
+        probe = call_valkey_rpc(valkey, ACCOUNT, "probe_order_identity",
+                                {"remark": "simulated"}, request_id="identity-1")
+        assert probe["ok"] is True
+        assert probe["data"]["local_persistence_enabled"] is False
+        assert probe["data"]["local_hit"] is allow_order_methods
+        if allow_order_methods:
+            assert probe["data"]["local_strategy_name"] == "serial-test"
 
         event = {"account_id": ACCOUNT, "event_type": "order", "order_sys_id": "simulated"}
         publish_exec_event(service.handlers._exec_event_sink(), ACCOUNT, event)

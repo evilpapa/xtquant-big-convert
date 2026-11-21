@@ -73,13 +73,9 @@ QMT 模型交易 (COM10) ←→ com0com ←→ Windows 桥接 (COM11) ←→ Val
 允许 `EVAL`、`GET`、`SETRANGE`；权限不足时原记录保留，错误可从 `probe_order_identity`
 的 `lookup_error` 查看。
 
-没有配置 Valkey 时，服务端在下单前同步追加本地身份 journal，并在启动时恢复七天内的
-策略名。默认目录为 QMT 的 `python/state/order_identity`，不可写时回退到用户目录下
-`.cache/bigqmt/order_identity`。可在启动 QMT 前设置 `BIGQMT_ORDER_IDENTITY_DIR` 指定
-固定目录；文件按账户和账户类型隔离。重装、换运行用户或迁移终端时须保留此目录。
-`probe_order_identity` 的 `local_persistence_directory`、`local_persistence_error`
-分别显示实际路径及持久化错误。journal 写入失败时当前进程仍使用内存归属，重启恢复可能不完整。
+QMT 策略的本地订单身份记录保存在内存中，`probe_order_identity` 显示
+`local_persistence_enabled: false`。串口模式下，策略进程重启会清空这份记录。
+直连 Valkey 时，策略重启后仍可读取七天内保存在 Valkey 的身份记录。
 
-该修复不改变 `order_remark`。身份记录里的 `user_order_id` 就是提交时传入的 remark，
-同一 remark 的首个非空策略名仍优先。无 Valkey 时的落盘行为从升级后生效；旧进程已丢失且
-没有持久记录的归属无法重建。同步新包和顶层策略文件后，须重启策略一次。
+身份记录里的 `user_order_id` 就是提交时传入的 `order_remark`，同一备注的首个非空策略名优先。
+同步新包和顶层策略文件后，须重启策略一次。
