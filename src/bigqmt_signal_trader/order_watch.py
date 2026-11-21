@@ -14,7 +14,7 @@ Each order event teaches two directions:
 
 Written from QMT's C++ callback thread, read from the adjust thread: a plain
 dict under a lock, no new threads, bounded FIFO + TTL (same shape as
-_order_identity_local in redis_rpc). Callbacks only fire in live run mode --
+_order_identity_local in valkey_rpc). Callbacks only fire in live run mode --
 a miss must always mean "ask QMT", so the polling path stays as the fallback.
 """
 

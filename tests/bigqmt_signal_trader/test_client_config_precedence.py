@@ -1,8 +1,8 @@
 # coding: utf-8
-"""Explicit BigQmtRpcClient(redis_config=...) beats the config module (#289).
+"""Explicit BigQmtRpcClient(valkey_config=...) beats the config module (#289).
 
 The constructor already promises this for host/port/password: it builds
-``merged_redis_config`` as the module's redis_config updated by the explicit
+``merged_valkey_config`` as the module's valkey_config updated by the explicit
 one. The three feature sections each broke that promise in its own way:
 
 * local_cache read the module section first and used the explicit value only
@@ -10,16 +10,16 @@ one. The three feature sections each broke that promise in its own way:
 * formula_server ``or``-chained the module section ahead of the explicit
   dict, so any module section discarded the explicit one outright, not even
   a merge;
-* full_tick never read redis_config at all, so its constructor switch did
+* full_tick never read valkey_config at all, so its constructor switch did
   nothing even with no config module present.
 
-@shengyy's repro (v0.3.33 and v0.3.38, offline, no Redis): a module saying
+@shengyy's repro (v0.3.33 and v0.3.38, offline, no Valkey): a module saying
 enabled=True for all three and a constructor saying False for all three gave
 True True True; with no module, ``full_tick_cache_enabled=True`` gave False.
 
-The order now, for every key of every section: explicit redis_config >
+The order now, for every key of every section: explicit valkey_config >
 config module > env / default. Inside the module, load_client_config already
-folds BIGQMT_REDIS_CONFIG's flat keys into each dedicated section with the
+folds BIGQMT_CONFIG's flat keys into each dedicated section with the
 flat key winning; that pre-existing intra-module order is not touched.
 """
 
@@ -61,8 +61,8 @@ class _WithModule(object):
             os.environ["BIGQMT_CLIENT_CONFIG_MODULE"] = self.saved_env
 
 
-def _client(**redis_config):
-    return BigQmtRpcClient(account_id="acct", redis_config=redis_config)
+def _client(**valkey_config):
+    return BigQmtRpcClient(account_id="acct", valkey_config=valkey_config)
 
 
 class ReportedReproTest(unittest.TestCase):
@@ -89,24 +89,24 @@ class PrecedenceLadderTest(unittest.TestCase):
     """Each rung, checked on local_cache_enabled with the rung below set."""
 
     def test_inside_the_module_the_flat_key_still_beats_the_section(self):
-        """Pre-existing: load_client_config writes BIGQMT_REDIS_CONFIG's
+        """Pre-existing: load_client_config writes BIGQMT_CONFIG's
         local_cache_enabled over the section's enabled. #289 is about the
         constructor argument; this intra-module order is left as it was."""
         with _WithModule(BIGQMT_LOCAL_CACHE_CONFIG={"enabled": False},
-                         BIGQMT_REDIS_CONFIG={"local_cache_enabled": True}):
+                         BIGQMT_CONFIG={"local_cache_enabled": True}):
             client = _client()
 
         self.assertTrue(client.local_cache_config["enabled"])
 
-    def test_module_redis_config_still_counts_when_nothing_else_says(self):
-        with _WithModule(BIGQMT_REDIS_CONFIG={"local_cache_enabled": False}):
+    def test_module_valkey_config_still_counts_when_nothing_else_says(self):
+        with _WithModule(BIGQMT_CONFIG={"local_cache_enabled": False}):
             client = _client()
 
         self.assertFalse(client.local_cache_config["enabled"])
 
     def test_explicit_beats_both_module_sources(self):
         with _WithModule(BIGQMT_LOCAL_CACHE_CONFIG={"enabled": False},
-                         BIGQMT_REDIS_CONFIG={"local_cache_enabled": False}):
+                         BIGQMT_CONFIG={"local_cache_enabled": False}):
             client = _client(local_cache_enabled=True)
 
         self.assertTrue(client.local_cache_config["enabled"])

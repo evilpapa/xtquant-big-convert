@@ -96,8 +96,8 @@ class HandlerWiringTest(unittest.TestCase):
     """The RPC handlers reach the same manager the subscriptions live in."""
 
     def test_handlers_expose_status_and_kill(self):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
-        from test_redis_rpc import FakeMarketData, FakePositionProvider
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from test_valkey_rpc import FakeMarketData, FakePositionProvider
 
         manager, source = _manager()
         handlers = BigQmtRpcHandlers(
@@ -117,7 +117,7 @@ class HandlerWiringTest(unittest.TestCase):
         self.assertEqual(manager.status()["combos"], [])
 
     def test_status_and_kill_are_allowed_methods(self):
-        from bigqmt_signal_trader.redis_rpc import (
+        from bigqmt_signal_trader.valkey_rpc import (
             QUOTE_SUBSCRIPTION_METHODS, READ_METHODS,
         )
         self.assertIn("quote_subscription_status", READ_METHODS)

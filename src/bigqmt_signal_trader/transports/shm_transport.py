@@ -1,10 +1,7 @@
 """Shared-memory transport stub.
 
-Reserved for a future low-latency same-host backend. Not implemented because
-the QMT runtime ships Python 3.6, where ``multiprocessing.shared_memory`` is
-unavailable (added in 3.8). A ``mmap``-plus-named-mutex implementation is
-possible but non-trivial; until it lands, selecting this transport raises a
-clear error so misconfiguration fails fast.
+Reserved for a future low-latency same-host backend. Selecting this transport
+raises an error until the backend is implemented.
 """
 
 from .base import RpcTransport, TransportError
@@ -19,10 +16,7 @@ class SharedMemoryTransport(RpcTransport):
         )
 
     def _unsupported(self):
-        raise TransportError(
-            "shared-memory transport is not implemented yet "
-            "(requires Python 3.8+ shared_memory or a custom mmap ring buffer)"
-        )
+        raise TransportError("shared-memory transport is not implemented yet")
 
     def send_request(self, request, timeout_seconds):
         self._unsupported()

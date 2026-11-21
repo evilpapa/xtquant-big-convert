@@ -44,10 +44,10 @@ class SyncTest(unittest.TestCase):
         self.source = tempfile.mkdtemp()
         self.target = tempfile.mkdtemp()
         _write(os.path.join(self.source, "bigqmt_signal_trader", "__init__.py"), "new")
-        _write(os.path.join(self.source, "bigqmt_signal_trader", "redis_rpc.py"), "new rpc")
+        _write(os.path.join(self.source, "bigqmt_signal_trader", "valkey_rpc.py"), "new rpc")
         _write(os.path.join(self.source, "bigqmt_signal_trader_strategy.py"), "new strategy")
         _write(os.path.join(self.target, "bigqmt_signal_trader", "__init__.py"), "old")
-        _write(os.path.join(self.target, "bigqmt_signal_trader", "redis_rpc.py"), "old rpc")
+        _write(os.path.join(self.target, "bigqmt_signal_trader", "valkey_rpc.py"), "old rpc")
 
     def tearDown(self):
         for path in (self.source, self.target):
@@ -60,9 +60,9 @@ class SyncTest(unittest.TestCase):
         result = self._sync()
 
         self.assertEqual(
-            _read(os.path.join(self.target, "bigqmt_signal_trader", "redis_rpc.py")),
+            _read(os.path.join(self.target, "bigqmt_signal_trader", "valkey_rpc.py")),
             "new rpc")
-        self.assertIn(os.path.join("bigqmt_signal_trader", "redis_rpc.py"),
+        self.assertIn(os.path.join("bigqmt_signal_trader", "valkey_rpc.py"),
                       result["updated"])
 
     def test_identical_files_are_left_alone(self):
@@ -75,7 +75,7 @@ class SyncTest(unittest.TestCase):
     def test_the_overwritten_file_is_backed_up(self):
         result = self._sync()
         backup = os.path.join(self.target, "bigqmt_signal_trader",
-                              "redis_rpc.py" + result["backup_suffix"])
+                              "valkey_rpc.py" + result["backup_suffix"])
 
         self.assertTrue(os.path.exists(backup))
         self.assertEqual(_read(backup), "old rpc")
@@ -88,7 +88,7 @@ class SyncTest(unittest.TestCase):
 
 
 class ConfigFilesAreNeverWrittenTest(unittest.TestCase):
-    """These hold the account id and Redis credentials."""
+    """These hold the account id and Valkey credentials."""
 
     def setUp(self):
         self.source = tempfile.mkdtemp()

@@ -1,4 +1,4 @@
-"""MiniQMT-style client objects backed by Big QMT Redis RPC.
+"""MiniQMT-style client objects backed by Big QMT Valkey RPC.
 
 This module is the replacement edge for existing code that already calls
 ``xt_trader.query_stock_positions(...)`` or ``xtdata.get_full_tick(...)``.
@@ -28,12 +28,15 @@ from xtquant import xtconstant as _xtconstant
 from xtquant.xtconstant import ORDER_UNKNOWN, STOCK_BUY, STOCK_SELL
 from xtquant.xttype import StockAccount
 
+from .adapters.valkey_common import (
+    local_valkey_config, normalize_valkey_url, valkey_client_class, valkey_connection_options,
+)
 from .code_utils import is_bond_code
 from .full_tick_cache import request_full_tick_cache, wait_full_tick_cache
 from .local_cache import LocalMarketCache
 from .order_id import OrderId, order_sys_id_of
 from .option_order_type import option_order_type
-from .redis_rpc import TYPED_PAYLOAD_FLAG, call_redis_rpc
+from .valkey_rpc import TYPED_PAYLOAD_FLAG, call_valkey_rpc
 from .logging_setup import get_logger
 
 log = get_logger("xtquant_compat")
@@ -82,7 +85,7 @@ def _as_list(value):
 CLIENT_CONFIG_MODULE_ENV = "BIGQMT_CLIENT_CONFIG_MODULE"
 DEFAULT_CLIENT_CONFIG_MODULES = (
     "bigqmt_signal_trader_client_config",
-    "bigqmt_signal_trader_local_config",
+    "bigqmt_signal_trader_qmt_config",
 )
 
 
@@ -209,7 +212,7 @@ def _first_set(*values):
 
 
 class _ClientSetting(object):
-    """One client feature setting: explicit ``redis_config`` first, then the
+    """One client feature setting: explicit ``valkey_config`` first, then the
     config module's section, then the environment / built-in default -- the
     order the constructor already promises for host/port/password.
 
@@ -217,12 +220,12 @@ class _ClientSetting(object):
     ``local_cache`` read the module section first and used the explicit value
     only as its ``.get`` fallback; ``formula_server`` ``or``-chained the module
     section ahead of the explicit dict, so any module section discarded the
-    explicit one outright; ``full_tick`` never read ``redis_config`` at all,
+    explicit one outright; ``full_tick`` never read ``valkey_config`` at all,
     so its constructor switch did nothing even with no module present.
 
     ``section`` is what load_client_config hands over: the module's dedicated
     dict (``BIGQMT_LOCAL_CACHE_CONFIG`` etc.) with the module's own
-    ``BIGQMT_REDIS_CONFIG`` flat keys already folded in. How those two rank
+    ``BIGQMT_CONFIG`` flat keys already folded in. How those two rank
     against each other inside one file is that function's business and is
     unchanged here. Flat keys carry the section prefix
     (``local_cache_enabled``), section keys drop it (``enabled``); a section
@@ -278,17 +281,17 @@ def _quote_client_id():
 
 
 def _build_quote_push_channel(client):
-    """Build a Redis push subscriber when Redis is configured."""
-    from .quote_push_channel import RedisQuotePushChannel
+    """Build a Valkey push subscriber when Valkey is configured."""
+    from .quote_push_channel import ValkeyQuotePushChannel
 
-    transport_name = str(getattr(client, "transport_name", "redis") or "redis").lower()
-    if (transport_name not in ("redis", "", "default")
-            and not getattr(client, "_redis_explicit", True)):
+    transport_name = str(getattr(client, "transport_name", "valkey") or "valkey").lower()
+    if (transport_name not in ("valkey", "", "default")
+            and not getattr(client, "_valkey_explicit", True)):
         raise RuntimeError(
             "transport=%s 没有全推推送通道（服务端 0.3.58 起也不再发）："
-            "请改用 get_full_tick 轮询；或在客户端配置里显式给出 redis 块，"
-            "全推才会走 redis pub/sub。" % transport_name)
-    return RedisQuotePushChannel(client._redis(), account_id=client.account_id)
+            "请改用 get_full_tick 轮询；或在客户端配置里显式给出 valkey 块，"
+            "全推才会走 valkey pub/sub。" % transport_name)
+    return ValkeyQuotePushChannel(client._valkey(), account_id=client.account_id)
 
 
 def _missing_account_id_message():
@@ -342,17 +345,17 @@ def load_client_config(module_name=None):
         module = _import_optional_module(candidate)
         if module is None:
             continue
-        redis_config = dict(getattr(module, "BIGQMT_REDIS_CONFIG", {}) or {})
-        account_id = getattr(module, "BIGQMT_ACCOUNT_ID", None) or redis_config.get("account_id")
+        valkey_config = local_valkey_config(module)
+        account_id = getattr(module, "BIGQMT_ACCOUNT_ID", None) or valkey_config.get("account_id")
         timeout_seconds = getattr(module, "BIGQMT_RPC_TIMEOUT_SECONDS", None)
         if timeout_seconds is None:
-            timeout_seconds = redis_config.get("rpc_timeout_seconds")
+            timeout_seconds = valkey_config.get("rpc_timeout_seconds")
         download_wait_seconds = getattr(module, "BIGQMT_DOWNLOAD_WAIT_SECONDS", None)
         if download_wait_seconds is None:
-            download_wait_seconds = redis_config.get("download_wait_seconds")
+            download_wait_seconds = valkey_config.get("download_wait_seconds")
         download_poll_interval_seconds = getattr(module, "BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS", None)
         if download_poll_interval_seconds is None:
-            download_poll_interval_seconds = redis_config.get("download_poll_interval_seconds")
+            download_poll_interval_seconds = valkey_config.get("download_poll_interval_seconds")
         full_tick_cache_config = dict(getattr(module, "BIGQMT_FULL_TICK_CACHE_CONFIG", {}) or {})
         for key in (
             "full_tick_cache_enabled",
@@ -361,18 +364,18 @@ def load_client_config(module_name=None):
             "full_tick_wait_seconds",
             "full_tick_poll_interval_seconds",
         ):
-            if key in redis_config:
-                full_tick_cache_config[key] = redis_config[key]
+            if key in valkey_config:
+                full_tick_cache_config[key] = valkey_config[key]
         local_cache_config = dict(getattr(module, "BIGQMT_LOCAL_CACHE_CONFIG", {}) or {})
         for key in ("local_cache_enabled", "local_cache_dir", "local_cache_fallback_rpc", "local_cache_format"):
-            if key in redis_config:
-                local_cache_config[key.replace("local_cache_", "")] = redis_config[key]
+            if key in valkey_config:
+                local_cache_config[key.replace("local_cache_", "")] = valkey_config[key]
         formula_server_config = dict(getattr(module, "BIGQMT_FORMULA_SERVER_CONFIG", {}) or {})
-        formula_server_config.update(dict(redis_config.get("formula_server") or {}))
+        formula_server_config.update(dict(valkey_config.get("formula_server") or {}))
         return {
             "module": candidate,
             "account_id": account_id,
-            "redis_config": redis_config,
+            "valkey_config": valkey_config,
             "timeout_seconds": timeout_seconds,
             "download_wait_seconds": download_wait_seconds,
             "download_poll_interval_seconds": download_poll_interval_seconds,
@@ -1326,46 +1329,50 @@ class BigQmtRpcClient:
     def __init__(
         self,
         account_id=None,
-        redis_client=None,
-        redis_config=None,
+        valkey_client=None,
+        valkey_config=None,
         timeout_seconds=None,
         transport=None,
     ):
         client_config = load_client_config()
-        config_redis = dict(client_config.get("redis_config") or {})
-        redis_config = dict(redis_config or {})
-        merged_redis_config = dict(config_redis)
-        merged_redis_config.update(redis_config)
+        valkey_config = valkey_config or {}
+        merged_valkey_config = dict(client_config.get("valkey_config") or {})
+        merged_valkey_config.update(valkey_config)
         self.account_id = str(
             account_id
-            or merged_redis_config.get("account_id")
+            or merged_valkey_config.get("account_id")
             or client_config.get("account_id")
             or os.environ.get("BIGQMT_ACCOUNT_ID")
             or ""
         )
-        self.redis_client = redis_client
-        # 「用户显式配了 redis」和「默认填充」要分得开：非 redis 传输的客户端
-        # 默认没有 redis 可连，事件线程每轮开头那次 ping 会照
+        self.valkey_client = valkey_client
+        db = merged_valkey_config.get("db")
+        if db is None or db == "":
+            db = os.environ.get("BIGQMT_VALKEY_DB") or 5
+        # 「用户显式配了 valkey」和「默认填充」要分得开：非 valkey 传输的客户端
+        # 默认没有 valkey 可连，事件线程每轮开头那次 ping 会照
         # 127.0.0.1:6379 拨——在外连即杀的沙箱里一次探测就死（2026-09-24
         # 实盘逐行核对）。显式信号：合并后的配置或环境变量里给了 host /
         # username / password 任何一个。
-        self._redis_explicit = bool(
-            merged_redis_config.get("host")
-            or merged_redis_config.get("username")
-            or merged_redis_config.get("password")
-            or os.environ.get("BIGQMT_REDIS_HOST")
-            or os.environ.get("BIGQMT_REDIS_USERNAME")
-            or os.environ.get("BIGQMT_REDIS_PASSWORD")
+        self._valkey_explicit = bool(
+            merged_valkey_config.get("host")
+            or merged_valkey_config.get("username")
+            or merged_valkey_config.get("password")
+            or merged_valkey_config.get("url")
+            or os.environ.get("BIGQMT_VALKEY_HOST")
+            or os.environ.get("BIGQMT_VALKEY_USERNAME")
+            or os.environ.get("BIGQMT_VALKEY_PASSWORD")
+            or os.environ.get("BIGQMT_VALKEY_URL")
         )
-        self.redis_config = {
-            "host": merged_redis_config.get("host") or os.environ.get("BIGQMT_REDIS_HOST", "127.0.0.1"),
-            "port": int(merged_redis_config.get("port") or _env_int("BIGQMT_REDIS_PORT", 6379)),
-            "db": int(merged_redis_config.get("db") or _env_int("BIGQMT_REDIS_DB", 5)),
-            "username": merged_redis_config.get("username", os.environ.get("BIGQMT_REDIS_USERNAME") or ""),
-            "password": merged_redis_config.get("password", os.environ.get("BIGQMT_REDIS_PASSWORD") or ""),
-            # redis-py 8.x 默认 RESP3，Redis 5.0 只支持 RESP2 -> 透传 protocol
-            "protocol": merged_redis_config.get("protocol") or _env_int("BIGQMT_REDIS_PROTOCOL", 2),
+        self.valkey_config = {
+            "host": merged_valkey_config.get("host") or os.environ.get("BIGQMT_VALKEY_HOST", "127.0.0.1"),
+            "port": int(merged_valkey_config.get("port") or os.environ.get("BIGQMT_VALKEY_PORT") or 6379),
+            "db": int(db),
+            "username": merged_valkey_config.get("username", os.environ.get("BIGQMT_VALKEY_USERNAME") or ""),
+            "password": merged_valkey_config.get("password", os.environ.get("BIGQMT_VALKEY_PASSWORD") or ""),
+            "protocol": merged_valkey_config.get("protocol") or os.environ.get("BIGQMT_VALKEY_PROTOCOL") or 2,
         }
+        self._valkey_url = merged_valkey_config.get("url") or os.environ.get("BIGQMT_VALKEY_URL")
         config_timeout = client_config.get("timeout_seconds")
         self.timeout_seconds = float(
             timeout_seconds
@@ -1387,9 +1394,9 @@ class BigQmtRpcClient:
             else _env_float("BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS", 0.5)
         )
         # Precedence for the three feature sections below (#289): explicit
-        # redis_config > config module > env / default -- the order
+        # valkey_config > config module > env / default -- the order
         # host/port/password already get above.
-        full_tick = _ClientSetting(redis_config, client_config.get("full_tick_cache_config"))
+        full_tick = _ClientSetting(valkey_config, client_config.get("full_tick_cache_config"))
         self.full_tick_cache_config = {
             "enabled": _bool_value(
                 full_tick.get("full_tick_cache_enabled", "enabled"),
@@ -1413,7 +1420,7 @@ class BigQmtRpcClient:
         # download of raw history can be followed by a read in another
         # adjustment mode. Set fallback_rpc=False only for an explicitly
         # offline, cache-only client.
-        local_cache = _ClientSetting(redis_config, client_config.get("local_cache_config"))
+        local_cache = _ClientSetting(valkey_config, client_config.get("local_cache_config"))
         self.local_cache_config = {
             "enabled": _bool_value(
                 local_cache.get("local_cache_enabled", "enabled"),
@@ -1434,53 +1441,50 @@ class BigQmtRpcClient:
                 or "auto"  # parquet if pyarrow is available, else pickle
             ),
         }
-        # Transport selection. Default "redis" keeps the legacy call_redis_rpc
+        # Transport selection. Default "valkey" keeps the legacy call_valkey_rpc
         # path (so existing client configs are unchanged). Setting transport to
         # "zmq"/"mysql"/"shm" (via config or constructor) routes calls through
         # the swappable transport layer instead.
         self.transport_name = str(
             transport
-            or merged_redis_config.get("transport")
+            or merged_valkey_config.get("transport")
             or os.environ.get("BIGQMT_RPC_TRANSPORT")
-            or "redis"
+            or "valkey"
         ).lower()
         self._transport_instance = None  # lazily built by _transport()
         # FormulaServer read fast-path. QMT's C++ quote service (port 58600)
         # answers reference/history reads in ~0.07ms without touching the QMT
         # python thread. Enabled by default; every miss falls back to RPC, so a
         # client that cannot reach it just runs as before.
-        # Merge, do not choose: the module's section (redis_config already
+        # Merge, do not choose: the module's section (valkey_config already
         # folded in by load_client_config) updated by the explicit dict, key
         # by key (#289). The old or-chain took the module section whole and
         # never looked at the explicit dict.
         formula_config = dict(client_config.get("formula_server_config") or {})
-        formula_config.update(redis_config.get("formula_server") or {})
+        formula_config.update(valkey_config.get("formula_server") or {})
         if "enabled" not in formula_config:
             formula_config["enabled"] = _env_bool("BIGQMT_FORMULA_ENABLED", True)
         self.formula_server_config = formula_config
         self._formula_router_instance = None  # lazily built by _formula_router()
 
-    def _redis(self):
-        if self.redis_client is None:
-            import redis
-
-            from .adapters.redis_common import redis_supports_protocol_kw
-
-            cfg = dict(self.redis_config)
-            if not cfg.get("username"):
-                cfg.pop("username", None)
-            if not cfg.get("password"):
-                cfg.pop("password", None)
-            if not redis_supports_protocol_kw():
-                # QMT 自带 redis-py 3.5.3 不认 protocol（issue #71）
-                cfg.pop("protocol", None)
-            self.redis_client = redis.Redis(**cfg)
-        return self.redis_client
+    def _valkey(self):
+        if self.valkey_client is None:
+            client_class = valkey_client_class()
+            cfg = dict(self.valkey_config)
+            options = valkey_connection_options(cfg.pop("protocol"))
+            if self._valkey_url:
+                url = normalize_valkey_url(self._valkey_url)
+                self.valkey_client = client_class.from_url(url, **options)
+            else:
+                cfg["username"] = cfg["username"] or None
+                cfg["password"] = cfg["password"] or None
+                self.valkey_client = client_class(**cfg, **options)
+        return self.valkey_client
 
     def _transport(self):
         if self._transport_instance is None:
-            if self.transport_name in ("redis", "", "default"):
-                # Legacy path: call_redis_rpc builds its own request envelope.
+            if self.transport_name in ("valkey", "", "default"):
+                # Legacy path: call_valkey_rpc builds its own request envelope.
                 return None
             from .transports.factory import build_transport
 
@@ -1576,7 +1580,7 @@ class BigQmtRpcClient:
         transport = self._transport()
         if transport is not None:
             # Swappable transport path (zmq/mysql/...). Build the request
-            # envelope the same way call_redis_rpc does.
+            # envelope the same way call_valkey_rpc does.
             request = {
                 "schema_version": 1,
                 "request_id": str(request_id or uuid.uuid4().hex),
@@ -1590,8 +1594,8 @@ class BigQmtRpcClient:
             }
             response = transport.send_request(request, wait_seconds)
         else:
-            response = call_redis_rpc(
-                self._redis(),
+            response = call_valkey_rpc(
+                self._valkey(),
                 account_id=target_account,
                 method=method,
                 params=params or {},
@@ -1690,17 +1694,17 @@ class BigQmtRpcClient:
         }
         raw = json.dumps(event, ensure_ascii=False, default=str)
         stream_key = stream_template.format(account_id=account_id)
-        redis_client = self._redis()
+        valkey_client = self._valkey()
         try:
-            redis_client.xadd(stream_key, {"payload": raw}, maxlen=1000, approximate=True)
+            valkey_client.xadd(stream_key, {"payload": raw}, maxlen=1000, approximate=True)
             # 客户端侧写的流同样要能自己消失（#213）。
-            from .adapters.redis_common import touch_stream_ttl
+            from .adapters.valkey_common import touch_stream_ttl
 
-            touch_stream_ttl(redis_client, stream_key)
+            touch_stream_ttl(valkey_client, stream_key)
         except Exception:
             pass
         try:
-            redis_client.publish(stream_key, raw)
+            valkey_client.publish(stream_key, raw)
         except Exception:
             pass
         return event
@@ -1708,16 +1712,16 @@ class BigQmtRpcClient:
     def save_quote_subscription(self, seq, payload, active=True):
         account_id = str(self.account_id or "")
         key = "bigqmt:quote_subscriptions:%s" % account_id
-        redis_client = self._redis()
+        valkey_client = self._valkey()
         if active:
             value = json.dumps(payload or {}, ensure_ascii=False, default=str)
             try:
-                redis_client.hset(key, str(seq), value)
+                valkey_client.hset(key, str(seq), value)
             except Exception:
                 pass
         else:
             try:
-                redis_client.hdel(key, str(seq))
+                valkey_client.hdel(key, str(seq))
             except Exception:
                 pass
 
@@ -2113,16 +2117,16 @@ class BigQmtXtData:
             return {}
         cache_config = dict(getattr(self.client, "full_tick_cache_config", {}) or {})
         if _bool_value(cache_config.get("enabled"), False):
-            redis_client = self.client._redis()
+            valkey_client = self.client._valkey()
             request_full_tick_cache(
-                redis_client,
+                valkey_client,
                 self.client.account_id,
                 codes,
                 demand_ttl_seconds=cache_config.get("demand_ttl_seconds", 10),
                 cache_ttl_seconds=cache_config.get("cache_ttl_seconds", 10),
             )
             data = wait_full_tick_cache(
-                redis_client,
+                valkey_client,
                 self.client.account_id,
                 codes,
                 max_age_seconds=cache_config.get("cache_ttl_seconds", 10),
@@ -2135,7 +2139,7 @@ class BigQmtXtData:
             if upper_codes & {"SH", "SZ", "BJ", "HK"}:
                 # Whole-market snapshots must stay on the demand cache. A live RPC
                 # here would ship ~50k rows on every miss, so surface the timeout.
-                raise TimeoutError("full tick redis cache timeout: %s" % ",".join(str(code) for code in codes))
+                raise TimeoutError("full tick valkey cache timeout: %s" % ",".join(str(code) for code in codes))
             # Symbol-list miss (cold start / expired snapshot): fall back to a live
             # RPC so the first call is ~ms instead of a hard wait_seconds stall.
             rpc_timeout = timeout_seconds if timeout_seconds is not None else None
@@ -3358,7 +3362,7 @@ class BigQmtXtData:
 
     def _record_subscription(self, seq, payload, active=True):
         """Bookkeeping only -- nothing on the server consumes it, and it needs a
-        Redis client, which a zmq deployment does not have. Never let it break
+        Valkey client, which a zmq deployment does not have. Never let it break
         an otherwise working subscription."""
         try:
             self.client.save_quote_subscription(seq, dict(payload, seq=seq), active=active)
@@ -3530,7 +3534,7 @@ class BigQmtXtData:
     def unsubscribe_quote(self, seq):
         # Three kinds of handle now: whole-quote / tick subscriptions owned by
         # the push session, K-line pollers owned here, and legacy seqs that only
-        # ever existed as redis bookkeeping.
+        # ever existed as valkey bookkeeping.
         with self._bar_poller_lock:
             poller = self._bar_pollers.pop(seq, None)
         if poller is not None:
@@ -3874,7 +3878,7 @@ class BigQmtXtData:
         return self._call("download_etf_info")
 
     # 下面四个的服务端实现和 RPC 白名单一直都在（market_bigqmt 的
-    # download_* 方法 + redis_rpc 的 MARKET_DATA_METHODS），只是客户端漏了这层
+    # download_* 方法 + valkey_rpc 的 MARKET_DATA_METHODS），只是客户端漏了这层
     # 包装，于是外部调用直接撞 AttributeError（issue #130）。
     def download_sector_data(self):
         return self._call("download_sector_data")
@@ -4518,16 +4522,16 @@ class BigQmtXtTrader:
         path=None,
         session_id=None,
         account_id=None,
-        redis_client=None,
-        redis_config=None,
+        valkey_client=None,
+        valkey_config=None,
         timeout_seconds=None,
     ):
         self.path = path
         self.session_id = session_id
         self.client = BigQmtRpcClient(
             account_id=account_id,
-            redis_client=redis_client,
-            redis_config=redis_config,
+            valkey_client=valkey_client,
+            valkey_config=valkey_config,
             timeout_seconds=timeout_seconds,
         )
         self.callback = None
@@ -4570,7 +4574,7 @@ class BigQmtXtTrader:
             self.event_listener_ready_timeout = 1.0
         # Account-query cache fallback (#243). OFF by default: a failed
         # POSITION/ASSET query must reach the caller, the way it already does
-        # on every non-redis transport. Serving the last redis snapshot
+        # on every non-valkey transport. Serving the last valkey snapshot
         # instead turns "the query failed" into "here is what you own",
         # which is the one answer a strategy must never be given wrongly.
         #
@@ -4579,10 +4583,10 @@ class BigQmtXtTrader:
         # switches -- conflating them is what made local_cache_enabled=False
         # look like it should have disabled this and it did not.
         # Read the config as handed to us: BigQmtRpcClient normalises its own
-        # copy and drops keys it does not know, so self.client.redis_config
+        # copy and drops keys it does not know, so self.client.valkey_config
         # cannot be the source here.
-        cache_config = dict((load_client_config() or {}).get("redis_config") or {})
-        cache_config.update(dict(redis_config or {}))
+        cache_config = dict((load_client_config() or {}).get("valkey_config") or {})
+        cache_config.update(dict(valkey_config or {}))
         self.account_cache_fallback = _bool_value(
             cache_config.get("account_cache_fallback"),
             _env_bool("BIGQMT_ACCOUNT_CACHE_FALLBACK", False),
@@ -4625,7 +4629,7 @@ class BigQmtXtTrader:
         """
         if not self.account_cache_fallback:
             return None
-        if not self._redis_cache_enabled():
+        if not self._valkey_cache_enabled():
             return None
         snapshot = self._cached_position_snapshot(account_id)
         if not snapshot:
@@ -4641,14 +4645,14 @@ class BigQmtXtTrader:
                 what, age, self.account_cache_max_age_seconds)
             return None
         log.warning(
-            "%s: 原生查询失败，改用 %.1fs 前的 redis 缓存作答（"
+            "%s: 原生查询失败，改用 %.1fs 前的 valkey 缓存作答（"
             "account_cache_fallback=True 打开的行为）", what, age)
         return snapshot
 
     def _cached_position_snapshot(self, account_id):
         key = "bigqmt:positions:%s" % str(account_id or self.client.account_id or "")
         try:
-            raw = self.client._redis().get(key)
+            raw = self.client._valkey().get(key)
         except Exception:
             return {}
         if not raw:
@@ -4672,9 +4676,9 @@ class BigQmtXtTrader:
         asset = snapshot.get("asset") if isinstance(snapshot, dict) else None
         return asset if isinstance(asset, dict) else {}
 
-    def _redis_cache_enabled(self):
-        return str(getattr(self.client, "transport_name", "redis") or "redis").lower() in (
-            "redis",
+    def _valkey_cache_enabled(self):
+        return str(getattr(self.client, "transport_name", "valkey") or "valkey").lower() in (
+            "valkey",
             "",
             "default",
         )
@@ -4701,9 +4705,9 @@ class BigQmtXtTrader:
             return 0
         except Exception:
             # connect 失败必须拆掉 start() 拉起的事件监听线程。否则它持有的
-            # Redis pubsub 订阅(每实例 4 个 exec 事件频道)随丢弃的实例永久
+            # Valkey pubsub 订阅(每实例 4 个 exec 事件频道)随丢弃的实例永久
             # 留在服务端: 调用方重连风暴每次重试泄漏一个, 实测单日 8000+ 个
-            # subscribe 连接, 逼近 maxclients 后整个 Redis 拒绝新连接。
+            # subscribe 连接, 逼近 maxclients 后整个 Valkey 拒绝新连接。
             try:
                 self.stop()
             except Exception:
@@ -4868,12 +4872,12 @@ class BigQmtXtTrader:
     def _event_loop_poll(self):
         """One poll-loop round: synthesize exec events by diffing queries (#372).
 
-        没有推送通道、redis 也不可达时，查询 RPC 仍然通——按
+        没有推送通道、valkey 也不可达时，查询 RPC 仍然通——按
         「服务端给副账号做的 #320 轮询」同一个模式，在客户端按 sysid+status
         diff，合成与推送完全同形的 on_stock_order / on_stock_trade /
         on_order_error。首轮只建状态不补发（已有委托不是「新事件」）；回调
         延迟 = 轮询间隔（BIGQMT_EXEC_POLL_SECONDS，默认 1s）。查询连续失败
-        （比如 redis 传输的 redis 宕了）时退回外层重新选通道。
+        （比如 valkey 传输的 valkey 宕了）时退回外层重新选通道。
         """
         from .exec_events import normalize_order_error_event
 
@@ -4894,7 +4898,7 @@ class BigQmtXtTrader:
                     log.warning("成交回报轮询本轮失败，已连续 %d 次：%s：%s",
                                 failures, exc.__class__.__name__, exc)
                 if failures >= 5:
-                    return   # 通道可能整体坏了（比如 redis 宕了）-> 外层重选
+                    return   # 通道可能整体坏了（比如 valkey 宕了）-> 外层重选
                 time.sleep(interval)
                 continue
             failures = 0
@@ -4909,7 +4913,7 @@ class BigQmtXtTrader:
                     tid = str(getattr(trade, "trade_id", "") or "")
                     if tid:
                         seen_trades.add(tid)
-                self._event_ready.set()      # see the redis path (#247)
+                self._event_ready.set()      # see the valkey path (#247)
                 time.sleep(interval)
                 continue
             for order in orders:
@@ -4984,7 +4988,7 @@ class BigQmtXtTrader:
 
     def _on_push_exec_event(self, topic, data):
         """Push-channel callback. The payload is already a decoded dict, unlike
-        the Redis path which hands over raw bytes."""
+        the Valkey path which hands over raw bytes."""
         try:
             self._dispatch_event(data)
         except Exception:
@@ -4993,47 +4997,47 @@ class BigQmtXtTrader:
     def _event_loop(self):
         """Receive exec events, mirroring the server's sink choice.
 
-        The server publishes to Redis FIRST whenever it can build a Redis
+        The server publishes to Valkey FIRST whenever it can build a Valkey
         client (its channels carry streams for short replay), even when the
         RPC transport is zmq, and only falls to the quote push channel after
-        repeated Redis publish failures (strategy _exec_event_sink, issue
+        repeated Valkey publish failures (strategy _exec_event_sink, issue
         #145).  This loop used to choose by transport instead -- zmq -> push
-        channel only -- so a zmq deployment with a working Redis published
-        every order/trade event to Redis while the client listened on the
+        channel only -- so a zmq deployment with a working Valkey published
+        every order/trade event to Valkey while the client listened on the
         push channel: callbacks never fired (issue #144; reproduced
-        2026-09-02, the day's events sat in the Redis stream while a
+        2026-09-02, the day's events sat in the Valkey stream while a
         zmq-transport listener saw nothing).
 
         Re-select per reconnect round, so the client follows a server that
-        demotes Redis mid-session (its Redis publish failing usually means
-        our Redis reads fail too).
+        demotes Valkey mid-session (its Valkey publish failing usually means
+        our Valkey reads fail too).
         """
         while self._event_running:
-            redis_client = self._exec_events_redis_or_none()
-            if redis_client is not None:
-                self._event_loop_redis(redis_client)
+            valkey_client = self._exec_events_valkey_or_none()
+            if valkey_client is not None:
+                self._event_loop_valkey(valkey_client)
             else:
-                # mysql 没有推送通道（redis 传输的 redis 宕了也是）——
+                # mysql 没有推送通道（valkey 传输的 valkey 宕了也是）——
                 # 查询 RPC 还通，就轮询合成回调（#372）；查询也连续失败时
-                # 它会自己退回来，外层重新探 redis。
+                # 它会自己退回来，外层重新探 valkey。
                 self._event_loop_poll()
 
-    def _exec_events_redis_or_none(self):
-        """A REACHABLE Redis client for the exec-event channels, or None.
+    def _exec_events_valkey_or_none(self):
+        """A REACHABLE Valkey client for the exec-event channels, or None.
 
-        _redis() only builds the client object; the connection is lazy, so
+        _valkey() only builds the client object; the connection is lazy, so
         an unreachable server would still return one. Ping it -- the channel
         choice must reflect reachability, not configuration.
 
-        非 redis 传输且没有显式 redis 配置时整步跳过（不建 client、不
-        ping），避免连接未配置的 Redis。
+        非 valkey 传输且没有显式 valkey 配置时整步跳过（不建 client、不
+        ping），避免连接未配置的 Valkey。
         """
-        transport_name = str(getattr(self.client, "transport_name", "redis") or "redis").lower()
-        if (transport_name not in ("redis", "", "default")
-                and not getattr(self.client, "_redis_explicit", True)):
+        transport_name = str(getattr(self.client, "transport_name", "valkey") or "valkey").lower()
+        if (transport_name not in ("valkey", "", "default")
+                and not getattr(self.client, "_valkey_explicit", True)):
             return None
         try:
-            client = self.client._redis()
+            client = self.client._valkey()
             if client is None:
                 return None
             client.ping()
@@ -5041,8 +5045,8 @@ class BigQmtXtTrader:
         except Exception:
             return None
 
-    def _event_loop_redis(self, redis_client):
-        """One Redis round: subscribe the per-account channels until the
+    def _event_loop_valkey(self, valkey_client):
+        """One Valkey round: subscribe the per-account channels until the
         account changes or the connection dies, then return for re-selection."""
         from .exec_events import (
             order_channel,
@@ -5054,7 +5058,7 @@ class BigQmtXtTrader:
         account_id = str(self.client.account_id or "")
         pubsub = None
         try:
-            pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
+            pubsub = valkey_client.pubsub(ignore_subscribe_messages=True)
             pubsub.subscribe(
                 order_channel(account_id),
                 trade_channel(account_id),
@@ -5080,7 +5084,7 @@ class BigQmtXtTrader:
                 pass
 
     def _dispatch_event(self, raw):
-        """Accepts raw bytes/str (Redis pub/sub) or an already-decoded dict.
+        """Accepts raw bytes/str (Valkey pub/sub) or an already-decoded dict.
 
         The push channel decodes msgpack/json itself, so it hands over a dict --
         str(dict) is not valid JSON and would be silently dropped here.
@@ -5512,7 +5516,7 @@ class BigQmtXtTrader:
         outcome.
 
         Refreshes everything under bigqmt_signal_trader/. It cannot refresh
-        bigqmt_signal_trader_strategy.py or the BIGQMT_REDIS_DRYRUN entry --
+        bigqmt_signal_trader_strategy.py or the BIGQMT_VALKEY_DRYRUN entry --
         QMT execs those, and a module cannot reload the one it is running in.
         Changes there still need a strategy restart.
         """
@@ -6079,7 +6083,7 @@ class BigQmtXtTrader:
     # issue #51 A: 同一笔委托的 async_response 必须先于它的 order/trade 到达。
     #
     # 两条回调走的是不同线程和不同通道: async_response 在异步下单的工作线程上
-    # 触发, order/trade 来自 Redis pub/sub 监听线程。服务端在 order_callback
+    # 触发, order/trade 来自 Valkey pub/sub 监听线程。服务端在 order_callback
     # 里先推事件再回 RPC, 所以顺序颠倒是常态而非偶发。
     #
     # 做法是给「已提交但尚未收到 async_response」的委托设一道屏障: 它的
@@ -6355,11 +6359,11 @@ class BigQmtXtTrader:
     def _has_push_channel(self):
         """Whether exec events can reach this client at all (#345).
 
-        Redis carries them on pub/sub; transports without a push path cannot
+        Valkey carries them on pub/sub; transports without a push path cannot
         deliver events emitted after the reply.
         """
-        transport_name = str(getattr(self.client, "transport_name", "redis") or "redis").lower()
-        return transport_name in ("redis", "", "default")
+        transport_name = str(getattr(self.client, "transport_name", "valkey") or "valkey").lower()
+        return transport_name in ("valkey", "", "default")
 
     def _submit_async_single(self, seq, args, kwargs):
         """Submit one job and enqueue its outcome. Runs on the order worker."""
@@ -7229,16 +7233,16 @@ xt_trader = None
 xtdata = None
 
 
-def configure(account_id=None, redis_client=None, redis_config=None, timeout_seconds=None):
+def configure(account_id=None, valkey_client=None, valkey_config=None, timeout_seconds=None):
     global _default_client, xt_trader, xtdata
     _default_client = BigQmtRpcClient(
         account_id=account_id,
-        redis_client=redis_client,
-        redis_config=redis_config,
+        valkey_client=valkey_client,
+        valkey_config=valkey_config,
         timeout_seconds=timeout_seconds,
     )
     if xt_trader is None:
-        xt_trader = BigQmtXtTrader(account_id=_default_client.account_id, redis_client=_default_client.redis_client)
+        xt_trader = BigQmtXtTrader(account_id=_default_client.account_id, valkey_client=_default_client.valkey_client)
     xt_trader.client = _default_client
     if xtdata is None:
         xtdata = BigQmtXtData(_default_client)

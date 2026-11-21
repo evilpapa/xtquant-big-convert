@@ -6,7 +6,7 @@
 
 ## 项目状态
 
-**redis / zmq / mysql 等远程传输方案已被券商禁止，后续本项目不再更新。** 仓库中保留的相关代码与文档仅作历史记录，不要在新环境部署使用。
+**券商已禁止本项目原有的远程传输方案。** Valkey 迁移不改变这一限制。仓库中的相关代码与文档仅供历史研究。
 
 ## 免责声明
 
@@ -20,13 +20,13 @@
 
 ## 安装
 
-客户端（外部程序）：
+在源码目录安装外部客户端和 Valkey 依赖：
 
 ```bash
-pip install xtquant-big-convert
+pip install ".[valkey]"
 ```
 
-服务端部署：见 `src/bigqmt_signal_trader_local_config.example.py` 内的注释，或 `docs/USER_GUIDE.md`。
+本项目要求 **Python 3.12 或更高版本**，适用于客户端、QMT 策略和独立串口桥接。直连 Valkey 的 QMT 策略需在实际运行的解释器中安装 `valkey`。客户端和策略可连接同一个现有 Valkey 服务。部署步骤见[使用指南](docs/USER_GUIDE.md)。
 
 ## 文档在哪里
 

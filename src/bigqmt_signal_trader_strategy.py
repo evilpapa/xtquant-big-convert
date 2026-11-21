@@ -13,7 +13,7 @@ import threading
 import time
 import traceback as _traceback
 
-# The DRYRUN entry reloads strategy/runtime/redis_rpc/redis_common but NOT the
+# The DRYRUN entry reloads strategy/runtime/valkey_rpc/valkey_common but NOT the
 # other package submodules. Without this, the "from adapter_factory import build_app"
 # below re-binds the STALE cached module on every strategy re-run, so edits to
 # adapter_factory never take effect until a full terminal restart. Force-reload it
@@ -34,6 +34,7 @@ except NameError:
 
 if _load_bridge_module is not None:
     _adapter_factory = _load_bridge_module("bigqmt_signal_trader.adapter_factory")
+    _valkey_settings = _load_bridge_module("bigqmt_signal_trader.adapters.valkey_common")
     _runner = _load_bridge_module("bigqmt_signal_trader.runner")
     _runtime_bigqmt = _load_bridge_module("bigqmt_signal_trader.runtime_bigqmt")
     _order_watch = _load_bridge_module("bigqmt_signal_trader.order_watch")
@@ -46,6 +47,7 @@ if _load_bridge_module is not None:
     tick_app = _runner.tick_app
     BigQmtRuntimeAdapter = _runtime_bigqmt.BigQmtRuntimeAdapter
 else:
+    from bigqmt_signal_trader.adapters import valkey_common as _valkey_settings
     from bigqmt_signal_trader.adapter_factory import build_app as _default_build_app
     from bigqmt_signal_trader.runner import (
         forward_order_event,
@@ -136,7 +138,7 @@ _adjust_logged = False
 _credit_callback_fired = 0
 _rpc_service = None
 _quote_subscription_service = None  # (QuoteSubscriptionManager, QuotePushChannel)
-_exec_event_redis_client = None  # reused; building a new client per trade callback leaks
+_exec_event_valkey_client = None  # reused; building a new client per trade callback leaks
 _scheduled_adjust = False
 # Latency tuning / diagnostics (server side, in the Big QMT process).
 #  - switch interval: hand the GIL to the background RPC thread ~5x more often
@@ -208,7 +210,7 @@ def request_reload(reason=""):
     handlers, the models and the transports -- where nearly all changes land.
 
     What it CANNOT refresh, and no amount of importlib will: this file and the
-    BIGQMT_REDIS_DRYRUN entry. QMT execs those itself, and a module cannot
+    BIGQMT_VALKEY_DRYRUN entry. QMT execs those itself, and a module cannot
     reload the module it is running in. Those still need a strategy restart.
 
     Deliberately explicit: reloading a live trading process is not free. QMT's
@@ -366,7 +368,7 @@ def _perform_reload(context_info):
                   "重新加载仍会继续，但调用方可能看到超时"
                   % (_pending_response_count(), _RELOAD_FLUSH_TIMEOUT_SECONDS))
         # #393: a reload rebuilds the handlers, and with them the in-process
-        # order-identity journal -- on a no-Redis deployment every order this
+        # order-identity journal -- on a no-Valkey deployment every order this
         # bridge had named flipped to the QMT-side process name at once.
         # This module survives the reload (QMT execs it; only the package is
         # purged), so carry the journal across and hand it to the new
@@ -417,7 +419,7 @@ def _perform_reload(context_info):
 
 def reset_app():
     global _adjust_logged, _rpc_service, _scheduled_adjust, _last_full_tick_refresh_at, _last_full_tick_market_refresh_at
-    global _quote_subscription_service, _exec_event_redis_client
+    global _quote_subscription_service, _exec_event_valkey_client
     _adjust_logged = False
     _scheduled_adjust = False
     _last_full_tick_refresh_at = 0.0
@@ -449,8 +451,8 @@ def reset_app():
         except Exception:
             pass
     _quote_subscription_service = None
-    # Drop the reused exec-event redis client so the next run rebuilds it fresh.
-    _exec_event_redis_client = None
+    # Drop the reused exec-event valkey client so the next run rebuilds it fresh.
+    _exec_event_valkey_client = None
     _reset_runner_app()
 
 
@@ -471,12 +473,12 @@ def _detect_account_id(context_info=None):
         return _account_id
     try:
         import importlib
-        import bigqmt_signal_trader_local_config as _local_config
+        import bigqmt_signal_trader_qmt_config as _local_config
 
         _local_config = importlib.reload(_local_config)
         value = str(
             getattr(_local_config, "BIGQMT_ACCOUNT_ID", "")
-            or (getattr(_local_config, "BIGQMT_REDIS_CONFIG", {}) or {}).get("account_id")
+            or _valkey_settings.local_valkey_config(_local_config).get("account_id")
             or ""
         )
         if value:
@@ -573,10 +575,10 @@ def capture_qmt_injected_funcs(namespace):
 def _build_config():
     config = dict(_config)
     if str((config.get("rpc") or {}).get("transport") or "").lower() == "serial":
-        config["redis"] = {}
+        config["valkey"] = {}
         config["schedule_adjust"] = True
         for key in ("signal_source_type", "source_type", "state_store_type", "position_sync_type"):
-            if str(config.get(key) or "").lower() == "redis":
+            if str(config.get(key) or "").lower() == "valkey":
                 config[key] = ""
         for key in ("download_jobs", "full_tick_cache"):
             config[key] = dict(config.get(key) or {}, enabled=False)
@@ -619,11 +621,11 @@ def _native_xtdata_enabled(rpc_config):
     return bool(enabled)
 
 
-_REDIS_TRANSPORT_NAMES = ("redis", "", "default")
+_VALKEY_TRANSPORT_NAMES = ("valkey", "", "default")
 
 
-def _is_redis_transport(transport_name):
-    return str(transport_name or "redis").lower() in _REDIS_TRANSPORT_NAMES
+def _is_valkey_transport(transport_name):
+    return str(transport_name or "valkey").lower() in _VALKEY_TRANSPORT_NAMES
 
 
 def _resolve_background_threads(transport_name, configured):
@@ -632,7 +634,7 @@ def _resolve_background_threads(transport_name, configured):
     ``configured`` is None when the local config never set
     ``rpc_background_threads`` (the runtime only forwards the key when it was
     given explicitly). That used to mean the historical default -- receiver
-    threads on -- for every non-redis transport. Since #343 it means the
+    threads on -- for every non-valkey transport. Since #343 it means the
     adjust drain wherever the transport can drain: measured on the live
     terminal, drain is <= 1 tick on every transport while a background thread
     pays a tick per GIL acquisition (zmq+thread 490ms for a deferred query,
@@ -647,14 +649,14 @@ def _resolve_background_threads(transport_name, configured):
 
     Only transports that implement a *real* drain_request_queue may honor the
     override; anything else keeps the receiver thread it needs to be polled by.
-    Redis honors either value (blocking brpop path AND an adjust lpop drain).
+    Valkey honors either value (blocking brpop path AND an adjust lpop drain).
 
     Ask the transport class whether it implements draining.
     """
-    normalized = str(transport_name or "redis").lower()
+    normalized = str(transport_name or "valkey").lower()
     if normalized == "serial":
         return False
-    if _is_redis_transport(normalized):
+    if _is_valkey_transport(normalized):
         return bool(configured)
     if not _transport_can_drain(normalized):
         return True
@@ -676,7 +678,7 @@ def _transport_can_drain(transport_name):
 
 
 def _build_quote_subscription_service(context_info, config, transport_name, account_id,
-                                      redis_client, push_channel=None):
+                                      valkey_client, push_channel=None):
     """Assemble the server-side whole-quote push service (manager + channel).
 
     Returns ``(manager, channel)`` or ``None`` when disabled. The channel publisher
@@ -699,7 +701,7 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
         context_info,
         transport_name=transport_name,
         account_id=account_id,
-        redis_client=redis_client,
+        valkey_client=valkey_client,
         enabled=True,
         heartbeat_timeout_seconds=heartbeat_timeout,
         push_channel=push_channel,
@@ -712,22 +714,22 @@ def _build_rpc_service(context_info, app, config):
     enabled = _config_bool(config.get("enable_rpc"), False) or _config_bool(rpc_config.get("enabled"), False)
     if not enabled:
         return None
-    transport_name = str(rpc_config.get("transport") or "redis").lower()
-    redis_transport = transport_name in ("redis", "", "default")
+    transport_name = str(rpc_config.get("transport") or "valkey").lower()
+    valkey_transport = transport_name in ("valkey", "", "default")
 
     import importlib
     if _load_bridge_module is not None:
         _market_bigqmt = _load_bridge_module("bigqmt_signal_trader.adapters.market_bigqmt")
         _position_bigqmt = _load_bridge_module("bigqmt_signal_trader.adapters.position_bigqmt")
-        _redis_rpc = _load_bridge_module("bigqmt_signal_trader.redis_rpc")
-        BigQmtRpcHandlers = _redis_rpc.BigQmtRpcHandlers
-        RedisPubSubRpcService = _redis_rpc.RedisPubSubRpcService
+        _valkey_rpc = _load_bridge_module("bigqmt_signal_trader.valkey_rpc")
+        BigQmtRpcHandlers = _valkey_rpc.BigQmtRpcHandlers
+        ValkeyPubSubRpcService = _valkey_rpc.ValkeyPubSubRpcService
     else:
         from bigqmt_signal_trader.adapters import market_bigqmt as _market_bigqmt
         from bigqmt_signal_trader.adapters import position_bigqmt as _position_bigqmt
-        from bigqmt_signal_trader import redis_rpc as _redis_rpc
-        BigQmtRpcHandlers = _redis_rpc.BigQmtRpcHandlers
-        RedisPubSubRpcService = _redis_rpc.RedisPubSubRpcService
+        from bigqmt_signal_trader import valkey_rpc as _valkey_rpc
+        BigQmtRpcHandlers = _valkey_rpc.BigQmtRpcHandlers
+        ValkeyPubSubRpcService = _valkey_rpc.ValkeyPubSubRpcService
 
     # QMT keeps strategy modules in the same process between editor reruns.
     # Reload adapters here so synced local package fixes take effect immediately.
@@ -749,41 +751,41 @@ def _build_rpc_service(context_info, app, config):
             print("[bigqmt_rpc] 重新加载 %s 失败：%s" % (_mod_name, _reload_err))
     # The RPC import has a valid module even if early optional push loading
     # failed. Callbacks reuse this reference without importing on the C++ stack.
-    _exec_events = _redis_rpc._exec_events
+    _exec_events = _valkey_rpc._exec_events
     BigQmtMarketDataProvider = _market_bigqmt.BigQmtMarketDataProvider
     BigQmtPositionProvider = _position_bigqmt.BigQmtPositionProvider
 
     qmt_api = dict(config.get("qmt_api") or {})
-    redis_client = None
-    response_redis_client = None
-    if redis_transport:
+    valkey_client = None
+    response_valkey_client = None
+    if valkey_transport:
         if _load_bridge_module is not None:
-            _redis_common = _load_bridge_module("bigqmt_signal_trader.adapters.redis_common")
+            _valkey_common = _load_bridge_module("bigqmt_signal_trader.adapters.valkey_common")
         else:
-            from bigqmt_signal_trader.adapters import redis_common as _redis_common
+            from bigqmt_signal_trader.adapters import valkey_common as _valkey_common
 
-        _redis_common = importlib.reload(_redis_common)
-        redis_config = dict(config.get("redis") or {})
-        redis_config.update(dict(rpc_config.get("redis") or {}))
-        listen_redis_config = dict(redis_config)
+        _valkey_common = importlib.reload(_valkey_common)
+        valkey_config = dict(config.get("valkey") or {})
+        valkey_config.update(dict(rpc_config.get("valkey") or {}))
+        listen_valkey_config = dict(valkey_config)
         # Never use socket_timeout=None on the listen client: the same client also
         # serves the adjust-thread LPOP drain, and a None timeout makes a hung
-        # (not refused) redis block the QMT main thread forever. brpop's own 1s
+        # (not refused) valkey block the QMT main thread forever. brpop's own 1s
         # command timeout is unaffected by a bounded socket timeout.
-        if listen_redis_config.get("socket_timeout") in (None, ""):
-            listen_redis_config["socket_timeout"] = 10
-        redis_client = rpc_config.get("redis_client") or config.get("redis_client") or _redis_common.build_redis_client(listen_redis_config)
-        response_redis_client = (
-            rpc_config.get("response_redis_client")
-            or config.get("response_redis_client")
-            or _redis_common.build_redis_client(redis_config)
+        if listen_valkey_config.get("socket_timeout") in (None, ""):
+            listen_valkey_config["socket_timeout"] = 10
+        valkey_client = rpc_config.get("valkey_client") or config.get("valkey_client") or _valkey_common.build_valkey_client(listen_valkey_config)
+        response_valkey_client = (
+            rpc_config.get("response_valkey_client")
+            or config.get("response_valkey_client")
+            or _valkey_common.build_valkey_client(valkey_config)
         )
     account_id = str(rpc_config.get("account_id") or config.get("account_id") or _account_id or "")
     if not account_id:
         print("[bigqmt_rpc] 已禁用：account_id 为空")
         return None
     transport = None
-    if not redis_transport:
+    if not valkey_transport:
         if _load_bridge_module is not None:
             build_transport = _load_bridge_module("bigqmt_signal_trader.transports.factory").build_transport
         else:
@@ -793,7 +795,7 @@ def _build_rpc_service(context_info, app, config):
     allow_order_methods = _config_bool(rpc_config.get("allow_order_methods"), False)
     global _quote_subscription_service
     _quote_subscription_service = _build_quote_subscription_service(
-        context_info, config, transport_name, account_id, redis_client,
+        context_info, config, transport_name, account_id, valkey_client,
         transport if transport_name == "serial" else None,
     )
     quote_manager = (
@@ -828,36 +830,36 @@ def _build_rpc_service(context_info, app, config):
         # 报单来源 blank), and a default would swallow it -- issue #154.
         default_strategy_name=rpc_config.get("default_strategy_name"),
     )
-    # Neither of these may depend on the TRANSPORT. Only a redis transport
+    # Neither of these may depend on the TRANSPORT. Only a valkey transport
     # builds the two clients above, so on zmq both were None -- and each had a
     # working counterpart on the other side of that None:
     #
     #   download jobs   _pump_download_jobs advances queued jobs on every
-    #                   adjust tick and takes its client from _exec_event_redis,
+    #                   adjust tick and takes its client from _exec_event_valkey,
     #                   so on zmq the worker ran while submit / get_status /
-    #                   wait answered "download jobs require a Redis client".
+    #                   wait answered "download jobs require a Valkey client".
     #                   The worker was running and the door was locked.
     #   order identity  orders were never remembered at submit time, so a query
     #                   could never put the strategy name back (issue #133).
     #
-    # _exec_event_redis is the helper that already covers this case ("only
+    # _exec_event_valkey is the helper that already covers this case ("only
     # builds a client when _rpc_service has none, which is the zmq-transport
     # case") and caches it -- its docstring says what building one per call
-    # cost. No redis configured at all leaves both None, and both stores treat
+    # cost. No valkey configured at all leaves both None, and both stores treat
     # that as "feature off", never as an error.
-    _store_redis = response_redis_client or redis_client or _exec_event_redis(config)
-    handlers.download_job_redis_client = _store_redis
-    handlers.order_identity_redis_client = _store_redis
-    handlers.order_remark_redis_client = _exec_events.bounded_identity_client(_store_redis)
-    if _store_redis is None:
-        # Redis-free deployments need a durable source after a
+    _store_valkey = response_valkey_client or valkey_client or _exec_event_valkey(config)
+    handlers.download_job_valkey_client = _store_valkey
+    handlers.order_identity_valkey_client = _store_valkey
+    handlers.order_remark_valkey_client = _exec_events.bounded_identity_client(_store_valkey)
+    if _store_valkey is None:
+        # Valkey-free deployments need a durable source after a
         # real strategy/process restart, when the in-memory journal is gone.
         handlers.enable_order_identity_persistence(
             directory=rpc_config.get("order_identity_dir"))
     # Settlement reads the callback-fed watch table first (issue #164).
     handlers.order_watch_table = _order_watch_table
     # Whether _pump_download_jobs will actually run queued jobs. The submit RPC
-    # needs it: with the redis client now wired on every transport, a submit
+    # needs it: with the valkey client now wired on every transport, a submit
     # would otherwise be accepted into a queue that nothing drains.
     # Lets reload_deployment re-import the package and re-run init without a
     # strategy restart. The handlers cannot reach this module's own functions
@@ -888,9 +890,9 @@ def _build_rpc_service(context_info, app, config):
         "[bigqmt_rpc] transport=%s 模式配置 process_in_listener=%s listener_methods=%s allow_order_methods=%s background_threads=%s"
         % (transport_name, process_in_listener, listener_methods, allow_order_methods, background_threads)
     )
-    service = RedisPubSubRpcService(
-        redis_client=redis_client,
-        response_redis_client=response_redis_client,
+    service = ValkeyPubSubRpcService(
+        valkey_client=valkey_client,
+        response_valkey_client=response_valkey_client,
         handlers=handlers,
         account_id=account_id,
         request_channel_template=rpc_config.get("request_channel_template", "bigqmt:rpc:req:{account_id}"),
@@ -941,7 +943,7 @@ def _start_rpc_service(context_info, app, config):
             try:
                 _quote_subscription_service[1].start_publisher()
                 print("[bigqmt_quote_push] 行情推送发布器已启动 transport=%s"
-                      % str(dict(config.get("rpc") or {}).get("transport") or "redis"))
+                      % str(dict(config.get("rpc") or {}).get("transport") or "valkey"))
             except Exception as exc:
                 _log_err("quote_push", "行情推送发布器启动失败：%s" % exc)
     return _rpc_service
@@ -1043,14 +1045,14 @@ def _refresh_full_tick_cache(context_info, config):
     do_market = now - _last_full_tick_market_refresh_at >= market_interval
     if not do_symbol and not do_market:
         return 0
-    redis_client = getattr(_rpc_service, "redis", None)
-    if redis_client is None:
-        redis_config = dict(config.get("redis") or {})
-        if not redis_config:
+    valkey_client = getattr(_rpc_service, "valkey", None)
+    if valkey_client is None:
+        valkey_config = dict(config.get("valkey") or {})
+        if not valkey_config:
             return 0
-        from bigqmt_signal_trader.adapters.redis_common import build_redis_client
+        from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
 
-        redis_client = build_redis_client(redis_config)
+        valkey_client = build_valkey_client(valkey_config)
     demand_ttl = float(cache_config.get("demand_ttl_seconds") or 10)
     cache_ttl = float(cache_config.get("cache_ttl_seconds") or 10)
     max_requests = int(cache_config.get("max_requests") or 8)
@@ -1064,7 +1066,7 @@ def _refresh_full_tick_cache(context_info, config):
         _last_full_tick_refresh_at = now
         try:
             refreshed += refresh_full_tick_cache(
-                redis_client,
+                valkey_client,
                 context_info,
                 account_id,
                 demand_ttl_seconds=demand_ttl,
@@ -1079,7 +1081,7 @@ def _refresh_full_tick_cache(context_info, config):
         _last_full_tick_market_refresh_at = now
         try:
             refreshed += refresh_full_tick_cache(
-                redis_client,
+                valkey_client,
                 context_info,
                 account_id,
                 demand_ttl_seconds=demand_ttl,
@@ -1272,7 +1274,7 @@ def init(ContextInfo):
     try:
         app = init_app(runtime, _build_app)
     except Exception as exc:
-        # A build failure (e.g. missing redis package) must not kill the strategy
+        # A build failure (e.g. missing valkey package) must not kill the strategy
         # before the RPC service even starts — log it and continue without app.
         _log_startup_error("init_app/build_app 初始化失败：%s" % exc)
     try:
@@ -1385,7 +1387,7 @@ def _diag_startup(ContextInfo, config):
 
     # 1. RPC service status
     rpc_config = dict(config.get("rpc") or {})
-    transport = rpc_config.get("transport", "redis")
+    transport = rpc_config.get("transport", "valkey")
     print("[bigqmt_diag] 传输方式=%s" % transport)
     if _rpc_service is not None:
         print("[bigqmt_diag] rpc_service=运行中（type=%s）" % type(_rpc_service).__name__)
@@ -1521,16 +1523,16 @@ def _pump_download_jobs(context_info, config):
     # Reuse one client. This runs on every adjust tick, so building a client
     # here leaked one connection pool per tick -- at a 100ms interval that is
     # ten per second. The symptom is easy to miss: the pools are garbage
-    # collected, and redis-py's __del__ then raises
-    # "AttributeError: 'Redis' object has no attribute 'connection'", which
+    # collected, and valkey-py's __del__ then raises
+    # "AttributeError: 'Valkey' object has no attribute 'connection'", which
     # Python swallows as "Exception ignored in". It never reaches a log the
     # package writes; it only shows up in the QMT panel.
     #
-    # _exec_event_redis already learned this lesson and caches; this path was
+    # _exec_event_valkey already learned this lesson and caches; this path was
     # missed. Both only build a client when _rpc_service has none, which is the
     # zmq-transport case.
-    redis_client = _exec_event_redis(config)
-    if redis_client is None:
+    valkey_client = _exec_event_valkey(config)
+    if valkey_client is None:
         return None
     market_data = getattr(getattr(_rpc_service, "handlers", None), "market_data", None)
     if market_data is None:
@@ -1545,7 +1547,7 @@ def _pump_download_jobs(context_info, config):
         from bigqmt_signal_trader.download_jobs import pump_download_jobs
 
         return pump_download_jobs(
-            redis_client,
+            valkey_client,
             market_data,
             account_id,
             chunk_size=int(job_config.get("chunk_size") or 10),
@@ -1562,7 +1564,7 @@ def _adjust_phase(name, fn, *args):
     the 500ms adjust cycle holds the GIL (the gil_probe shows the stall exists;
     this shows WHERE). The finally-log never alters the call's result/exception.
 
-    Guard with except: an exception here (e.g. redis outage inside the LPOP
+    Guard with except: an exception here (e.g. valkey outage inside the LPOP
     drain) must NOT propagate into adjust/handlebar — QMT stops the strategy on
     a callback raise, which is the 'auto-exit' users report. Log and continue.
     """
@@ -1629,13 +1631,13 @@ def handlebar(ContextInfo):
     return adjust(ContextInfo, _source="handlebar")
 
 
-# Redis is preferred for exec events, but only while it actually works.
-# "Configured" is not "reachable": redis-py builds a client lazily and does not
-# dial until the first command, so a stale redis block in the config yields a
+# Valkey is preferred for exec events, but only while it actually works.
+# "Configured" is not "reachable": valkey-py builds a client lazily and does not
+# dial until the first command, so a stale valkey block in the config yields a
 # perfectly good-looking client that times out on every publish -- and the zmq
 # push channel sitting right next to it never gets used (issue #145).
-_EXEC_REDIS_FAILURE_LIMIT = 3
-_exec_sink_state = {"redis_failures": 0, "reports": 0, "demoted": False}
+_EXEC_VALKEY_FAILURE_LIMIT = 3
+_exec_sink_state = {"valkey_failures": 0, "reports": 0, "demoted": False}
 
 # issue #161: QMT fires the order callback once when the order row appears and
 # again when m_strOrderSysID is populated (#152's window) -- the client then
@@ -1757,38 +1759,38 @@ def _push_channel_sink():
 
 
 def _exec_event_sink(config):
-    """Where exec events go: a Redis client, or the quote push channel.
+    """Where exec events go: a Valkey client, or the quote push channel.
 
-    Exec events were Redis-only, so a zmq deployment with no Redis configured
+    Exec events were Valkey-only, so a zmq deployment with no Valkey configured
     silently delivered no order/trade callbacks at all -- _publish_exec_event
     simply returned (issue #76). zmq deployments already run a push channel for
     whole-quote data, so reuse it rather than opening a second socket.
 
-    Redis stays first *while it works*: its channels carry streams for short
+    Valkey stays first *while it works*: its channels carry streams for short
     replay, which the push channel has no equivalent of. After
-    _EXEC_REDIS_FAILURE_LIMIT consecutive publish failures it is demoted and
-    the push channel takes over, because an unreachable redis was otherwise
+    _EXEC_VALKEY_FAILURE_LIMIT consecutive publish failures it is demoted and
+    the push channel takes over, because an unreachable valkey was otherwise
     swallowing every callback while a working channel stood idle (issue #145).
     """
     if not _exec_sink_state["demoted"]:
-        redis_client = _exec_event_redis(config)
-        if redis_client is not None:
-            return redis_client
+        valkey_client = _exec_event_valkey(config)
+        if valkey_client is not None:
+            return valkey_client
     return _push_channel_sink()
 
 
 def _note_exec_publish_failure(kind, exc):
-    """Count a failure, demote redis once it is clearly not coming back, and
+    """Count a failure, demote valkey once it is clearly not coming back, and
     keep the log readable.
 
     The full traceback is deliberate -- issue #76 took a day because str(exc)
     alone read "error return without exception set" with no origin. But a
-    persistently unreachable redis prints that for EVERY order and deal, which
+    persistently unreachable valkey prints that for EVERY order and deal, which
     buries the log it is meant to explain. Full detail the first few times,
     a one-liner after that.
     """
     state = _exec_sink_state
-    state["redis_failures"] += 1
+    state["valkey_failures"] += 1
     state["reports"] += 1
     if state["reports"] <= 3:
         _log_err(
@@ -1802,13 +1804,13 @@ def _note_exec_publish_failure(kind, exc):
             "发布 %s 已连续失败 %d 次：%s（%s）"
             % (kind, state["reports"], exc, exc.__class__.__name__),
         )
-    if not state["demoted"] and state["redis_failures"] >= _EXEC_REDIS_FAILURE_LIMIT:
+    if not state["demoted"] and state["valkey_failures"] >= _EXEC_VALKEY_FAILURE_LIMIT:
         state["demoted"] = bool(_push_channel_sink())
         if state["demoted"]:
-            print("[bigqmt_exec_events] redis 已连续失败 %d 次；委托和成交回调"
+            print("[bigqmt_exec_events] valkey 已连续失败 %d 次；委托和成交回调"
                   "将改用行情推送通道。若不需要该能力，可从本地配置中删除 "
-                  "redis 配置块。"
-                  % state["redis_failures"])
+                  "valkey 配置块。"
+                  % state["valkey_failures"])
 
 
 def _publish_one(exec_events, sink, account_id, event, kind, config):
@@ -1820,7 +1822,7 @@ def _publish_one(exec_events, sink, account_id, event, kind, config):
     """
     try:
         exec_events.publish_exec_event(sink, account_id, event)
-        _exec_sink_state["redis_failures"] = 0
+        _exec_sink_state["valkey_failures"] = 0
         return True
     except Exception as exc:
         _note_exec_publish_failure(kind, exc)
@@ -1864,54 +1866,54 @@ def _publish_synthesized_cancel_error(account_id, event):
         return False
 
 
-def _exec_event_redis(config):
-    """Return a redis client for exec-event publishing, reusing one instance.
+def _exec_event_valkey(config):
+    """Return a valkey client for exec-event publishing, reusing one instance.
 
     Previously a new client was built per order/trade callback when the RPC
     service had none (the zmq-transport case), leaking a connection pool per
     event. Reuse one; build failure returns None so publishing just skips.
 
-    A non-Redis transport may retain a Redis block for optional download jobs
+    A non-Valkey transport may retain a Valkey block for optional download jobs
     or exec-event replay. Skip that block only when both consumers are
     explicitly disabled; omitted flags retain the legacy enabled behavior.
     """
-    global _exec_event_redis_client
+    global _exec_event_valkey_client
     if str((config.get("rpc") or {}).get("transport") or "").lower() == "serial":
         return None
-    existing = getattr(_rpc_service, "redis", None) if _rpc_service is not None else None
+    existing = getattr(_rpc_service, "valkey", None) if _rpc_service is not None else None
     if existing is not None:
         return existing
-    if _exec_event_redis_client is not None:
-        return _exec_event_redis_client
+    if _exec_event_valkey_client is not None:
+        return _exec_event_valkey_client
     if not _config_bool((config.get("download_jobs") or {}).get("enabled"), True) and not _config_bool(
         (config.get("exec_events") or {}).get("enabled"), True
     ):
         return None
-    redis_config = dict(config.get("redis") or {})
-    if not redis_config:
+    valkey_config = dict(config.get("valkey") or {})
+    if not valkey_config:
         return None
     try:
-        from bigqmt_signal_trader.adapters.redis_common import build_redis_client
+        from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
 
-        _exec_event_redis_client = build_redis_client(redis_config)
+        _exec_event_valkey_client = build_valkey_client(valkey_config)
     except Exception as exc:
         # 静默 None 会让事件悄悄全丢（issue #71 的 protocol 崩溃就是这样没的），
         # 必须留痕。
         try:
             from bigqmt_signal_trader.logging_setup import get_logger
 
-            get_logger("strategy").error("成交回报 Redis 客户端创建失败：%s", exc)
+            get_logger("strategy").error("成交回报 Valkey 客户端创建失败：%s", exc)
         except Exception:
             pass
         return None
-    return _exec_event_redis_client
+    return _exec_event_valkey_client
 
 
 def _local_identity_strategy_name(account_id, event):
     """strategy_name from the in-process submit journal, or "".
 
     The journal (#156) is written by the RPC handlers at submit time and is
-    all a deployment has when redis is absent -- or, the reported case in
+    all a deployment has when valkey is absent -- or, the reported case in
     #174, configured but not reachable, which fails silently.
     """
     service = _rpc_service
@@ -1950,14 +1952,14 @@ def _enrich_event_identity(exec_events, config, account_id, event):
 
     The in-process journal is consulted FIRST, and deliberately so. This runs
     on QMT's C++ callback thread, and for an order this process submitted the
-    journal already holds the same string that was written to redis -- so
-    asking redis first would buy nothing and cost a round trip per event. It
-    costs a lot when redis is configured and not reachable: redis-py does not
+    journal already holds the same string that was written to valkey -- so
+    asking valkey first would buy nothing and cost a round trip per event. It
+    costs a lot when valkey is configured and not reachable: valkey-py does not
     dial until the first command, so every callback would pay the full
     timeout (#145's shape). That is precisely the deployment #174 was reported
     from.
 
-    Redis is the fallback rather than the primary because its extra reach --
+    Valkey is the fallback rather than the primary because its extra reach --
     naming an order some OTHER process submitted -- is the rarer case.
 
     Both branches call this. Enriching only orders is what left
@@ -1972,10 +1974,10 @@ def _enrich_event_identity(exec_events, config, account_id, event):
     if name:
         event["strategy_name"] = name
         return event
-    redis_client = _exec_event_redis(config)
-    if redis_client is not None:
+    valkey_client = _exec_event_valkey(config)
+    if valkey_client is not None:
         try:
-            event = exec_events.enrich_order_identity(redis_client, account_id, event)
+            event = exec_events.enrich_order_identity(valkey_client, account_id, event)
         except Exception:
             pass
     return event
@@ -2013,7 +2015,7 @@ def _recover_callback_remark(kind, obj):
 
 
 def _publish_exec_event(kind, obj, context_info=None, normalized_event=None):
-    """Push a normalized order/trade event to Redis for real-time client callbacks."""
+    """Push a normalized order/trade event to Valkey for real-time client callbacks."""
     config = _build_config()
     event_config = dict(config.get("exec_events") or {})
     # Raw-field diagnostics run BEFORE every other check (and before the

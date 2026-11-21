@@ -12,7 +12,7 @@
 
     python tools/credit_api_report.py
 
-配置和 test_all_apis.py 一样，从 bigqmt_signal_trader_local_config 或环境变量
+配置和 test_all_apis.py 一样，从 bigqmt_signal_trader_qmt_config 或环境变量
 读，不用改脚本。可选参数::
 
     --account 8886800503     指定账号（默认用配置里的）
@@ -556,9 +556,9 @@ def main(argv=None):
     except Exception as exc:
         print("连不上桥，体检没跑：%s: %s" % (exc.__class__.__name__, exc))
         print("")
-        print("这个脚本要能找到账号和 redis/zmq 配置，方式任选其一：")
+        print("这个脚本要能找到账号和 valkey/zmq 配置，方式任选其一：")
         print("  1. 在有 bigqmt_signal_trader_client_config.py 的目录下运行；")
-        print("  2. 设环境变量 BIGQMT_ACCOUNT_ID（以及 redis 那几个）；")
+        print("  2. 设环境变量 BIGQMT_ACCOUNT_ID（以及 valkey 那几个）；")
         print("  3. 加 --account <账号> 参数。")
         print("确认 QMT 终端开着、策略在跑，再重试。")
         try:

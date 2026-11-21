@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.quote_push_channel import (
     _HAS_MSGPACK,
-    RedisQuotePushChannel,
+    ValkeyQuotePushChannel,
     decode_push_payload,
     encode_push_payload,
 )
@@ -25,8 +25,8 @@ def _msgpack_packb(payload):
 
 
 class FakePubSub:
-    def __init__(self, redis_client):
-        self._redis = redis_client
+    def __init__(self, valkey_client):
+        self._valkey = valkey_client
         self._channels = []
         self._closed = False
 
@@ -37,7 +37,7 @@ class FakePubSub:
         # Pull one queued message for a subscribed channel, if any.
         for _ in range(50):
             for channel in self._channels:
-                queue = self._redis.messages.setdefault(channel, [])
+                queue = self._valkey.messages.setdefault(channel, [])
                 if queue:
                     return {"type": "message", "channel": channel, "data": queue.pop(0)}
             time.sleep(0.01)
@@ -47,7 +47,7 @@ class FakePubSub:
         self._closed = True
 
 
-class FakeRedis:
+class FakeValkey:
     def __init__(self):
         self.messages = {}
 
@@ -95,29 +95,29 @@ class PayloadCodecTest(unittest.TestCase):
 
 
 
-class RedisPushChannelTest(unittest.TestCase):
+class ValkeyPushChannelTest(unittest.TestCase):
     def test_connection_failures_reconnect_and_deliver_without_changing_topics(self):
         for stage in ("pubsub", "subscribe", "get_message"):
             with self.subTest(stage=stage):
-                redis_client = FakeRedis()
-                failed = FakePubSub(redis_client)
-                replacement = FakePubSub(redis_client)
+                valkey_client = FakeValkey()
+                failed = FakePubSub(valkey_client)
+                replacement = FakePubSub(valkey_client)
                 if stage != "pubsub":
                     setattr(failed, stage, mock.Mock(side_effect=ConnectionError("offline failure")))
-                redis_client.pubsub = mock.Mock(side_effect=[
+                valkey_client.pubsub = mock.Mock(side_effect=[
                     ConnectionError("offline failure") if stage == "pubsub" else failed, replacement])
-                client = RedisQuotePushChannel(redis_client, account_id="acct")
+                client = ValkeyQuotePushChannel(valkey_client, account_id="acct")
                 received, done = [], threading.Event()
 
                 def callback(topic, data):
                     received.append((topic, data))
                     done.set()
 
-                redis_client.publish(client._channel("SH"), encode_push_payload({"data": {"x": 1}}))
+                valkey_client.publish(client._channel("SH"), encode_push_payload({"data": {"x": 1}}))
                 client.start_subscriber(["SH"], callback)
                 try:
                     self.assertTrue(done.wait(3.0), "connection recovered but callbacks did not")
-                    self.assertEqual(redis_client.pubsub.call_count, 2)
+                    self.assertEqual(valkey_client.pubsub.call_count, 2)
                     self.assertEqual(received, [("SH", {"x": 1})])
                     if stage != "pubsub":
                         self.assertTrue(failed._closed)
@@ -126,13 +126,13 @@ class RedisPushChannelTest(unittest.TestCase):
                 self.assertTrue(replacement._closed)
 
     def test_stop_during_reconnect_backoff_does_not_open_another_connection(self):
-        redis_client = FakeRedis()
-        failed = FakePubSub(redis_client)
+        valkey_client = FakeValkey()
+        failed = FakePubSub(valkey_client)
         failed.get_message = mock.Mock(side_effect=ConnectionError("offline failure"))
         closed = threading.Event()
         failed.close = closed.set
-        redis_client.pubsub = mock.Mock(return_value=failed)
-        client = RedisQuotePushChannel(redis_client)
+        valkey_client.pubsub = mock.Mock(return_value=failed)
+        client = ValkeyQuotePushChannel(valkey_client)
         client.start_subscriber(["SH"], lambda *_: None)
         thread = client._thread
         try:
@@ -140,16 +140,16 @@ class RedisPushChannelTest(unittest.TestCase):
         finally:
             client.stop()
         self.assertFalse(thread.is_alive())
-        self.assertEqual(redis_client.pubsub.call_count, 1)
+        self.assertEqual(valkey_client.pubsub.call_count, 1)
 
     def test_pub_sub_roundtrip(self):
-        redis_client = FakeRedis()
-        server = RedisQuotePushChannel(redis_client, account_id="acct")
+        valkey_client = FakeValkey()
+        server = ValkeyQuotePushChannel(valkey_client, account_id="acct")
         server.start_publisher()
 
         received = []
         done = threading.Event()
-        client = RedisQuotePushChannel(redis_client, account_id="acct")
+        client = ValkeyQuotePushChannel(valkey_client, account_id="acct")
 
         def on_msg(topic, data):
             received.append((topic, data))
@@ -159,7 +159,7 @@ class RedisPushChannelTest(unittest.TestCase):
         try:
             time.sleep(0.1)
             server.publish("SH,SZ", {"000001.SZ": {"lastPrice": 10.5}})
-            self.assertTrue(done.wait(2.0), "redis subscriber did not receive the push")
+            self.assertTrue(done.wait(2.0), "valkey subscriber did not receive the push")
         finally:
             client.stop()
             server.stop()
@@ -168,12 +168,12 @@ class RedisPushChannelTest(unittest.TestCase):
         self.assertEqual(received[0][1]["000001.SZ"]["lastPrice"], 10.5)
 
     def test_channel_name_scoped_by_account(self):
-        redis_client = FakeRedis()
-        server = RedisQuotePushChannel(redis_client, account_id="acct")
+        valkey_client = FakeValkey()
+        server = ValkeyQuotePushChannel(valkey_client, account_id="acct")
         server.start_publisher()
         server.publish("SH", {"x": 1})
         server.stop()
-        self.assertIn("bigqmt:quote_push:acct:SH", redis_client.messages)
+        self.assertIn("bigqmt:quote_push:acct:SH", valkey_client.messages)
 
 
 if __name__ == "__main__":

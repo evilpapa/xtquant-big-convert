@@ -7,9 +7,9 @@ qmt.py - QMT 交易/行情统一 CLI 入口
 避免每次现场写 Python。所有子命令默认输出 JSON，加 --table 可切换人类可读表格。
 
 配置来源（按优先级）：
-  1. 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_REDIS_HOST / ...
+  1. 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST / ...
   2. bigqmt_signal_trader_client_config 模块（在 PYTHONPATH 中）
-  3. bigqmt_signal_trader_local_config 模块
+  3. bigqmt_signal_trader_qmt_config 模块
   4. 本脚本所在仓库的 src/ 自动加入 sys.path（开发模式）
 
 用法示例：
@@ -94,7 +94,7 @@ def _ensure_qmt_python_on_path() -> None:
         candidates.append(cwd)
 
     for c in candidates:
-        local_cfg = os.path.join(c, "bigqmt_signal_trader_local_config.py")
+        local_cfg = os.path.join(c, "bigqmt_signal_trader_qmt_config.py")
         if os.path.isfile(local_cfg):
             if c not in sys.path:
                 # This path is needed to discover local_config.py, but must not
@@ -300,7 +300,7 @@ def _init():
     except Exception as e:
         _err(
             "configure() 失败。请检查配置：\n"
-            "  - 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_REDIS_HOST 等\n"
+            "  - 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST 等\n"
             "  - 或 bigqmt_signal_trader_client_config.py 配置文件",
             detail=str(e),
             code="CONFIG_FAIL",

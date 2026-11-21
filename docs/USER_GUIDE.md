@@ -25,13 +25,13 @@ python -m bigqmt_signal_trader.init_config
 
 | 文件 | 写到哪 | 谁用 |
 |---|---|---|
-| `bigqmt_signal_trader_local_config.py` | QMT 的 python 目录 | 服务端 |
+| `bigqmt_signal_trader_qmt_config.py` | QMT 的 python 目录 | 服务端 |
 | `bigqmt_signal_trader_client_config.py` | 你指定的目录 | 客户端 |
-| `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` | QMT 的 python 目录 | 只有选了单文件部署才生成，配置已烘焙进去 |
+| `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py` | QMT 的 python 目录 | 只有选了单文件部署才生成，配置已烘焙进去 |
 
 默认的 `package` 部署方式**只写配置，不拷包**。pip 装的没有 `src/`，按快速开始第 3 步找到包的位置再拷 4 项。单文件模式则已经生成到位。
 
-> **密码分两类。** Redis 密码是服务凭据，写进配置文件，输入时不回显。
+> **密码分两类。** Valkey 密码是服务凭据，写进配置文件，输入时不回显。
 > **QMT 登录密码不落盘**——`qmt_launcher` 从环境变量 `BIGQMT_LOGIN_PASSWORD` 读，这样它不会出现在 `argv` 或磁盘文件里。
 >
 > 生成的文件带账号和凭据，**不要提交到版本库**。
@@ -63,7 +63,7 @@ python -m bigqmt_signal_trader.init_config
 | **新股/打新** | `get_ipo_data`（返回以申购代码为键的 dict）/ `get_new_purchase_limit`；客户端另有 `query_ipo_data` / `ipo_subscribe` / `ipo_subscribe_all`，见下文 |
 | **融资融券** | `get_assure_contract`（担保品）/ `get_enable_short_contract`（融券标的）/ `get_unclosed_compacts`（未平仓）/ `get_closed_compacts`（已平仓）/ `get_debt_contract`（负债）—— 需两融权限，普通账户降级为空 |
 | **期权持仓** | `get_option_subject_position`（标的持仓）/ `get_comb_option`（组合期权）|
-| **持仓同步** | `sync_positions`（写回 Redis 供客户端缓存）|
+| **持仓同步** | `sync_positions`（写回 Valkey 供客户端缓存）|
 | **下单/撤单** | `submit_order` / `cancel_order`（默认关闭，需显式开启）|
 
 **客户端调用**：行情和参考数据一般通过 `BigQmtXtData` 同名方法调用；账户、委托和下单使用 `xt_trader` 的 MiniQMT 方法名。没有同名封装的方法可用 `xtdata.call_method("方法名", ...)` 或 `xt_trader.client.call("方法名", {...})`。参数和能力边界见 [RPC API 参考](RPC_API_REFERENCE.md)。
@@ -186,7 +186,7 @@ print(importlib.util.find_spec("xtquant").origin)
 
 ### 异步回报回调（MiniQMT 风格，实盘验证）
 
-客户端注册 `XtQuantTraderCallback` 子类，`connect()`/`subscribe()` 后实时接收委托/成交/错误回报（通过 Redis pubsub 推送）：
+客户端注册 `XtQuantTraderCallback` 子类，`connect()`/`subscribe()` 后实时接收委托/成交/错误回报（通过 Valkey pubsub 推送）：
 
 ```python
 from bigqmt_signal_trader.xtquant_compat import (
@@ -234,7 +234,7 @@ seq = xt_trader.order_stock_async(acc, "600654.SH", 23, 100, 11, 2.95, "rpc_test
 | `on_cancel_error(err)` | 撤单失败 | ✅ |
 | `on_cancel_order_stock_async_response` | 异步撤单回报 | ✅ |
 
-**异步下单的事件顺序**（Issue #51）：`on_order_stock_async_response`（异步下单工作线程）与 `on_stock_order` / `on_stock_trade`（Redis pub/sub 监听线程）走不同通道，服务端在 `order_callback` 里先推事件、后回 RPC，事件先于响应是**常态**而非偶发竞态。客户端按 `order_remark` 设屏障：命中待响应委托的事件先暂存，response（或 error）触发后按到达顺序放行；屏障 10 秒超时兜底——丢事件比顺序错乱更糟。延迟只加在 `order_stock_async` 路径上：手工下单、同步下单、无 remark 的委托一律直通。成交事件可能没有 remark，此时按委托事件学到的 `order_sys_id` 关联。`order_remark` 不强制唯一（网格类策略常复用）：同 remark 的后一笔下单会接管前一笔的屏障并先放行其暂存事件，response 按 seq 精确匹配，前一笔的 response 不会误放后一笔的屏障。已验证：单测（含反向验证）+ 盘后真实 Redis 注入实测（部署环境保序成立）。
+**异步下单的事件顺序**（Issue #51）：`on_order_stock_async_response`（异步下单工作线程）与 `on_stock_order` / `on_stock_trade`（Valkey pub/sub 监听线程）走不同通道，服务端在 `order_callback` 里先推事件、后回 RPC，事件先于响应是**常态**而非偶发竞态。客户端按 `order_remark` 设屏障：命中待响应委托的事件先暂存，response（或 error）触发后按到达顺序放行；屏障 10 秒超时兜底——丢事件比顺序错乱更糟。延迟只加在 `order_stock_async` 路径上：手工下单、同步下单、无 remark 的委托一律直通。成交事件可能没有 remark，此时按委托事件学到的 `order_sys_id` 关联。`order_remark` 不强制唯一（网格类策略常复用）：同 remark 的后一笔下单会接管前一笔的屏障并先放行其暂存事件，response 按 seq 精确匹配，前一笔的 response 不会误放后一笔的屏障。已验证：单测（含反向验证）+ 盘后真实 Valkey 注入实测（部署环境保序成立）。
 
 **`*_async` 查询方法**（对齐 MiniQMT 签名，callback 可选）：
 
@@ -327,13 +327,13 @@ xtdata.unsubscribe_quote(seq)
 
 ### 多个客户端同时用一座桥
 
-可以，redis 模式天然支持多消费者，三条通道各自的机制：
+可以，valkey 模式天然支持多消费者，三条通道各自的机制：
 
 | 通道 | 多客户端怎么工作 | 注意 |
 |---|---|---|
 | **RPC 查询**（行情快照、持仓、委托、下单） | 每个请求带自己的 `request_id`，回复写到 `bigqmt:rpc:resp:<账号>:<request_id>`，互不串。N 个进程同时 `query_stock_positions` / `get_full_tick` 都行 | **吞吐是共享的**：服务端串行处理（交易类查询排在 adjust 线程上一次一个），谁都不排队的前提是总量不大。多个消费者各自每秒拉一次全市场 `get_full_tick(["SH"])`（~1s 一次）会互相拖慢；这种让一个进程拉、其余订阅它，或开 `full_tick_cache` |
-| **全推行情**（`subscribe_whole_quote`） | 服务端按 `(client_id, sub_id)` 引用计数，同一组合只在 QMT 订一次；推送走 redis pub/sub，**订同一 topic 的所有客户端都收到**；最后一个退订才真退 | 0.3.49 前同机多进程有坑：`client_id` 默认是每用户一份持久化文件，两个进程共用它、`sub_id` 又都从 1 数起，服务端看成一个订阅者，B 退订会把 A 的也拆掉。现在 `sub_id` 带进程号，不再撞；**跨机器**共用同一份配置时仍请各设 `BIGQMT_QUOTE_CLIENT_ID` |
-| **委托/成交回报**（`on_stock_order` 等） | redis stream + pub/sub 按账号广播，每个客户端各起自己的监听线程，都收到全量事件 | 事件是按账号而不是按客户端的：A 下的单 B 也会收到回报，按 `order_remark` / `strategy_name` 自己过滤 |
+| **全推行情**（`subscribe_whole_quote`） | 服务端按 `(client_id, sub_id)` 引用计数，同一组合只在 QMT 订一次；推送走 valkey pub/sub，**订同一 topic 的所有客户端都收到**；最后一个退订才真退 | 0.3.49 前同机多进程有坑：`client_id` 默认是每用户一份持久化文件，两个进程共用它、`sub_id` 又都从 1 数起，服务端看成一个订阅者，B 退订会把 A 的也拆掉。现在 `sub_id` 带进程号，不再撞；**跨机器**共用同一份配置时仍请各设 `BIGQMT_QUOTE_CLIENT_ID` |
+| **委托/成交回报**（`on_stock_order` 等） | valkey stream + pub/sub 按账号广播，每个客户端各起自己的监听线程，都收到全量事件 | 事件是按账号而不是按客户端的：A 下的单 B 也会收到回报，按 `order_remark` / `strategy_name` 自己过滤 |
 
 ### 全市场快照的品种过滤（`types`）
 
@@ -419,7 +419,7 @@ minutes; running it now so a caller does not have to wait
 关掉它（服务端 local config）：
 
 ```python
-BIGQMT_REDIS_CONFIG = {
+BIGQMT_CONFIG = {
     # ...
     "warm_context_data": False,
 }
@@ -455,7 +455,7 @@ xtdata.get_deployment_info()
 #  'package_dir':    'D:\...\python\bigqmt_signal_trader',
 #  'qmt_python_dir': 'D:\...\python',
 #  'strategy_dir':   'D:\...\python',
-#  'python_version': '3.6.8'}
+#  'python_version': '3.12.0'}
 ```
 
 **版本不一致时，连接会告警：**
@@ -481,7 +481,7 @@ xt_trader.sync_deployment()               # 真同步
 
 | 行为 | 说明 |
 |---|---|
-| **绝不写入配置文件** | `bigqmt_signal_trader_local_config.py` / `bigqmt_signal_trader_client_config.py` 存账号和凭据；对应的 `.example.py` 属文档，会更新 |
+| **绝不写入配置文件** | `bigqmt_signal_trader_qmt_config.py` / `bigqmt_signal_trader_client_config.py` 存账号和凭据；对应的 `.example.py` 属文档，会更新 |
 | **不新增顶层文件** | 只刷新部署里已有的模块，加上策略入口（全新部署需要它）。否则 QMT 目录会变得没人说得清 |
 | **覆盖前备份** | 每个被覆盖的文件留 `.bak_<时间戳>` |
 | **原子写入** | 先写临时文件再替换，中断不会留下半个模块 |
@@ -504,7 +504,7 @@ xt_trader.reload_status()            # -> {'ok': True, 'modules_purged': 28,
 | | |
 |---|---|
 | **能刷新** | `bigqmt_signal_trader/` 下的一切——适配器、RPC handler、models、传输层 |
-| **刷新不了** | `bigqmt_signal_trader_strategy.py` 和 `BIGQMT_REDIS_DRYRUN.py`。QMT 自己 exec 这两个文件，**模块没法 reload 自己所在的模块**——改这两个仍要重启策略 |
+| **刷新不了** | `bigqmt_signal_trader_strategy.py` 和 `BIGQMT_VALKEY_DRYRUN.py`。QMT 自己 exec 这两个文件，**模块没法 reload 自己所在的模块**——改这两个仍要重启策略 |
 
 用 purge 而不是 `importlib.reload`：reload 必须按依赖顺序（`order_bigqmt` 在 import 时 `from ..models import OrderSnapshot`，顺序错了会**静默**留住旧类），purge 没有顺序问题。
 
@@ -533,7 +533,7 @@ min / **median** / max（ms）：
 > 会把每一轮锁死在同一相位，中位数变成第一次调用撞上什么相位的产物）。详见
 > [docs/LATENCY_REPORT.md](LATENCY_REPORT.md) 的方法论。
 
-所以 **`rpc_background_threads` 一律 `False`**，redis 也是。0.3.28 那张「redis + 后台线程
+所以 **`rpc_background_threads` 一律 `False`**，valkey 也是。0.3.28 那张「valkey + 后台线程
 3.4ms 最快」的表是真的测出来的，但测在**重启后的回放窗口**里：策略一启动 QMT 先回放历史
 K 线，adjust 跟着每根 K 线跑（日志 `adjust cadence: ticks=51429 ... over 10s`，每秒 5000 拍），
 那几十秒里什么 RPC 都是毫秒级；回放完 `run_time` 才是 10Hz。稳态下只读两种模式同档，
@@ -573,7 +573,7 @@ BIGQMT 的 `58600` 端口是 **FormulaServer**——QMT 内置的 C++ 行情/参
 
 | 对比 | p50 |
 |------|-----|
-| redis RPC | ~10ms |
+| valkey RPC | ~10ms |
 | **FormulaServer 直连** | **0.07ms**（无 GIL 竞争）|
 
 直连覆盖 10 个方法：`get_instrument` / `get_instrument_detail` / `get_instrumentdetail` /
@@ -595,7 +595,7 @@ BIGQMT 的 `58600` 端口是 **FormulaServer**——QMT 内置的 C++ 行情/参
 配置（客户端侧，默认就是开启，通常不用写）：
 
 ```python
-BIGQMT_REDIS_CONFIG = {
+BIGQMT_CONFIG = {
     "formula_server": {
         "enabled": True,              # 或环境变量 BIGQMT_FORMULA_ENABLED=0 关闭
         # "host": "127.0.0.1",        # 默认本机；FormulaServer 绑 0.0.0.0，跨机需放行防火墙
@@ -714,10 +714,10 @@ python tools/build_single_file.py
 
 | 生成器 | 产物 | 内嵌方式 | 用于 |
 |---|---|---|---|
-| `build_single_file.py` | `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` | base64 | Redis |
+| `build_single_file.py` | `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py` | base64 | Valkey |
 
 
-**用法**：编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_REDIS_CONFIG`，把这**一个文件**拷进 QMT 的 python 目录当策略加载即可。策略启动时读取环境变量 `BIGQMT_ACCOUNT_ID`；未设置或只有空白时会提示。首次验证请将 `rpc_allow_order_methods` 设为 `False`，需要远程下单或撤单时再打开。
+**用法**：编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_CONFIG`，把这**一个文件**拷进 QMT 的 python 目录当策略加载即可。策略启动时读取环境变量 `BIGQMT_ACCOUNT_ID`；未设置或只有空白时会提示。首次验证请将 `rpc_allow_order_methods` 设为 `False`，需要远程下单或撤单时再打开。
 
 产物约 900KB / 700KB，已加入 `.gitignore`——**用时重新生成，不要提交**。改动包内代码后需重新运行生成器。
 
@@ -790,7 +790,7 @@ RPC channel 都按 `account_id` 隔离（`bigqmt:rpc:req:{account_id}`），客�
 一个策略实例、每个账号一条 channel、共用同一套 QMT 句柄。服务端配置在单账号的基础上**多一张路由表**，其余不变：
 
 ```python
-# bigqmt_signal_trader_local_config.py —— 单终端双账号：STOCK + FUTURE
+# bigqmt_signal_trader_qmt_config.py —— 单终端双账号：STOCK + FUTURE
 
 # 主账号：策略在 QMT 里以哪个账号加载运行，这里就填哪个。
 # 它的 channel 跑在 adjust 主线程上，所有账号的交易类请求最终都在这里执行。
@@ -806,8 +806,8 @@ BIGQMT_ACCOUNT_TYPE_MAP = {
     "你的期货账号": "FUTURE",
 }
 
-BIGQMT_REDIS_CONFIG = {
-    "transport": "redis",
+BIGQMT_CONFIG = {
+    "transport": "valkey",
     "host": "...", "port": 6379, "db": 5, "password": "...",
     "account_id": BIGQMT_ACCOUNT_ID,
     "rpc_allow_order_methods": True,      # 对这个实例上的所有账号一起生效
@@ -857,18 +857,18 @@ xt_trader.order_stock(acc_hk, "00700.HK", xtconstant.STOCK_BUY, 100, xtconstant.
 D:\QMT交易端\python\            ← 客户端 A，登录股票账号
 ├── bigqmt_signal_trader/
 ├── bigqmt_signal_trader_strategy.py
-├── bigqmt_signal_trader_redis_rpc_runtime.py
-├── BIGQMT_REDIS_DRYRUN.py
-└── bigqmt_signal_trader_local_config.py    BIGQMT_ACCOUNT_ID = "股票账号", BIGQMT_ACCOUNT_TYPE = "STOCK"
+├── bigqmt_signal_trader_valkey_rpc_runtime.py
+├── BIGQMT_VALKEY_DRYRUN.py
+└── bigqmt_signal_trader_qmt_config.py    BIGQMT_ACCOUNT_ID = "股票账号", BIGQMT_ACCOUNT_TYPE = "STOCK"
 
 E:\华泰QMT\python\                       ← 客户端 B，登录信用账号
 ├── （同样 4 项）
-└── bigqmt_signal_trader_local_config.py    BIGQMT_ACCOUNT_ID = "信用账号", BIGQMT_ACCOUNT_TYPE = "CREDIT"
+└── bigqmt_signal_trader_qmt_config.py    BIGQMT_ACCOUNT_ID = "信用账号", BIGQMT_ACCOUNT_TYPE = "CREDIT"
 ```
 
-两份配置连同一个 Redis 即可（`host` / `port` / `db` / `password` 相同）。每个客户端在自己的模型交易里加载自己目录下的 `BIGQMT_REDIS_DRYRUN.py`，两个实例的 RPC channel 按 `account_id` 自动隔离（`bigqmt:rpc:queue:<账号>`），互不影响。`bigqmt-init` 在每台/每个目录各跑一遍就是这个结果。
+两份配置连同一个 Valkey 即可（`host` / `port` / `db` / `password` 相同）。每个客户端在自己的模型交易里加载自己目录下的 `BIGQMT_VALKEY_DRYRUN.py`，两个实例的 RPC channel 按 `account_id` 自动隔离（`bigqmt:rpc:queue:<账号>`），互不影响。`bigqmt-init` 在每台/每个目录各跑一遍就是这个结果。
 
-> **同一个 QMT 客户端里跑不了两个实例。** 同一客户端的所有策略共用一个 Python 进程和一份 `sys.modules`，配置模块名 `bigqmt_signal_trader_local_config` 在入口、runtime、strategy 三处写死，第二个实例 import 到的仍是第一份配置——两个实例绑同一个账号，而且都正常启动、不报错。**同一客户端里登录了多个账号，用方式一。**（#261 反馈的"每个指向不同的配置"此前没写清楚：不存在这样的指向，是靠目录隔离。）
+> **同一个 QMT 客户端里跑不了两个实例。** 同一客户端的所有策略共用一个 Python 进程和一份 `sys.modules`，配置模块名 `bigqmt_signal_trader_qmt_config` 在入口、runtime、strategy 三处写死，第二个实例 import 到的仍是第一份配置——两个实例绑同一个账号，而且都正常启动、不报错。**同一客户端里登录了多个账号，用方式一。**（#261 反馈的"每个指向不同的配置"此前没写清楚：不存在这样的指向，是靠目录隔离。）
 
 
 **客户端（外部程序）**：为每个账号创建独立的 client/trader 对象。
@@ -877,13 +877,13 @@ E:\华泰QMT\python\                       ← 客户端 B，登录信用账号
 from bigqmt_signal_trader.xtquant_compat import BigQmtRpcClient, BigQmtXtTrader, StockAccount
 
 # 股票账号
-stock_client = BigQmtRpcClient(account_id="股票账号", redis_config={...})
-stock_trader = BigQmtXtTrader(account_id="股票账号", redis_client=stock_client.redis_client)
+stock_client = BigQmtRpcClient(account_id="股票账号", valkey_config={...})
+stock_trader = BigQmtXtTrader(account_id="股票账号", valkey_client=stock_client.valkey_client)
 stock_acc = StockAccount("股票账号", "STOCK")
 
 # 信用账号
-credit_client = BigQmtRpcClient(account_id="信用账号", redis_config={...})
-credit_trader = BigQmtXtTrader(account_id="信用账号", redis_client=credit_client.redis_client)
+credit_client = BigQmtRpcClient(account_id="信用账号", valkey_config={...})
+credit_trader = BigQmtXtTrader(account_id="信用账号", valkey_client=credit_client.valkey_client)
 credit_acc = StockAccount("信用账号", "CREDIT")
 
 # 分别查询/下单
@@ -958,42 +958,29 @@ xt_trader.cancel_order_stock(acc, order_id)   # 撤单送回的是原始字符�
 
 ## 环境要求与依赖安装
 
-本系统分两部分，各自需要自己的 Python 环境和依赖：
+客户端、QMT 策略和独立串口桥接都需要 Python 3.12 或更高版本。
 
 | 部分 | 运行位置 | Python | 装什么 |
 |------|---------|--------|--------|
-| **客户端**（外部程序）| 你的开发机 | **3.8 ~ 3.13** | `pip install xtquant-big-convert` |
-| **服务端**（QMT 内）| QMT 的 `bin.x64/python.exe` | 3.6（QMT 自带，改不了）| 按传输装 1 个包 |
+| **客户端**（外部程序）| 你的开发机 | **3.12 及以上** | 在源码目录运行 `pip install ".[valkey]"` |
+| **服务端**（QMT 内，直连 Valkey） | QMT 策略实际运行的环境 | **3.12 及以上** | `valkey>=6.1,<7` |
 
 ### 版本约束（装之前先看这个）
 
 
-**`redis` 包不要装 8.x。** 已在 `[redis]` extra 里限制为 `>=5.0.0,<8.0.0`。
-8.x 改了两个默认值，实测：
+`[valkey]` extra 安装适合当前 Python 版本的 `valkey>=6.1,<7`。RPC 连接默认使用 RESP2，
+并关闭自动重试。`RPUSH` 失败时服务端可能已经收到请求，自动重发会产生重复投递（#245）。
+服务端也会按 `request_id` 去重。
 
-| redis-py | `protocol` 默认 | 默认重试次数 |
-|---|---|---|
-| 5.2.1 | 2 | 0（不重试）|
-| 6.4.0 | 2 | 3 |
-| 7.4.0 | 2 | 3 |
-| **8.1.0** | **None** | **10** |
-
-重试次数要紧，因为 RPC 请求是用 `RPUSH` 发的，而 **`RPUSH` 不幂等**：redis-py
-的重试包住的是「发送 + 读应答」，服务端已经收下、只是应答丢了的情况下，同一条
-`RPUSH` 会被重发 —— 一次下单可能派发两次（#245）。服务端从 0.3.29 起按
-`request_id` 去重兜住了这条，但没有理由把默认重试次数从 3 抬到 10。
-
-**QMT 端（服务端）的 redis 更要小心:它是 Python 3.6。** redis-py 从 4.4 起要求
-Python 3.7+，所以 QMT 里能装的最高是 **4.3.x**；QMT 自带的是 3.5.3，本项目按版本
-能力透传参数，能直接用。在 QMT 目录里 `pip install -U redis` 是自找麻烦 ——
-issue #71「最新代码 QMT 报错」就是给 3.5.3 传了它不认识的 `protocol` 参数导致的
-`TypeError`。**没有特别理由，不要动 QMT 自带的 redis。**
+使用[串口传输](RPC_TRANSPORTS.md#通过-com0com-接回-valkey)时，QMT 策略环境和独立桥接环境也都需要 Python 3.12+。
 
 ### A. 客户端（外部程序，推荐 pip 安装）
 
-客户端就是**写策略/调接口的那台电脑**（也叫「开发机」）。直接 pip 安装：
+客户端就是写策略、调接口的开发机。在源码目录运行：
 
-
+```bash
+pip install ".[valkey]"
+```
 安装后可直接 import：
 
 ```python
@@ -1004,51 +991,24 @@ configure()
 print(xtdata.get_full_tick(["000001.SZ"]))
 ```
 
-### B. 服务端（QMT 内 Python 3.6）
+### B. 服务端（QMT 策略环境）
 
-> **前置：先在 QMT 界面里下载 Python 组件。** 全新安装的终端 `bin.x64\` 下**没有 `Lib\` 目录**，也没有 `python.exe`——那是 Python 组件带来的，不是终端自带的，**不要自己手动创建 `Lib\`**。在 QMT 客户端里下载安装该组件后，`bin.x64\Lib\site-packages\` 才会出现，下面的路径才成立。具体入口见迅投官方文档。
-
-QMT 自带 Python 3.6（`bin.x64/python.exe`），**只需按你选的传输装对应依赖**：
-
-| 传输 | 服务端需要的包 | 客户端需要的包 |
-|------|--------------|--------------|
-| **redis**（默认）| `redis`（QMT 通常已内置）| `redis` |
-| **mysql** | `pymysql` + `DBUtils` | `pymysql` + `DBUtils` |
-
-
-
-QMT 的 Python 3.6 用旧 OpenSSL，pip 直连 HTTPS 镜像会报 SSL 错误。有两种方法：
+在 QMT 界面里安装 Python 组件。使用 `transport="valkey"` 时，在 QMT 策略实际使用的 Python 3.12+ 环境中安装并验证依赖：
 
 ```powershell
-# 方法 A：从开发机拷贝纯 Python 包（推荐，绕过 SSL 问题）
-# pymysql / DBUtils 是纯 Python，可直接拷贝；在开发机（已装这些包）执行：
-$QMT_SITE = "D:\QMT交易端\bin.x64\Lib\site-packages"
-Copy-Item -Recurse "C:\Users\<你>\anaconda3\Lib\site-packages\pymysql" "$QMT_SITE\pymysql"
-Copy-Item -Recurse "C:\Users\<你>\anaconda3\Lib\site-packages\dbutils" "$QMT_SITE\dbutils"
-
-# 方法 B：用 QMT python pip 装（可能因 SSL 失败，需配置信任）
-cd D:\QMT交易端
-.\bin.x64\python.exe -m pip install --trusted-host mirrors.aliyun.com pymysql DBUtils
+python -m pip install "valkey>=6.1,<7"
+python -c "import sys, valkey; print(sys.version, valkey.__file__)"
 ```
 
-验证安装：
-```powershell
-.\bin.x64\python.exe -c "import pymysql; from dbutils.pooled_db import PooledDB; print('OK')"
-```
+### C. Valkey 服务
 
+桥接客户端和 QMT 策略需要连接同一个 Valkey 服务。已有实例时，填写现有地址、认证和数据库即可。`BIGQMT_CONFIG["url"]` 和 `BIGQMT_VALKEY_URL` 都接受 `valkey://` 与 `redis://`。Lua 脚本使用 Valkey 7.2.5 起提供的 `server` API。
 
-### C. Redis 服务本身（Windows 上怎么来）
+需要新建实例时，Windows 可通过
+[官方文档中的 WSL 方式](https://valkey.io/topics/installation/)运行，
+也可以用[部署脚本](../deploy/README.md)安装社区维护的 `valkey-windows` 服务。
 
-> 上面 B 节表里的 `redis` 是 **redis-py 这个 Python 包**（客户端库），**不是 Redis 服务**。用 redis 传输时你还需要一个**跑着的 Redis 服务**能连——服务端和客户端都连它。装完 redis-py 手里仍然没有 Redis，这一步补上。
-
-Redis 官方从来没有 Windows 版（微软那个老 port 早归档了）。Windows 上不装 WSL 拿到 Redis，最省事的是社区重打包 **redis-windows**：
-
-- 下载：<https://github.com/redis-windows/redis-windows/releases> —— 解压即用，无需 WSL / Linux 子系统。
-- 也可以指向**任何能连到的 Redis**：同机、内网另一台机器、或 Docker 里的都行。Redis 服务不必和 QMT 在同一台机器。
-
-> ⚠️ **redis-windows 是社区重打包，不是 Redis 官方发行**。是否采用由你判断；本项目只做说明，不分发它的二进制。
-
-解压后带一份最小配置启动（`redis.conf`）：
+解压后带一份最小配置启动（`valkey.conf`）：
 
 ```conf
 # 只监听本机；服务端和客户端都在这台机器时用这个
@@ -1059,25 +1019,25 @@ requirepass 换成你自己的强密码
 ```
 
 ```powershell
-.\redis-server.exe .\redis.conf
+.\valkey-server.exe .\valkey.conf
 ```
 
-配置里对应填法（`bigqmt_signal_trader_local_config.py` 和客户端配置一致）：
+配置里对应填法（`bigqmt_signal_trader_qmt_config.py` 和客户端配置一致）：
 
 ```python
-BIGQMT_REDIS_CONFIG = {
-    "host": "127.0.0.1",   # 跨机时填 Redis 那台的内网 IP
+BIGQMT_CONFIG = {
+    "host": "127.0.0.1",   # 跨机时填 Valkey 那台的内网 IP
     "port": 6379,
     "db": 5,
-    "username": "",        # redis-windows 默认无 ACL 用户，留空
+    "username": "",        # 连接 default 用户时可留空
     "password": "换成你自己的强密码",  # 与 requirepass 一致
-    "transport": "redis",
+    "transport": "valkey",
 }
 ```
 
-> 🔒 **务必设密码、只监听本机——这座桥的 RPC 层没有鉴权。** 访问控制只有两层：Redis 自己的凭据，和 `rpc_allow_order_methods` 开关。**能连上这个 Redis、知道队列名的人就能驱动这座桥**，而队列名是 `bigqmt:rpc:queue:<资金账号>`，账号本身就在队列名里、不算秘密。`rpc_allow_order_methods=True` 时这包括**下单和撤单**（默认 `False`）。
+> 🔒 **务必设密码、只监听本机——这座桥的 RPC 层没有鉴权。** 访问控制只有两层：Valkey 自己的凭据，和 `rpc_allow_order_methods` 开关。**能连上这个 Valkey、知道队列名的人就能驱动这座桥**，而队列名是 `bigqmt:rpc:queue:<资金账号>`，账号本身就在队列名里、不算秘密。`rpc_allow_order_methods=True` 时这包括**下单和撤单**（默认 `False`）。
 >
-> 所以：**`requirepass` 设强密码 + `bind 127.0.0.1`（只本机）** 是最低要求，别用默认的空密码。**确需跨机**时——绑内网网卡、`requirepass` 照设、并用防火墙只放行客户端那台的 IP；**绝不要**把这个 Redis 暴露到公网。一个空密码、`bind` 放开、防火墙放行的 Windows Redis，挂着一个真实资金账号，是最危险的组合。
+> 所以：**`requirepass` 设强密码 + `bind 127.0.0.1`（只本机）** 是最低要求，别用默认的空密码。**确需跨机**时——绑内网网卡、`requirepass` 照设、并用防火墙只放行客户端那台的 IP；**绝不要**把这个 Valkey 暴露到公网。一个空密码、`bind` 放开、防火墙放行的 Windows Valkey，挂着一个真实资金账号，是最危险的组合。
 
 ---
 
@@ -1089,12 +1049,12 @@ BIGQMT_REDIS_CONFIG = {
 
 | 文件 | 放哪 | 谁放 |
 |---|---|---|
-| `bigqmt_signal_trader` 包（客户端用的那份） | 客户端机器的 site-packages | `pip install "xtquant-big-convert[redis]"` |
+| `bigqmt_signal_trader` 包（客户端用的那份） | 客户端机器的 site-packages | `pip install "xtquant-big-convert[valkey]"` |
 | `bigqmt_signal_trader_client_config.py` | 客户端：**和你运行的脚本同一目录** | `bigqmt-init` 第二个目录问题写出（回车 = 当前目录） |
 | `bigqmt_signal_trader/`（整个包目录） | QMT 的 `python` 目录，如 `D:\QMT交易端\python\` | **你手动拷**，从 pip 装的包目录里 |
 | `bigqmt_signal_trader_strategy.py` | 同上 | 同上 |
-| `bigqmt_signal_trader_redis_rpc_runtime.py` | 同上 | 同上 |
-| `bigqmt_signal_trader_local_config.py` | QMT 的 `python` 目录 | `bigqmt-init` 第一个目录问题写出（**必须手填这个目录**，回车 = 当前目录，服务端就找不到了） |
+| `bigqmt_signal_trader_valkey_rpc_runtime.py` | 同上 | 同上 |
+| `bigqmt_signal_trader_qmt_config.py` | QMT 的 `python` 目录 | `bigqmt-init` 第一个目录问题写出（**必须手填这个目录**，回车 = 当前目录，服务端就找不到了） |
 
 三件事要记住：
 
@@ -1107,7 +1067,7 @@ BIGQMT_REDIS_CONFIG = {
 在你写策略的那台电脑上：
 
 ```powershell
-pip install "xtquant-big-convert[redis]"
+pip install "xtquant-big-convert[valkey]"
 ```
 
 
@@ -1125,11 +1085,11 @@ python -m bigqmt_signal_trader.init_config
 
 两种写法等价；第一种是 pip 装包时注册的命令，找不到就用第二种。**只能在终端里交互着答，不能用管道喂**——密码那一问走 `getpass` 读终端。
 
-它按顺序问：资金账号、账号类型、传输方式、Redis 地址端口用户名密码（选 redis 才问）、是否允许远程下单、部署方式、然后是**两个目录**：
+它按顺序问：资金账号、账号类型、传输方式、Valkey 地址端口用户名密码（选 valkey 才问）、是否允许远程下单、部署方式、然后是**两个目录**：
 
 | 问题 | 写出的文件 | 回车不填 |
 |---|---|---|
-| 「QMT 的 python 目录」 | `bigqmt_signal_trader_local_config.py`（服务端） | 写到**当前目录**——服务端启动找不到配置。**手填**，如 `D:\QMT交易端\python` |
+| 「QMT 的 python 目录」 | `bigqmt_signal_trader_qmt_config.py`（服务端） | 写到**当前目录**——服务端启动找不到配置。**手填**，如 `D:\QMT交易端\python` |
 | 「客户端配置写到哪个目录」 | `bigqmt_signal_trader_client_config.py`（客户端） | 写到当前目录——如果这里就是你外部脚本所在的目录，回车正好 |
 
 两份由同一组答案生成，账号和连接参数不会对不上。跑完打印「=== 已写入 ===」和两个路径，核对一下路径是不是你想的那两个目录。完整的交互记录和每个问题的说明见 [docs/DEPLOY_QUICKSTART.md 第 2 步](DEPLOY_QUICKSTART.md#第-2-步用-bigqmt-init-生成配置)。
@@ -1137,11 +1097,11 @@ python -m bigqmt_signal_trader.init_config
 <details>
 <summary>不用向导、手写服务端配置（点开看）</summary>
 
-在 QMT 的 `python` 目录创建 `bigqmt_signal_trader_local_config.py`（**不要提交此文件**）：
+在 QMT 的 `python` 目录创建 `bigqmt_signal_trader_qmt_config.py`（**不要提交此文件**）：
 
 
 > **`rpc_background_threads` 一律 `False`**（实测见上面「可插拔传输层」那张四列表）：
-> drain 模式一个请求最多等一个 adjust tick；后台线程每拿一次 GIL 付一个 tick，redis 回包
+> drain 模式一个请求最多等一个 adjust tick；后台线程每拿一次 GIL 付一个 tick，valkey 回包
 > 8 次往返就是 400ms（#343）。不写这个键，0.3.51 起各传输默认也是 drain；旧配置里写着
 > `True` 的改掉重启。`True` 只留给没有 drain 实现的传输。
 >
@@ -1165,11 +1125,11 @@ python -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(
 ```
 bigqmt_signal_trader/                   整个包目录，含 transports/ 和 adapters/
 bigqmt_signal_trader_strategy.py
-bigqmt_signal_trader_redis_rpc_runtime.py
-BIGQMT_REDIS_DRYRUN.py                  QMT 编辑器里加载的入口
+bigqmt_signal_trader_valkey_rpc_runtime.py
+BIGQMT_VALKEY_DRYRUN.py                  QMT 编辑器里加载的入口
 ```
 
-4 项缺一不可：少了包目录报 `No module named bigqmt_signal_trader`，少了入口面板没有任何输出。拷完 QMT 的 `python` 目录里应该同时有这 4 项加第 2 步写的 `bigqmt_signal_trader_local_config.py`，共 5 个名字。
+4 项缺一不可：少了包目录报 `No module named bigqmt_signal_trader`，少了入口面板没有任何输出。拷完 QMT 的 `python` 目录里应该同时有这 4 项加第 2 步写的 `bigqmt_signal_trader_qmt_config.py`，共 5 个名字。
 
 
 > 源码检出（不是 pip 装）的话，这 4 项在仓库的 `src/` 下，`bigqmt-init` 最后那句「把 src/ 下的包同步到 QMT 的 python 目录」说的就是它。
@@ -1179,9 +1139,9 @@ BIGQMT_REDIS_DRYRUN.py                  QMT 编辑器里加载的入口
 
 ```
 [bigqmt_shell] reload entry paths=['D:\\QMT交易端\\python']
-[bigqmt_shell] local redis config loaded keys=['host', 'port', 'db', ...]
+[bigqmt_shell] local valkey config loaded keys=['host', 'port', 'db', ...]
 [bigqmt_shell] local account config loaded=True
-[bigqmt_rpc] transport=redis mode process_in_listener=True listener_methods=('*',) ...
+[bigqmt_rpc] transport=valkey mode process_in_listener=True listener_methods=('*',) ...
 [bigqmt_rpc] started channel=bigqmt:rpc:req:你的账号
 [bigqmt_signal_trader] init ok
 ```
@@ -1196,7 +1156,7 @@ BIGQMT_REDIS_DRYRUN.py                  QMT 编辑器里加载的入口
 python -c "from bigqmt_signal_trader.xtquant_compat import configure, xtdata; configure(); print(xtdata.get_deployment_info())"
 ```
 
-打出 `{'version': '0.3.xx', 'package_dir': 'D:\\...\\python\\bigqmt_signal_trader', 'python_version': '3.6.8', ...}` 就通了——这是**服务端**在跑的版本和目录。再拉一次行情：
+打出 `{'version': '0.4.0', 'package_dir': 'D:\\...\\python\\bigqmt_signal_trader', 'python_version': '3.12.0', ...}` 就通了——这是**服务端**在跑的版本和目录。再拉一次行情：
 
 ```powershell
 python -c "from bigqmt_signal_trader.xtquant_compat import configure, xtdata; configure(); print(xtdata.get_full_tick(['000001.SZ']))"
@@ -1207,7 +1167,7 @@ python -c "from bigqmt_signal_trader.xtquant_compat import configure, xtdata; co
 所在目录自动排在 `sys.path` 最前）；交互式或 `python -c` 时是**当前工作目录**。放在别处就
 把那个目录加进 `PYTHONPATH`，或用环境变量 `BIGQMT_CLIENT_CONFIG_MODULE=<模块名>` 指定。
 
-找不到时会退回 `bigqmt_signal_trader_local_config`（服务端那份）。所以把它放进 QMT 的
+找不到时会退回 `bigqmt_signal_trader_qmt_config`（服务端那份）。所以把它放进 QMT 的
 `python` 目录、并从那个目录运行客户端也能跑——但那是碰巧命中回退，读到的是服务端配置，
 换台机器就找不到了。客户端和 QMT 不在同一台机器时，配置只能跟着客户端脚本走。
 
@@ -1245,11 +1205,11 @@ klines = xtdata.get_market_data_ex(
 **方式 B：直接 RPC 调用**
 
 ```python
-from bigqmt_signal_trader.redis_rpc import call_redis_rpc
-import redis
+from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
+import valkey
 
-r = redis.Redis(host="192.168.1.100", port=6379, db=5, password="...")
-resp = call_redis_rpc(r, "你的账号", "get_full_tick", {"codes": ["000001.SZ"]})
+r = valkey.Valkey(host="192.168.1.100", port=6379, db=5, password="...")
+resp = call_valkey_rpc(r, "你的账号", "get_full_tick", {"codes": ["000001.SZ"]})
 print(resp["data"]["000001.SZ"]["lastPrice"])
 ```
 
@@ -1269,15 +1229,15 @@ ticks = xtdata.get_full_tick(["600000.SH"])  # 走 RPC 到 BIGQMT
 
 ### 升级
 
-客户端 `pip install -U xtquant-big-convert`；服务端重做第 3 步（拷 4 项、清 `__pycache__`），三个顶层文件没变就 `xt_trader.reload_deployment()` 热更新，变了就重启策略。备份、3.6.8 编译、逐文件比对的完整清单见 [docs/DEPLOY_QUICKSTART.md「升级已有部署」](DEPLOY_QUICKSTART.md#升级已有部署package-模式)。
+客户端升级 `xtquant-big-convert[valkey]`。服务端重做第 3 步（拷 4 项、清 `__pycache__`），三个顶层文件没变就 `xt_trader.reload_deployment()` 热更新，变了就重启策略。备份、目标解释器编译和逐文件比对见[升级已有部署](DEPLOY_QUICKSTART.md#升级已有部署package-模式)。
 
-### 入口文件 `BIGQMT_REDIS_DRYRUN.py` 的细节（排错时再看）
+### 入口文件 `BIGQMT_VALKEY_DRYRUN.py` 的细节（排错时再看）
 
 它是 QMT 编辑器入口的「外壳」（shell），按顺序做这几件事：
 
 1. **定位 python 目录**：把 QMT 的 `python` 目录加到 `sys.path`，让 `bigqmt_signal_trader` 包能 import。
-2. **reload 模块**：`importlib.reload` 刷新 `redis_common` / `redis_rpc` / `strategy` / `runtime` —— QMT 在编辑器里重跑策略时，进程不退出，reload 确保新代码立即生效。
-3. **注入 Redis 配置**：读 `bigqmt_signal_trader_local_config.py` 里的 `BIGQMT_REDIS_CONFIG`，调 `configure_runtime_redis()`。
+2. **reload 模块**：`importlib.reload` 刷新 `valkey_common` / `valkey_rpc` / `strategy` / `runtime` —— QMT 在编辑器里重跑策略时，进程不退出，reload 确保新代码立即生效。
+3. **注入 Valkey 配置**：读 `bigqmt_signal_trader_qmt_config.py` 里的 `BIGQMT_CONFIG`，调 `configure_runtime_valkey()`。
 4. **注入账号**：读 `BIGQMT_ACCOUNT_ID`，调 `configure_runtime_account()`。如果配置没给，fallback 用 QMT 全局变量 `account`。
 5. **绑定 QMT 原生 API**：把 QMT 内置的 `passorder` / `cancel` / `get_trade_detail_data` 函数绑进 runtime（用 `try/except NameError` 包住，因为这些名字只在 BIGQMT 进程内存在）。
 6. **导出 QMT 回调**：`init = _runtime.init` / `handlebar = _runtime.handlebar` / `adjust = _runtime.adjust` 等，让 QMT 能回调到我们的策略逻辑。
@@ -1302,9 +1262,9 @@ ticks = xtdata.get_full_tick(["600000.SH"])  # 走 RPC 到 BIGQMT
 
 ### 各传输配置示例
 
-**Redis（默认）**：
+**Valkey（默认）**：
 ```python
-{"transport": "redis"}  # 或省略 transport 字段
+{"transport": "valkey"}  # 或省略 transport 字段
 ```
 
 
@@ -1331,8 +1291,8 @@ ticks = xtdata.get_full_tick(["600000.SH"])  # 走 RPC 到 BIGQMT
 
 | 传输 + 模式 | ping | query_stock_positions | 说明 |
 |------|------|------|------|
-| **redis + drain**（默认）| 23 / 102 / 106 | 85 / 103 / 109 | 一拍；跨机、回报有 stream 回放 |
-| redis + 后台线程 | 199 / 407 / 605 | 102 / 197 / 320 | 每条 Redis 命令一拍 |
+| **valkey + drain**（默认）| 23 / 102 / 106 | 85 / 103 / 109 | 一拍；跨机、回报有 stream 回放 |
+| valkey + 后台线程 | 199 / 407 / 605 | 102 / 197 / 320 | 每条 Valkey 命令一拍 |
 | **MySQL** | ~104 | — | 轮询，仅作兜底 |
 
 **地板是一个 adjust tick。** drain 下请求等下一拍拾取，串行调用锁相到整拍，所以 median
@@ -1340,7 +1300,7 @@ ticks = xtdata.get_full_tick(["600000.SH"])  # 走 RPC 到 BIGQMT
 半拍。想再低只有缩 `schedule_adjust_interval`（需验证 `run_time` 是否认更小的值）或把
 serving 挪出 QMT 进程。读行情走 FormulaServer 直连 0.07ms，不经过这条链路。
 
-> 0.3.21–0.3.50 的 README 在这里写过「Redis ping 10ms / 交易查询 4ms / 195 次每秒」，那是
+> 0.3.21–0.3.50 的 README 在这里写过「Valkey ping 10ms / 交易查询 4ms / 195 次每秒」，那是
 > 在重启后的回放窗口里测的（见上一节），稳态下不存在。
 
 复现基准：
@@ -1358,7 +1318,7 @@ serving 挪出 QMT 进程。读行情走 FormulaServer 直连 0.07ms，不经过
 python -m pytest tests/bigqmt_signal_trader/ -q
 ```
 
-当前覆盖 **199 个用例**（含传输层往返、Redis RPC、客户端兼容、持仓/行情/下单 handlers、异步回调、执行事件）。
+当前覆盖 **199 个用例**（含传输层往返、Valkey RPC、客户端兼容、持仓/行情/下单 handlers、异步回调、执行事件）。
 
 ### 端到端 API 测试（发现生产问题）
 
@@ -1375,13 +1335,13 @@ python -m pytest tests/bigqmt_signal_trader/ -q
 ```powershell
 # 方式 A：用环境变量
 $env:BIGQMT_ACCOUNT_ID="你的账号"
-$env:BIGQMT_REDIS_HOST="你的Redis地址"
-$env:BIGQMT_REDIS_PORT="6379"
-$env:BIGQMT_REDIS_DB="5"
-$env:BIGQMT_REDIS_PASSWORD="你的密码"
+$env:BIGQMT_VALKEY_HOST="你的Valkey地址"
+$env:BIGQMT_VALKEY_PORT="6379"
+$env:BIGQMT_VALKEY_DB="5"
+$env:BIGQMT_VALKEY_PASSWORD="你的密码"
 python test_all_apis.py
 
-# 方式 B：用 QMT 端配置（需 bigqmt_signal_trader_local_config.py 在 PYTHONPATH）
+# 方式 B：用 QMT 端配置（需 bigqmt_signal_trader_qmt_config.py 在 PYTHONPATH）
 $env:PYTHONPATH="D:\QMT交易端\python;$env:PYTHONPATH"
 python test_all_apis.py
 ```
@@ -1415,10 +1375,10 @@ xt_trader.client.call("ping")["allow_order_methods"]
 # False -> 就是它
 ```
 
-服务端 `bigqmt_signal_trader_local_config.py`：
+服务端 `bigqmt_signal_trader_qmt_config.py`：
 
 ```python
-BIGQMT_REDIS_CONFIG = {
+BIGQMT_CONFIG = {
     # ...
     "rpc_allow_order_methods": True,     # 默认 False
 }
@@ -1464,8 +1424,8 @@ Get-Content "D:\...\python\logs\bigqmt.log" | Select-String "ERROR|WARN"
 
 - `rpc_allow_order_methods` 默认 `False`：远程 `order_stock` / `cancel_order` 被拒绝。确认接入方、账号、风控后再显式开启。
 - 回测桥接永久 `live_ready=false`，协议中没有真实账户和实盘下单方法。
-- 配置文件含资金账号和密码，`bigqmt_signal_trader_local_config.py` / `bigqmt_signal_trader_client_config.py` 已在 `.gitignore`，**不要提交**。
-- 请求负载经过 base64 + 数字混淆编码（`encode_rpc_request_payload`），避免 QMT 的 Redis 客户端拦截含股票代码的明文。
+- 配置文件含资金账号和密码，`bigqmt_signal_trader_qmt_config.py` / `bigqmt_signal_trader_client_config.py` 已在 `.gitignore`，**不要提交**。
+- 请求负载经过 base64 + 数字混淆编码（`encode_rpc_request_payload`），避免 QMT 的 Valkey 客户端拦截含股票代码的明文。
 
 ---
 

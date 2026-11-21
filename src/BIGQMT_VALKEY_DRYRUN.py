@@ -15,6 +15,9 @@ import os
 import sys
 import types
 
+if sys.version_info < (3, 12):
+    raise RuntimeError("xtquant-big-convert requires Python 3.12 or newer.")
+
 try:
     import importlib as _importlib
 except ImportError:
@@ -38,8 +41,8 @@ except ImportError:
 _LOCAL_ROOTS = (
     "bigqmt_signal_trader",
     "bigqmt_signal_trader_strategy",
-    "bigqmt_signal_trader_redis_rpc_runtime",
-    "bigqmt_signal_trader_local_config",
+    "bigqmt_signal_trader_valkey_rpc_runtime",
+    "bigqmt_signal_trader_qmt_config",
 )
 _ORIGINAL_IMPORT = _builtins.__import__
 _ORIGINAL_IMPORT_MODULE = _importlib.import_module
@@ -279,32 +282,32 @@ def _fallback_account_id():
 
 
 try:
-    _local_import("bigqmt_signal_trader.adapters.redis_common", globals(), fromlist=("*",))
-    _local_import("bigqmt_signal_trader.redis_rpc", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.adapters.valkey_common", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.valkey_rpc", globals(), fromlist=("*",))
     _strategy = _local_import("bigqmt_signal_trader_strategy", globals(), fromlist=("*",))
     _strategy.reset_app()
 except Exception as bridge_preload_error:
     print("[bigqmt_shell] 桥接预加载失败：%s" % bridge_preload_error)
 
-_runtime = _local_import("bigqmt_signal_trader_redis_rpc_runtime", globals(), fromlist=("*",))
+_runtime = _local_import("bigqmt_signal_trader_valkey_rpc_runtime", globals(), fromlist=("*",))
 
 
 def _load_local_config():
-    return _local_import("bigqmt_signal_trader_local_config", globals(), fromlist=("*",))
+    return _local_import("bigqmt_signal_trader_qmt_config", globals(), fromlist=("*",))
 
 
 try:
     _config = _load_local_config()
-    BIGQMT_REDIS_CONFIG = getattr(_config, "BIGQMT_REDIS_CONFIG", {})
+    BIGQMT_CONFIG = _runtime.local_valkey_config(_config)
     forced_transport = globals().get("BIGQMT_FORCE_TRANSPORT")
     if forced_transport:
-        BIGQMT_REDIS_CONFIG = dict(BIGQMT_REDIS_CONFIG or {})
-        BIGQMT_REDIS_CONFIG["transport"] = str(forced_transport)
+        BIGQMT_CONFIG = dict(BIGQMT_CONFIG or {})
+        BIGQMT_CONFIG["transport"] = str(forced_transport)
     print("[bigqmt_shell] 本地 RPC 配置已加载 transport=%s keys=%s" % (
-        (BIGQMT_REDIS_CONFIG or {}).get("transport", "redis"),
-        sorted((BIGQMT_REDIS_CONFIG or {}).keys()),
+        (BIGQMT_CONFIG or {}).get("transport", "valkey"),
+        sorted((BIGQMT_CONFIG or {}).keys()),
     ))
-    _runtime.configure_runtime_redis(BIGQMT_REDIS_CONFIG)
+    _runtime.configure_runtime_valkey(BIGQMT_CONFIG)
 except Exception as rpc_config_error:
     print("[bigqmt_shell] 本地 RPC 配置加载失败：%s" % rpc_config_error)
 

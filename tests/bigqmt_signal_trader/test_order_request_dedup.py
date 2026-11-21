@@ -1,8 +1,8 @@
 # coding: utf-8
 """同一个 request_id 的下单请求只派发一次（#245）。
 
-客户端的 redis-py 连接默认带透明重试（ConnectionError / TimeoutError），而
-`Redis._execute_command` 里 `conn.retry.call_with_retry(...)` 包的是
+客户端的 valkey-py 连接默认带透明重试（ConnectionError / TimeoutError），而
+`Valkey._execute_command` 里 `conn.retry.call_with_retry(...)` 包的是
 **send + parse**：服务端已经接受的 RPUSH，如果应答阶段出错，整条命令会被
 重发。RPUSH 不是幂等的，于是同一次 `client.call('passorder', ...)` 可能派发
 两次原生下单。
@@ -24,9 +24,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 os.environ.setdefault("BIGQMT_LOG_NAME", "bigqmt-test-dedup")
 
-from bigqmt_signal_trader.redis_rpc import (  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
     ORDER_METHODS,
-    RedisPubSubRpcService,
+    ValkeyPubSubRpcService,
 )
 
 
@@ -50,7 +50,7 @@ class _Handlers(object):
 
 
 def _service():
-    service = RedisPubSubRpcService.__new__(RedisPubSubRpcService)
+    service = ValkeyPubSubRpcService.__new__(ValkeyPubSubRpcService)
     service.handlers = _Handlers()
     service.account_id = "acct"
     service.print_prefix = "[test]"

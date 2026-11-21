@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在大 QMT 策略环境内新增一套独立的买入/卖出信号消费与下单包，用 Redis 同步外部交易信号，未来用于替换 miniQMT 的真实下单，但本阶段不改、不删除现有 miniQMT 下单逻辑。
+**Goal:** 在大 QMT 策略环境内新增一套独立的买入/卖出信号消费与下单包，用 Valkey 同步外部交易信号，未来用于替换 miniQMT 的真实下单，但本阶段不改、不删除现有 miniQMT 下单逻辑。
 
 **Architecture:** miniQMT/仪表盘/策略端只产出标准化交易信号，大 QMT 策略作为唯一真实委托执行端。新系统必须写成可替代包：数据获取、信号读取、下单、撤单、委托查询、持仓同步、状态写回全部通过接口和 adapter 装配；大 QMT 运行文件只负责初始化、响应调度和回调，不直接写死业务细节。
 
-**Tech Stack:** Python、ThinkTrader 大 QMT 内置交易函数、Redis、MySQL、可选 SQLite 本地缓存、现有 `jq2qmt-main/src/api/qmt_jq_trade` 的 `passorder/cancel/get_trade_detail_data` 用法。
+**Tech Stack:** Python、ThinkTrader 大 QMT 内置交易函数、Valkey、MySQL、可选 SQLite 本地缓存、现有 `jq2qmt-main/src/api/qmt_jq_trade` 的 `passorder/cancel/get_trade_detail_data` 用法。
 
 ---
 
@@ -52,7 +52,7 @@
 ```mermaid
 flowchart LR
     A["miniQMT/策略/仪表盘"] --> B["TradeSignal 标准化"]
-    B --> C["Redis Stream: bigqmt:signals:{account}"]
+    B --> C["Valkey Stream: bigqmt:signals:{account}"]
     B --> D["MySQL outbox: bigqmt_trade_signals"]
     C --> E["大 QMT SignalConsumer"]
     D --> E
@@ -66,15 +66,15 @@ flowchart LR
 
 ### 2.1 推荐优先级
 
-1. Redis Stream 作为主通道。
+1. Valkey Stream 作为主通道。
    - 支持 consumer group、ack、pending 重试。
    - 断线后不会像 Pub/Sub 一样丢信号。
    - 比普通 List 更容易做领取、确认和重放。
 2. MySQL outbox 作为备用和审计。
    - 每条信号全量落库。
-   - Redis 不可用时，大 QMT 可直接轮询 MySQL `pending` 信号。
+   - Valkey 不可用时，大 QMT 可直接轮询 MySQL `pending` 信号。
    - 线上问题可按 `signal_id` 复盘。
-3. 不建议第一版使用 Redis Pub/Sub 直接下单。
+3. 不建议第一版使用 Valkey Pub/Sub 直接下单。
    - 断线会丢消息。
    - 大 QMT 策略环境里长阻塞订阅线程容易影响模型运行稳定性。
 
@@ -91,15 +91,15 @@ flowchart TB
     A --> O["OrderGateway\n下单/撤单/委托查询接口"]
     A --> Y["PositionSyncSink\n持仓同步目标接口"]
     A --> T["StateStore\n幂等/状态/审计接口"]
-    S --> S1["RedisStreamSignalSource"]
+    S --> S1["ValkeyStreamSignalSource"]
     S --> S2["MySqlSignalSource"]
     M --> M1["BigQmtMarketDataProvider"]
     P --> P1["BigQmtPositionProvider"]
     O --> O1["BigQmtOrderGateway(passorder)"]
     O --> O2["DryRunOrderGateway"]
-    Y --> Y1["RedisPositionSyncSink"]
+    Y --> Y1["ValkeyPositionSyncSink"]
     Y --> Y2["MySqlPositionSyncSink"]
-    T --> T1["RedisStateStore"]
+    T --> T1["ValkeyStateStore"]
     T --> T2["MySqlStateStore"]
 ```
 
@@ -107,13 +107,13 @@ flowchart TB
 
 | 能力 | 接口 | 默认 adapter | 后续可替换 adapter | 不能写死的位置 |
 |---|---|---|---|---|
-| 信号读取 | `SignalSource` | `RedisStreamSignalSource` | `MySqlSignalSource`、HTTP source、文件回放 source | `runner.py` |
-| 信号状态写回 | `StateStore` | `RedisStateStore + MySqlStateStore` | SQLite、本地文件、Dashboard API | `OrderGateway`、`runner.py` |
-| 行情获取 | `MarketDataProvider` | `BigQmtMarketDataProvider` | miniQMT 行情、Redis 行情、回测行情 | `price_engine.py` |
-| 标的信息 | `InstrumentProvider` | `BigQmtInstrumentProvider` | Redis ETF 缓存、MySQL 证券主表 | `code_utils.py` |
+| 信号读取 | `SignalSource` | `ValkeyStreamSignalSource` | `MySqlSignalSource`、HTTP source、文件回放 source | `runner.py` |
+| 信号状态写回 | `StateStore` | `ValkeyStateStore + MySqlStateStore` | SQLite、本地文件、Dashboard API | `OrderGateway`、`runner.py` |
+| 行情获取 | `MarketDataProvider` | `BigQmtMarketDataProvider` | miniQMT 行情、Valkey 行情、回测行情 | `price_engine.py` |
+| 标的信息 | `InstrumentProvider` | `BigQmtInstrumentProvider` | Valkey ETF 缓存、MySQL 证券主表 | `code_utils.py` |
 | 持仓/资金查询 | `PositionProvider` | `BigQmtPositionProvider` | miniQMT 查询、MySQL 快照、测试 fake | `risk_guard.py` |
 | 下单/撤单 | `OrderGateway` | `BigQmtOrderGateway` | `DryRunOrderGateway`、miniQMT 兼容 gateway | `SignalTradingApp` |
-| 持仓同步 | `PositionSyncSink` | `MySqlPositionSyncSink` | Redis Hash、Dashboard API、日志文件 | `runner.py` |
+| 持仓同步 | `PositionSyncSink` | `MySqlPositionSyncSink` | Valkey Hash、Dashboard API、日志文件 | `runner.py` |
 | 调度/回调 | `RuntimeAdapter` | `BigQmtRuntimeAdapter` | 命令行 runner、测试 runner | 包内部服务 |
 
 ### 2.3 核心接口契约
@@ -248,7 +248,7 @@ class SignalTradingApp:
 | 字段 | 必填 | 说明 |
 |---|---:|---|
 | `signal_id` | 是 | 全局唯一幂等键。不能只用股票代码，否则补单和多策略会互相覆盖。 |
-| `account_id` | 是 | 账户/客户端标识，用于 Redis key 和 MySQL 分账户隔离。 |
+| `account_id` | 是 | 账户/客户端标识，用于 Valkey key 和 MySQL 分账户隔离。 |
 | `source` | 是 | `dashboard`、`miniqmt_strategy`、`t0`、`risk` 等。 |
 | `source_type` | 是 | `manual` 或 `auto`，影响熔断和 stop 开关语义。 |
 | `action` | 是 | `BUY`、`SELL`、`CLEAR`、`CANCEL`。第一版先实现 BUY/SELL/CLEAR。 |
@@ -339,15 +339,15 @@ def map_clear_command(account_id, percentage):
 | 文件 | 职责 |
 |---|---|
 | `__init__.py` | 包初始化，不做任何 I/O。 |
-| `config.py` | 大 QMT 端配置：账户、启用的 adapter、Redis/MySQL、轮询间隔、dry-run、交易限制。 |
+| `config.py` | 大 QMT 端配置：账户、启用的 adapter、Valkey/MySQL、轮询间隔、dry-run、交易限制。 |
 | `contracts.py` | 所有可替换能力的 `Protocol` 接口：`SignalSource`、`MarketDataProvider`、`PositionProvider`、`OrderGateway`、`PositionSyncSink`、`StateStore`。 |
 | `models.py` | `TradeSignal`、`SignalStatus`、`OrderSubmitResult` 数据结构和校验。 |
 | `code_utils.py` | 股票/ETF 代码标准化、市场后缀、最小委托单位判断。 |
 | `app.py` | `SignalTradingApp` 应用编排层，唯一负责串联信号、风控、价格、下单、同步。 |
 | `risk_guard.py` | 过期、交易时段、重复、资金、持仓、可用数量、daily limit 前置校验。 |
 | `price_engine.py` | 基于 `MarketDataProvider` 返回的 tick 和 instrument 数据计算委托价格，不直接依赖 `ContextInfo`。 |
-| `order_monitor.py` | 轮询委托/成交状态，更新 Redis/MySQL 状态。 |
-| `adapter_factory.py` | 按配置装配 Redis/MySQL/BigQMT/DryRun adapter。 |
+| `order_monitor.py` | 轮询委托/成交状态，更新 Valkey/MySQL 状态。 |
+| `adapter_factory.py` | 按配置装配 Valkey/MySQL/BigQMT/DryRun adapter。 |
 | `runtime_bigqmt.py` | 大 QMT 运行环境适配器，封装 `ContextInfo`、`passorder`、`cancel`、`get_trade_detail_data`。 |
 | `runner.py` | 大 QMT 策略入口可复用函数：`init_app(ContextInfo)`、`tick_app(ContextInfo)`、回调转发。 |
 | `README.md` | 大 QMT 策略内安装、配置、运行、回滚说明。 |
@@ -356,15 +356,15 @@ def map_clear_command(account_id, percentage):
 
 | 目录/文件 | 职责 |
 |---|---|
-| `adapters/signal_redis.py` | Redis Stream 信号读取、ack、pending reclaim。 |
+| `adapters/signal_valkey.py` | Valkey Stream 信号读取、ack、pending reclaim。 |
 | `adapters/signal_mysql.py` | MySQL outbox 信号读取、原子 claim。 |
-| `adapters/state_redis.py` | Redis 状态 Hash 写回。 |
+| `adapters/state_valkey.py` | Valkey 状态 Hash 写回。 |
 | `adapters/state_mysql.py` | MySQL 状态表写回。 |
 | `adapters/market_bigqmt.py` | 大 QMT 行情和标的信息读取。 |
 | `adapters/position_bigqmt.py` | 大 QMT 持仓和资金查询。 |
 | `adapters/order_bigqmt.py` | `passorder/cancel/get_trade_detail_data` 下单通道。 |
 | `adapters/order_dryrun.py` | dry-run 下单通道，联调时不发真实委托。 |
-| `adapters/position_sync_redis.py` | 同步大 QMT 实际持仓到 Redis。 |
+| `adapters/position_sync_valkey.py` | 同步大 QMT 实际持仓到 Valkey。 |
 | `adapters/position_sync_mysql.py` | 同步大 QMT 实际持仓到 MySQL。 |
 | `services/execution_service.py` | 单条信号执行流程：claim、校验、价格、数量、submit。 |
 | `services/position_sync_service.py` | 周期性和成交后持仓同步。 |
@@ -489,9 +489,9 @@ stateDiagram-v2
     FAILED --> [*]
 ```
 
-### 6.1 Redis 状态字段
+### 6.1 Valkey 状态字段
 
-Redis Stream:
+Valkey Stream:
 
 ```text
 bigqmt:signals:{account_id}
@@ -805,16 +805,16 @@ def test_auto_sell_price_uses_bid2_when_better_than_discount():
 
 该 adapter 才能访问 `ContextInfo.get_full_tick()` 和 `ContextInfo.get_instrumentdetail()`。`price_engine.py` 不能 import 或持有 `ContextInfo`。
 
-### Task 4: 实现 Redis Stream 消费
+### Task 4: 实现 Valkey Stream 消费
 
 **Files:**
-- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/signal_redis.py`
-- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/state_redis.py`
-- Test: `D:/gjzqqmt/jq2qmt-main/tests/bigqmt_signal_trader/test_signal_store_redis.py`
+- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/signal_valkey.py`
+- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/state_valkey.py`
+- Test: `D:/gjzqqmt/jq2qmt-main/tests/bigqmt_signal_trader/test_signal_store_valkey.py`
 
 - [ ] **Step 1: 使用 `XREADGROUP` 拉取**
 
-Redis key：
+Valkey key：
 
 ```text
 bigqmt:signals:{account_id}
@@ -838,9 +838,9 @@ bigqmt:signal_status:{account_id}:{signal_id}
 
 第一版只在终态 `FILLED/FAILED/SKIPPED` 后 ack。`SUBMITTED` 未终态不 ack，重启后可以从 pending 恢复。
 
-- [ ] **Step 4: Redis adapter 不能直接下单**
+- [ ] **Step 4: Valkey adapter 不能直接下单**
 
-`RedisStreamSignalSource` 只产出 `TradeSignal`，`RedisStateStore` 只写状态。任何 `passorder`、价格计算、持仓查询都不允许出现在 Redis adapter 中。
+`ValkeyStreamSignalSource` 只产出 `TradeSignal`，`ValkeyStateStore` 只写状态。任何 `passorder`、价格计算、持仓查询都不允许出现在 Valkey adapter 中。
 
 ### Task 5: 实现大 QMT 下单 gateway
 
@@ -950,7 +950,7 @@ max_daily_auto_orders = 2000
 ### Task 6.5: 实现持仓同步 sink
 
 **Files:**
-- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/position_sync_redis.py`
+- Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/adapters/position_sync_valkey.py`
 - Create: `D:/gjzqqmt/jq2qmt-main/src/bigqmt_signal_trader/services/position_sync_service.py`
 - Test: `D:/gjzqqmt/jq2qmt-main/tests/bigqmt_signal_trader/test_position_sync.py`
 
@@ -971,9 +971,9 @@ def test_position_sync_publishes_actual_bigqmt_snapshot():
     assert sink.snapshots[0].reason == "tick"
 ```
 
-- [ ] **Step 2: Redis 同步格式**
+- [ ] **Step 2: Valkey 同步格式**
 
-Redis key：
+Valkey key：
 
 ```text
 bigqmt:positions:{account_id}
@@ -1053,7 +1053,7 @@ def test_strategy_adjust_only_forwards_to_app_tick(fake_context, monkeypatch):
 3. 安排下一次运行。
 
 `adjust()` 不允许直接调用：
-- Redis/MySQL。
+- Valkey/MySQL。
 - `passorder`。
 - `get_trade_detail_data`。
 - 价格计算函数。
@@ -1136,7 +1136,7 @@ miniQMT 该账户只写信号，不真实下单；其他账户保持 miniQMT。
 确认 3 个交易日：
 - 信号无重复提交。
 - 手动卖出/一键清仓不被自动熔断挡住。
-- Redis 断开时 MySQL fallback 可接管。
+- Valkey 断开时 MySQL fallback 可接管。
 - 大 QMT 崩溃重启后未终态信号不会重复下单。
 
 ---
@@ -1144,14 +1144,14 @@ miniQMT 该账户只写信号，不真实下单；其他账户保持 miniQMT。
 ## 8. 风险点和约束
 
 1. 大 QMT 策略必须运行在“模型交易”模式；普通回测/模拟环境可能只打印不真实委托。
-2. 大 QMT 的 Python 环境可能没有 `redis/pymysql`，需要在对应 Python 环境安装依赖，或把依赖路径加入策略目录。
+2. 大 QMT 的 Python 环境可能没有 `valkey/pymysql`，需要在对应 Python 环境安装依赖，或把依赖路径加入策略目录。
 3. 不要在大 QMT 策略主线程里做阻塞 Pub/Sub；第一版用短 timeout 轮询，稳定性更高。
 4. `passorder` 不一定同步返回订单号，必须用 `user_order_id + strategy_name` 反查委托状态。
 5. ETF 不能按普通股票过滤掉；只过滤逆回购、港股通、申购类代码。
 6. 信号幂等必须以 `signal_id` 为准，不以 `stock_code` 为准。
 7. `CLEAR` 展开卖出时要记录父子关系，否则复盘时看不出一键清仓产生了哪些卖单。
 8. 第一版不要把 miniQMT 策略判断搬到大 QMT；大 QMT 只执行信号。策略口径保持单一来源。
-9. 大 QMT 运行文件禁止直接写 Redis/MySQL/passorder/get_trade_detail_data 业务调用；这些只能出现在对应 adapter 里。
+9. 大 QMT 运行文件禁止直接写 Valkey/MySQL/passorder/get_trade_detail_data 业务调用；这些只能出现在对应 adapter 里。
 10. `SignalTradingApp` 禁止 import 大 QMT 内置函数，必须通过 `RuntimeAdapter` 和 `OrderGateway` 注入。
 
 ---
@@ -1160,8 +1160,8 @@ miniQMT 该账户只写信号，不真实下单；其他账户保持 miniQMT。
 
 1. 先实现 `contracts.py`、`models.py`、`SignalTradingApp` 和 fake adapter 单测，确认包边界可替换。
 2. 实现大 QMT 行情/持仓/order gateway adapter，但先只跑 `DryRunOrderGateway`。
-3. 实现 Redis/MySQL signal source 和 state store，用测试信号验证状态机。
-4. 实现 Redis/MySQL 持仓同步 sink，确认大 QMT 实际持仓能被外部观察。
+3. 实现 Valkey/MySQL signal source 和 state store，用测试信号验证状态机。
+4. 实现 Valkey/MySQL 持仓同步 sink，确认大 QMT 实际持仓能被外部观察。
 5. 在大 QMT 策略环境 dry-run 运行，验证 `ContextInfo` 行情、持仓、委托查询可用。
 6. miniQMT 增加只写信号的 shadow producer，但仍由 miniQMT 真实下单。
 7. 对比 1-3 个交易日的信号、价格、数量和实际成交。

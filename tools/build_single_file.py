@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Build BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py.
+"""Build BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py.
 
-Reads every custom module used by BIGQMT_REDIS_DRYRUN.py
+Reads every custom module used by BIGQMT_VALKEY_DRYRUN.py
 (bigqmt_signal_trader package + bigqmt_signal_trader_strategy +
-bigqmt_signal_trader_redis_rpc_runtime) and embeds their sources
+bigqmt_signal_trader_valkey_rpc_runtime) and embeds their sources
 base64-encoded into a single self-contained strategy file that
 never imports other custom modules from disk.
 """
@@ -15,12 +15,12 @@ import os
 # bigqmt-init's single-file options work from a plain pip install too.
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_PATH = os.environ.get(
-    "BIGQMT_BUILD_OUT", os.path.join(ROOT, "src", "BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py"))
+    "BIGQMT_BUILD_OUT", os.path.join(ROOT, "src", "BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py"))
 
 
 def resolve_source_dirs(root=ROOT):
     """(top_dir, package_dir): top_dir holds the top-level strategy modules
-    (bigqmt_signal_trader_strategy.py, bigqmt_signal_trader_redis_rpc_runtime.py)
+    (bigqmt_signal_trader_strategy.py, bigqmt_signal_trader_valkey_rpc_runtime.py)
     and is the root for the embedded relative paths; package_dir is the
     bigqmt_signal_trader package.
 
@@ -39,7 +39,7 @@ def resolve_source_dirs(root=ROOT):
     top_dir = os.path.dirname(package_dir) if package_dir else ""
     if (top_dir
             and os.path.isfile(os.path.join(top_dir, "bigqmt_signal_trader_strategy.py"))
-            and os.path.isfile(os.path.join(top_dir, "bigqmt_signal_trader_redis_rpc_runtime.py"))):
+            and os.path.isfile(os.path.join(top_dir, "bigqmt_signal_trader_valkey_rpc_runtime.py"))):
         return top_dir, package_dir
     raise SystemExit(
         "cannot locate bigqmt_signal_trader sources: neither a repository "
@@ -96,12 +96,21 @@ def embed_block(sources, extra):
     for rel, data in all_items:
         b64 = base64.b64encode(data).decode("ascii")
         chunks = [b64[i:i + 100] for i in range(0, len(b64), 100)]
-        chunk_lines = "\n".join('        "%s"' % c for c in chunks)
-        lines.append('    "%s": (' % rel)
-        lines.append(chunk_lines)
-        lines.append('    ),')
-    lines.append("}")
-    return "\n".join(lines)
+        chunk_lines ="\n".join('    "%s"' % c for c in chunks)
+        line = '"%s": (\n%s\n), ' % (rel, chunk_lines)
+        lines.append(line)
+    lines.append('''"bigqmt_signal_trader_qmt_config.py": _base64.b64encode(
+    (
+            (
+                "# coding: utf-8\\n"
+                "BIGQMT_ACCOUNT_ID = %r\\n"
+                "BIGQMT_ACCOUNT_TYPE = %r\\n"
+                "BIGQMT_CONFIG = %r\\n"
+            ) % (BIGQMT_ACCOUNT_ID, BIGQMT_ACCOUNT_TYPE, BIGQMT_CONFIG)
+    ).encode("utf-8")
+).decode("ascii")}
+''')
+    return "".join(lines)
 
 
 def main():
@@ -109,7 +118,7 @@ def main():
     sources = collect_package(package_dir, top_dir)
     extra = {}
     for name in ("bigqmt_signal_trader_strategy.py",
-                 "bigqmt_signal_trader_redis_rpc_runtime.py"):
+                 "bigqmt_signal_trader_valkey_rpc_runtime.py"):
         full = os.path.join(top_dir, name)
         with open(full, "rb") as f:
             extra[name] = f.read()
@@ -127,24 +136,24 @@ def main():
 
 
 TEMPLATE = '''#coding:gbk
-"""Single-file self-contained Big QMT Redis dry-run strategy.
+"""Single-file self-contained Big QMT Valkey dry-run strategy.
 
-All custom modules referenced by the original BIGQMT_REDIS_DRYRUN entry
+All custom modules referenced by the original BIGQMT_VALKEY_DRYRUN entry
 are embedded into this file and loaded in-memory at runtime:
 
     * bigqmt_signal_trader package (all submodules)
     * bigqmt_signal_trader_strategy
-    * bigqmt_signal_trader_redis_rpc_runtime
-    * bigqmt_signal_trader_local_config  (generated from the config block below)
+    * bigqmt_signal_trader_valkey_rpc_runtime
+    * bigqmt_signal_trader_qmt_config  (generated from the config block below)
 
 This file never imports any other custom module from disk. It only uses the
-standard library plus third-party libraries (redis, pandas, ...). The
+standard library plus third-party libraries (the RESP client, pandas, ...). The
 embedded loader below resolves relative imports against the in-memory sources,
 so you can copy this one file to a QMT python directory and run it as a
 strategy without shipping the package alongside.
 
 Set the BIGQMT_ACCOUNT_ID environment variable before running.
-Edit BIGQMT_REDIS_CONFIG below for your deployment.
+Edit BIGQMT_CONFIG below for your deployment.
 """
 import base64 as _base64
 import builtins as _builtins
@@ -154,6 +163,8 @@ import sys
 import types
 import warnings
 
+if sys.version_info < (3, 12):
+    raise RuntimeError("xtquant-big-convert requires Python 3.12 or newer.")
 
 # =========================== config block ===========================
 BIGQMT_ACCOUNT_ID = os.environ.get("BIGQMT_ACCOUNT_ID", "").strip()
@@ -162,25 +173,26 @@ if not BIGQMT_ACCOUNT_ID:
 
 BIGQMT_ACCOUNT_TYPE = "STOCK"
 
-BIGQMT_REDIS_CONFIG = {
+BIGQMT_CONFIG = {
     "transport": "serial",
     "serial": {"port": "COM10", "baudrate": 921600},
+    # "transport": "valkey",
     # "host": "127.0.0.1",
     # "port": 6379,
     # "db": 5,
     # "username": "",
     # "password": "",
     # Keep order RPC disabled unless you explicitly want remote order/cancel.
-    "rpc_allow_order_methods": True,
+    "rpc_allow_order_methods": False,
     # Requests drain through QMT's run_time("adjust", ...) callback, on the main
     # strategy thread. get_trade_detail_data returns EMPTY off that thread, so
     # order/query methods must not be moved to a background thread.
     "rpc_process_in_listener": True,
     "rpc_listener_methods": ("*",),
-    "rpc_background_threads": True,
+    "rpc_background_threads": False,
     "schedule_adjust": True,
     "schedule_adjust_interval": "100nMilliSecond",
-    "full_tick_cache_enabled": True,
+    "full_tick_cache_enabled": False,
     "full_tick_demand_ttl_seconds": 10,
     "full_tick_cache_ttl_seconds": 10,
     "full_tick_refresh_interval_seconds": 0.5,
@@ -192,33 +204,22 @@ BIGQMT_REDIS_CONFIG = {
     "download_job_max_wall_seconds": 0.5,
     "download_job_ttl_seconds": 3600,
     "exec_events_enabled": True,
-    "exec_events_debug_raw_fields": True,
+    "exec_events_debug_raw_fields": False,
 }
 # ===================================================================
 
 
 # ========================= embedded sources ========================
 __EMBEDDED_SOURCES_BLOCK__
-
-# bigqmt_signal_trader_local_config is generated from the config block.
-_EMBEDDED_SOURCES["bigqmt_signal_trader_local_config.py"] = _base64.b64encode(
-    (
-        (
-            "# coding: utf-8\\n"
-            "BIGQMT_ACCOUNT_ID = %r\\n"
-            "BIGQMT_ACCOUNT_TYPE = %r\\n"
-            "BIGQMT_REDIS_CONFIG = %r\\n"
-        ) % (BIGQMT_ACCOUNT_ID, BIGQMT_ACCOUNT_TYPE, BIGQMT_REDIS_CONFIG)
-    ).encode("utf-8")
-).decode("ascii")
+# bigqmt_signal_trader_qmt_config is generated from the config block.
 # ===================================================================
 
 
 _LOCAL_ROOTS = (
     "bigqmt_signal_trader",
     "bigqmt_signal_trader_strategy",
-    "bigqmt_signal_trader_redis_rpc_runtime",
-    "bigqmt_signal_trader_local_config",
+    "bigqmt_signal_trader_valkey_rpc_runtime",
+    "bigqmt_signal_trader_qmt_config",
 )
 _ORIGINAL_IMPORT = _builtins.__import__
 _ORIGINAL_IMPORT_MODULE = _importlib.import_module
@@ -359,27 +360,27 @@ def _fallback_account_id():
 
 
 try:
-    _local_import("bigqmt_signal_trader.adapters.redis_common", globals(), fromlist=("*",))
-    _local_import("bigqmt_signal_trader.redis_rpc", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.adapters.valkey_common", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.valkey_rpc", globals(), fromlist=("*",))
     _strategy = _local_import("bigqmt_signal_trader_strategy", globals(), fromlist=("*",))
     _strategy.reset_app()
 except Exception as bridge_preload_error:
     print("[bigqmt_shell] bridge preload failed: %s" % bridge_preload_error)
 
-_runtime = _local_import("bigqmt_signal_trader_redis_rpc_runtime", globals(), fromlist=("*",))
+_runtime = _local_import("bigqmt_signal_trader_valkey_rpc_runtime", globals(), fromlist=("*",))
 
 
 def _load_local_config():
-    return _local_import("bigqmt_signal_trader_local_config", globals(), fromlist=("*",))
+    return _local_import("bigqmt_signal_trader_qmt_config", globals(), fromlist=("*",))
 
 
 try:
     _config = _load_local_config()
-    BIGQMT_REDIS_CONFIG = getattr(_config, "BIGQMT_REDIS_CONFIG", {})
-    print("[bigqmt_shell] local redis config loaded keys=%s" % sorted((BIGQMT_REDIS_CONFIG or {}).keys()))
-    _runtime.configure_runtime_redis(BIGQMT_REDIS_CONFIG)
-except Exception as redis_config_error:
-    print("[bigqmt_shell] local redis config load failed: %s" % redis_config_error)
+    BIGQMT_CONFIG = _runtime.local_valkey_config(_config)
+    print("[bigqmt_shell] local valkey config loaded keys=%s" % sorted((BIGQMT_CONFIG or {}).keys()))
+    _runtime.configure_runtime_valkey(BIGQMT_CONFIG)
+except Exception as valkey_config_error:
+    print("[bigqmt_shell] local valkey config load failed: %s" % valkey_config_error)
 
 try:
     _config = _load_local_config()

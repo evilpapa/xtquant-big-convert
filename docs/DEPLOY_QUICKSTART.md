@@ -6,22 +6,27 @@
 
 - **QMT 侧的服务端：BIGQMT**（一个策略文件加一个包，跑在 QMT 内置 python 进程里）
 - **外部的客户端：LOCAL**（pip 装的包，你本地策略系统的 python 环境，可和 QMT 分数不同的环境，没有机器要求，可使用 linux/mac 环境）
-- **中间的 Redis**（需自行安装）
+- **中间的 Valkey**（已有实例可直接使用）
 
 部署就是把服务端放进 QMT、让两边的连接参数一致。
+
+从旧版迁移时，先将两端的连接地址指向同一个 Valkey 实例。新配置使用
+`BIGQMT_CONFIG`、`BIGQMT_VALKEY_*` 和 `transport="valkey"`。连接 `url` 接受
+`valkey://` 或 `redis://`，两种写法都由 `valkey` 包连接 Valkey。
+更新两端代码后，在 QMT 中重新加载下面的新入口。`bigqmt:*` 键名和 RPC 消息格式沿用原格式。
 
 ## 部署方式
 
 | 方式 | 放进 QMT 的是什么 | 什么时候选 |
 |---|---|---|
 | `package`（默认） | 一个包目录 + 三个顶层 `.py` + 一个入口文件，共 4 项 | 升级时可以 `reload_deployment` 热更新，不用重启策略 |
-| `single_file` | 一个 `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py`，包和配置都 base64 内嵌在里面 | QMT 目录不方便放多个文件、或想一个文件拷来拷去 |
+| `single_file` | 一个 `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py`，包和配置都 base64 内嵌在里面 | QMT 目录不方便放多个文件、或想一个文件拷来拷去 |
 
 单文件模式的代价：包内嵌在文件里，升级只能整个文件替换再重启策略，`reload_deployment` 刷不动它。
 
 ## 文件汇总
 
-两个 Python 互不相通：本地客户端的能 `pip install`，QMT 自带的 3.6 不能（旧 OpenSSL），所以服务端文件靠**拷**。
+客户端、QMT 策略和独立串口桥接都需要 Python 3.12 或更高版本。直连 Valkey 的策略还需在实际运行的解释器中安装 `valkey`。
 
 LOCAL 侧文件汇总
 
@@ -35,22 +40,24 @@ BIGQMT `package` 模式下文件汇总
 |---|---|---|
 | `bigqmt_signal_trader/`（整个包目录） | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
 | `bigqmt_signal_trader_strategy.py` | 同上 | 同上 |
-| `bigqmt_signal_trader_redis_rpc_runtime.py` | 同上 | 同上 |
-| `BIGQMT_REDIS_DRYRUN.py`（入口） | 同上 | 同上 |
-| `bigqmt_signal_trader_local_config.py` | 同上 | 第 2 步 `bigqmt-init` 第一个目录问题（**必须手填**，回车 = 当前目录） |
+| `bigqmt_signal_trader_valkey_rpc_runtime.py` | 同上 | 同上 |
+| `BIGQMT_VALKEY_DRYRUN.py`（入口） | 同上 | 同上 |
+| `bigqmt_signal_trader_qmt_config.py` | 同上 | 第 2 步 `bigqmt-init` 第一个目录问题（**必须手填**，回车 = 当前目录） |
 
 BIGQMT `single` 模式下文件汇总
 | 文件 | 放哪 | 谁放 |
 |---|---|---|
-| `BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py` | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
+| `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py` | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
 
 `bigqmt-init` **只写两份配置**，不拷包、不装依赖、不会自己去找 QMT 装在哪。「QMT 的 `python` 目录」指 QMT 安装目录下叫 `python` 的子目录，不是 `bin.x64`。
 
 ## 第 1 步：LOCAL 装包
 
 ```powershell
-pip install "xtquant-big-convert[redis]"
+pip install ".[valkey]"  # 在源码根目录执行
 ```
+
+直连 Valkey 时，也在 **QMT 策略实际使用的解释器**中运行 `python -m pip install "valkey>=6.1,<7"`，再用 `python -c "import valkey"` 验证。
 
 ## 第 2 步：用 `bigqmt-init` 生成配置
 
@@ -66,13 +73,13 @@ python -m bigqmt_signal_trader.init_config
 
 第一种是 pip 装包时注册的命令；`bigqmt-init` 找不到（PATH 没带上 Scripts 目录）或者你用的是源码检出，就用第二种。
 
-选项题输数字或直接输名字都认，`STOCK`、`redis`、`package` 这样写也行。每个问题的说明：
+选项题输数字或直接输名字都认，`STOCK`、`valkey`、`package` 这样写也行。每个问题的说明：
 
 | 问题 | 说明 |
 |---|---|
 | 资金账号 | 服务端和客户端会写同一个，对不上是「查询全空」的头号原因 |
 | 账号类型（STOCK） | STOCK / CREDIT / FUTURE / STOCK_OPTION / HUGANGTONG / SHENGANGTONG。信用账户选 CREDIT，选错查出来是整行 0。股票户兼做港股通：生成后把 `BIGQMT_ACCOUNT_TYPE` 手工改成列表 `["STOCK", "HUGANGTONG", "SHENGANGTONG"]` |
-| Redis 地址 / 端口 / db / 用户名 / 密码 | 选 redis 才问。密码输入不回显，会写进配置文件 |
+| Valkey 地址 / 端口 / db / 用户名 / 密码 | 选 valkey 才问。密码输入不回显，会写进配置文件 |
 | 允许远程下单/撤单？（否） | 打开前它会警告：任何能连上这条通道的程序都可以下单。首次部署先留 `否`，验证通过再打开 |
 | 部署方式（package） | 见上表 |
 | **QMT 的 python 目录（回车则写到当前目录）** | **这里最容易出错。** 填 QMT 安装目录下的 `python`，如 `D:\gjzq_qmt\python`。直接回车会写到你当前所在的目录，服务端找不到配置 |
@@ -92,7 +99,7 @@ python -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(
 
 ## 第 4 步：QMT 里运行入口
 
-QMT 策略编辑器**加载并运行 `BIGQMT_REDIS_DRYRUN.py`**（单文件模式是 `..._ALL_IN_ONE.py`），运行模式切到**实盘**。输出面板看到这两行即成功：
+QMT 策略编辑器**加载并运行 `BIGQMT_VALKEY_DRYRUN.py`**（单文件模式是 `..._ALL_IN_ONE.py`），运行模式切到**实盘**。输出面板看到这两行即成功：
 
 ```
 [bigqmt_shell] bigqmt_signal_trader 0.3.37 loaded from D:\...\python\bigqmt_signal_trader
@@ -115,7 +122,7 @@ python -c "from bigqmt_signal_trader.xtquant_compat import configure, xtdata; co
 它回答的是**服务端**在跑哪个版本、从哪个目录加载：
 
 ```
-{'version': '0.3.37', 'package_dir': 'D:\\...\\python\\bigqmt_signal_trader', 'python_version': '3.6.8', ...}
+{'version': '0.4.0', 'package_dir': 'D:\\...\\python\\bigqmt_signal_trader', 'python_version': '3.12.0', ...}
 ```
 
 版本对得上，再拉一次行情：
@@ -152,18 +159,18 @@ python -c "from bigqmt_signal_trader.xtquant_compat import configure, xtdata; co
 
 ```powershell
 # 在仓库 clone 里，对每个 .py：tr -d '\r' 后比 sha256
-git show v0.3.34:src/bigqmt_signal_trader/redis_rpc.py | tr -d '\r' | sha256sum
-tr -d '\r' < D:\...\python\bigqmt_signal_trader\redis_rpc.py | sha256sum
+tr -d '\r' < src/bigqmt_signal_trader/valkey_rpc.py | sha256sum
+tr -d '\r' < D:\...\python\bigqmt_signal_trader\valkey_rpc.py | sha256sum
 ```
 
 对不上的文件再和后面几个 tag 比。线上经常是「基线版本 + 几个文件手动更新到了更新的版本」这种混搭，只要每个文件都能对上某个 tag，就是干净的，可以覆盖。对不上任何 tag 的文件才是本地改动，停下来搞清楚。
 
-**3. 确认三个顶层文件有没有变。** `bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_redis_rpc_runtime.py`、`BIGQMT_REDIS_DRYRUN.py` 是 QMT 自己 exec 的，`reload_deployment` 刷不动它们。新版本里这三个和线上相同，就走热更新；有一个不同，就得重启策略。
+**3. 确认三个顶层文件有没有变。** `bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_valkey_rpc_runtime.py`、`BIGQMT_VALKEY_DRYRUN.py` 是 QMT 自己 exec 的，`reload_deployment` 刷不动它们。新版本里这三个和线上相同，就走热更新；有一个不同，就得重启策略。
 
-**4. 用 QMT 自带的 Python 3.6.8 编译一遍要变的文件。** 仓库 `pyproject` 声明的是 3.8 以上，但服务端跑在 3.6.8 里。`bin.x64\pythonw.exe` 就是它，**没有控制台，报错看不见**，所以让它把结果写进文件：
+**4. 用 QMT 策略实际使用的 Python 编译一遍要变的文件。** 直连 Valkey 时还需验证该解释器能导入 `valkey`。如果用没有控制台的 `pythonw.exe`，可将编译结果写进文件：
 
 ```python
-# py36check.py
+# qmt_compile_check.py
 import sys, py_compile
 out = ["python " + sys.version.split()[0]]
 for path in sys.argv[1:]:
@@ -171,19 +178,19 @@ for path in sys.argv[1:]:
         py_compile.compile(path, doraise=True); out.append("OK   " + path)
     except Exception as exc:
         out.append("FAIL %s -> %s" % (path, exc))
-open(r"C:\temp\py36result.txt", "w").write("\n".join(out))
+open(r"C:\temp\qmt_compile_result.txt", "w").write("\n".join(out))
 ```
 
 ```powershell
-& "D:\...\bin.x64\pythonw.exe" py36check.py "新版本\bigqmt_signal_trader\xtquant_compat.py" "新版本\bigqmt_signal_trader\exec_events.py"
-type C:\temp\py36result.txt
+& "D:\...\bin.x64\pythonw.exe" qmt_compile_check.py "新版本\bigqmt_signal_trader\xtquant_compat.py" "新版本\bigqmt_signal_trader\exec_events.py"
+type C:\temp\qmt_compile_result.txt
 ```
 
-第一行会印出 `python 3.6.8`，证明跑的确实是 QMT 那个解释器。f-string 的 `=` 说明符、海象运算符、`dataclasses` 这些在 3.6 都不存在，有一个 FAIL 就别拷。
+第一行显示执行检查的 Python 版本。有编译失败时，先解决该环境的语法兼容问题。
 
 **5. 备份。** 整个包目录拷到 QMT 的 `python` 目录**之外**，比如 `D:\...\_deploy_backup_20260911_173558`。放在 `python` 目录里 QMT 会扫到。
 
-**6. 拷贝新包，清 `__pycache__`。** 只拷 `.py`，逐字节校验一遍。`__pycache__` 里是旧字节码，QMT 的 3.6 和你机器上的 3.13 生成的还不兼容，必须清。
+**6. 拷贝新包，清 `__pycache__`。** 只拷 `.py`，逐字节校验一遍。两个 Python 版本可能不同，部署时使用目标环境生成的字节码。
 
 **7. 热更新。** 三个顶层文件没变的前提下：
 
@@ -202,16 +209,16 @@ xt_trader.reload_status()                       # 1~2 秒后看这个
 
 | 现象 | 原因与处理 |
 |------|-----------|
-| 服务端找不到配置 | `bigqmt-init` 问「QMT 的 python 目录」时直接回车了，配置写到了当前目录。把 `bigqmt_signal_trader_local_config.py` 挪到 QMT 的 python 目录 |
-| 客户端报 `account_id` 为空 / 连到 127.0.0.1 / 连的是别的账号 | 客户端没找到 `bigqmt_signal_trader_client_config.py`：它靠 import 找，必须和运行的脚本同目录（或在 `PYTHONPATH` 上、或 `BIGQMT_CLIENT_CONFIG_MODULE` 指定）。`python -c` 是从**当前目录**找。找不到时退回服务端那份 `bigqmt_signal_trader_local_config.py`，所以在 QMT 目录里跑能通、换个目录就不通 |
+| 服务端找不到配置 | `bigqmt-init` 问「QMT 的 python 目录」时直接回车了，配置写到了当前目录。把 `bigqmt_signal_trader_qmt_config.py` 挪到 QMT 的 python 目录 |
+| 客户端报 `account_id` 为空 / 连到 127.0.0.1 / 连的是别的账号 | 客户端没找到 `bigqmt_signal_trader_client_config.py`：它靠 import 找，必须和运行的脚本同目录（或在 `PYTHONPATH` 上、或 `BIGQMT_CLIENT_CONFIG_MODULE` 指定）。`python -c` 是从**当前目录**找。找不到时退回服务端那份 `bigqmt_signal_trader_qmt_config.py`，所以在 QMT 目录里跑能通、换个目录就不通 |
 | 查询全空但账户有数据 | 账号没对上（服务端 `BIGQMT_ACCOUNT_ID` vs 客户端），或 QMT 不在实盘模式 |
 | 信用账户查出来整行 0 | `bigqmt-init` 的账号类型选了 STOCK，应选 CREDIT |
-| QMT 报错 `unexpected keyword argument 'protocol'` | QMT 自带 redis-py 3.5.3 太旧——升级桥接包到 ≥0.2.9（已修，按版本能力透传） |
+| QMT 报错 `xtquant-big-convert requires Python 3.12 or newer` | 检查并升级 QMT 策略实际使用的解释器 |
 | 启动面板没有任何输出 | 文件没拷全（4 项缺一不可），或加载的是 runtime 文件而不是 DRYRUN 入口 |
 | 面板像正常启动然后"结束运行"，外部连不上 | 看 `download globals bound=[]` 是不是**空的**、有没有 `init ok`。空的说明 QMT 没注入任何 API 全局——文件被当**普通脚本**执行。两个已知原因：在**策略编辑器界面**运行、勾了**「独立 python 进程」**。0.3.8 起入口会直接把这段话打出来（issue #123） |
 | 改了代码但没生效 | QMT 跨重跑保留 `sys.modules`，**拷贝本身不生效**。先用 `get_deployment_info()` 确认跑的是哪个 build，再 `reload_deployment` |
 | `reload_deployment` 后版本没变 | 改的是三个顶层文件之一，热更新刷不动，重启策略 |
-| 升级后策略报 `SyntaxError` | 新代码用了 3.7 以上的语法，QMT 里是 3.6.8。升级前用 `bin.x64\pythonw.exe` 编译一遍 |
+| 升级后策略报 `SyntaxError` | 用 QMT 策略实际使用的解释器编译变更文件，定位不兼容的语法 |
 
 ## 改完代码怎么生效
 
@@ -225,6 +232,6 @@ xt_trader.reload_status()            # -> {'ok': True, 'modules_purged': 28,
 
 约 1 秒，期间约 1 秒的查询会超时（服务正在重建）。
 
-**但改这三个文件仍然要重启策略**：`bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_redis_rpc_runtime.py`、`BIGQMT_REDIS_DRYRUN.py`——QMT 自己 exec 它们，模块没法 reload 自己所在的模块。单文件部署整个都是这种情况。
+**但改这三个文件仍然要重启策略**：`bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_valkey_rpc_runtime.py`、`BIGQMT_VALKEY_DRYRUN.py`——QMT 自己 exec 它们，模块没法 reload 自己所在的模块。单文件部署整个都是这种情况。
 
 更细的排错（日志位置、日志保留策略、启动诊断字段）见 [使用指南](USER_GUIDE.md)「日志与排错」。

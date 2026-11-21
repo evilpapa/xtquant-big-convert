@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from bigqmt_signal_trader.adapters.order_bigqmt import (
     BigQmtOrderGateway, passthrough_action_of, passthrough_optype_of)
 from bigqmt_signal_trader.models import OrderRequest
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
 
 # opType -> (官方含义, 期望的记账方向)。None = 没有买卖方向。

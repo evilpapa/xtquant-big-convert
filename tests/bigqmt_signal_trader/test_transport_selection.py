@@ -6,7 +6,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader_strategy import _is_redis_transport, _resolve_background_threads
+from bigqmt_signal_trader_strategy import _is_valkey_transport, _resolve_background_threads
 from bigqmt_signal_trader.transports.factory import build_transport, transport_supports_drain
 
 
@@ -22,10 +22,10 @@ class RemovedTransportTest(unittest.TestCase):
 
 
 class BackgroundThreadResolutionTest(unittest.TestCase):
-    def test_redis_transport_keeps_configured_value(self):
-        # Redis (default) honors the configured flag — adjust-drain path when off.
-        self.assertFalse(_resolve_background_threads("redis", False))
-        self.assertTrue(_resolve_background_threads("redis", True))
+    def test_valkey_transport_keeps_configured_value(self):
+        # Valkey (default) honors the configured flag — adjust-drain path when off.
+        self.assertFalse(_resolve_background_threads("valkey", False))
+        self.assertTrue(_resolve_background_threads("valkey", True))
         self.assertFalse(_resolve_background_threads("", False))
         self.assertFalse(_resolve_background_threads("default", False))
         self.assertFalse(_resolve_background_threads(None, False))

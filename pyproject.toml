@@ -5,23 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "xtquant-big-convert"
 version = "0.4.0"
-description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (Redis and serial)"
+description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (Valkey and serial)"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "litaolemo"},
 ]
-keywords = ["qmt", "quant", "trading", "rpc", "redis", "bigqmt", "miniqmt"]
+keywords = ["qmt", "quant", "trading", "rpc", "valkey", "bigqmt", "miniqmt"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial :: Investment",
@@ -29,12 +25,9 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-# 8.x 改了两个默认值：protocol 从 2 变 None，默认重试从 3 次抬到 10 次。
-# 重试要紧 —— RPC 请求用 RPUSH 发，而 RPUSH 不幂等：redis-py 的重试包住的是
-# 「发送 + 读应答」，服务端已收下、只是应答丢了的情况下同一条 RPUSH 会被重发，
-# 一次下单可能派发两次（#245）。服务端 0.3.29 起按 request_id 去重兜住了，
-# 但没有理由把默认重试抬到 10。5.2.1/6.4.0/7.4.0 实测 protocol 默认都是 2。
-redis = ["redis>=5.0.0,<8.0.0"]
+# Pin the supported client major. RPUSH is not idempotent (#245), so RPC
+# connections also explicitly disable automatic retries.
+valkey = ["valkey>=6.1,<7"]
 serial = ["pyserial>=3.5,<4"]
 # Faster/smaller wire encoding for whole-quote push (falls back to json if absent).
 msgpack = ["msgpack>=1.0.0"]
@@ -45,7 +38,7 @@ dev = [
 
 [project.scripts]
 bigqmt-init = "bigqmt_signal_trader.init_config:main"
-bigqmt-serial-bridge = "bigqmt_signal_trader.serial_redis_bridge:main"
+bigqmt-serial-bridge = "bigqmt_signal_trader.serial_valkey_bridge:main"
 
 [project.urls]
 Homepage = "https://github.com/litaolemo/xtquant_big_convert"
@@ -55,10 +48,10 @@ Issues = "https://github.com/litaolemo/xtquant_big_convert/issues"
 [tool.setuptools]
 package-dir = {"" = "src"}
 py-modules = [
-    "BIGQMT_REDIS_DRYRUN",
+    "BIGQMT_VALKEY_DRYRUN",
     "bigqmt_signal_trader_strategy",
-    "bigqmt_signal_trader_redis_rpc_runtime",
-    "bigqmt_signal_trader_redis_dryrun",
+    "bigqmt_signal_trader_valkey_rpc_runtime",
+    "bigqmt_signal_trader_valkey_dryrun",
     "bigqmt_signal_trader_dryrun",
     "bigqmt_signal_trader_diagnostic",
 ]

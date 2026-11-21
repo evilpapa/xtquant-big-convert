@@ -19,7 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from xtquant import xtconstant
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
 
 def _handlers():

@@ -50,7 +50,7 @@ class _Script(object):
 def _answers(**overrides):
     base = dict(init_config.DEFAULTS)
     base.update({"account_id": "8886800503", "account_type": "STOCK",
-                 "transport": "redis", "host": "10.0.0.5", "port": 6380,
+                 "transport": "valkey", "host": "10.0.0.5", "port": 6380,
                  "db": 7, "username": "svc", "password": "s3cret",
                  "allow_order_methods": False, "deployment": "package"})
     base.update(overrides)
@@ -70,17 +70,17 @@ class RenderedConfigTest(unittest.TestCase):
 
         self.assertEqual(loaded["BIGQMT_ACCOUNT_ID"], "8886800503")
         self.assertEqual(loaded["BIGQMT_ACCOUNT_TYPE"], "STOCK")
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["host"], "10.0.0.5")
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["port"], 6380)
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["db"], 7)
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["password"], "s3cret")
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["host"], "10.0.0.5")
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["port"], 6380)
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["db"], 7)
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["password"], "s3cret")
 
     def test_client_config_is_valid_python_carrying_the_answers(self):
         loaded = _load(init_config.render_client_config(_answers()), "client_config.py")
 
         self.assertEqual(loaded["BIGQMT_ACCOUNT_ID"], "8886800503")
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["transport"], "redis")
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["host"], "10.0.0.5")
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["transport"], "valkey")
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["host"], "10.0.0.5")
         self.assertIs(loaded["BIGQMT_LOCAL_CACHE_CONFIG"]["fallback_rpc"], True)
 
     def test_server_and_client_agree_on_the_connection(self):
@@ -91,22 +91,22 @@ class RenderedConfigTest(unittest.TestCase):
 
         self.assertEqual(server["BIGQMT_ACCOUNT_ID"], client["BIGQMT_ACCOUNT_ID"])
         for key in ("host", "port", "db", "username", "password"):
-            self.assertEqual(server["BIGQMT_REDIS_CONFIG"][key],
-                             client["BIGQMT_REDIS_CONFIG"][key], key)
+            self.assertEqual(server["BIGQMT_CONFIG"][key],
+                             client["BIGQMT_CONFIG"][key], key)
 
     def test_order_rpc_is_off_unless_asked_for(self):
         off = _load(init_config.render_server_config(_answers()), "s.py")
-        self.assertIs(off["BIGQMT_REDIS_CONFIG"]["rpc_allow_order_methods"], False)
+        self.assertIs(off["BIGQMT_CONFIG"]["rpc_allow_order_methods"], False)
 
         on = _load(init_config.render_server_config(
             _answers(allow_order_methods=True)), "s.py")
-        self.assertIs(on["BIGQMT_REDIS_CONFIG"]["rpc_allow_order_methods"], True)
+        self.assertIs(on["BIGQMT_CONFIG"]["rpc_allow_order_methods"], True)
 
 
     def test_the_order_switch_does_not_change_the_threading_mode(self):
         for answers in (_answers(), _answers(allow_order_methods=True)):
             loaded = _load(init_config.render_server_config(answers), "s.py")
-            self.assertIs(loaded["BIGQMT_REDIS_CONFIG"]["rpc_background_threads"], False)
+            self.assertIs(loaded["BIGQMT_CONFIG"]["rpc_background_threads"], False)
 
 
 
@@ -117,8 +117,8 @@ class RenderedConfigTest(unittest.TestCase):
         loaded = _load(init_config.render_server_config(
             _answers(password=nasty, username=nasty)), "s.py")
 
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["password"], nasty)
-        self.assertEqual(loaded["BIGQMT_REDIS_CONFIG"]["username"], nasty)
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["password"], nasty)
+        self.assertEqual(loaded["BIGQMT_CONFIG"]["username"], nasty)
 
     def test_generated_files_warn_against_committing_them(self):
         for render in (init_config.render_server_config,
@@ -127,7 +127,7 @@ class RenderedConfigTest(unittest.TestCase):
 
 
 class PromptFlowTest(unittest.TestCase):
-    def test_a_full_redis_run_collects_every_answer(self):
+    def test_a_full_valkey_run_collects_every_answer(self):
         script = _Script(
             answers=["8886800503", "1", "1", "10.0.0.5", "6380", "7", "svc",
                      "n", "1", "", ""],
@@ -137,7 +137,7 @@ class PromptFlowTest(unittest.TestCase):
 
         self.assertEqual(answers["account_id"], "8886800503")
         self.assertEqual(answers["account_type"], "STOCK")
-        self.assertEqual(answers["transport"], "redis")
+        self.assertEqual(answers["transport"], "valkey")
         self.assertEqual(answers["host"], "10.0.0.5")
         self.assertEqual(answers["port"], 6380)
         self.assertEqual(answers["db"], 7)
@@ -152,7 +152,7 @@ class PromptFlowTest(unittest.TestCase):
             script.write, script.read, read_secret=script.read_secret)
 
         self.assertEqual(answers["account_type"], "STOCK")
-        self.assertEqual(answers["transport"], "redis")
+        self.assertEqual(answers["transport"], "valkey")
         self.assertEqual(answers["host"], "127.0.0.1")
         self.assertEqual(answers["port"], 6379)
         self.assertIs(answers["allow_order_methods"], False)
@@ -210,14 +210,14 @@ class ApplyTest(unittest.TestCase):
     def test_written_server_config_actually_imports(self):
         script = _Script(answers=[])
         init_config.apply(self._answers(), ROOT, script.write, script.read, force=True)
-        path = os.path.join(self.tmp, "bigqmt_signal_trader_local_config.py")
+        path = os.path.join(self.tmp, "bigqmt_signal_trader_qmt_config.py")
         with io.open(path, encoding="utf-8") as handle:
             loaded = _load(handle.read(), path)
 
         self.assertEqual(loaded["BIGQMT_ACCOUNT_ID"], "8886800503")
 
     def test_existing_file_is_not_overwritten_without_consent(self):
-        path = os.path.join(self.tmp, "bigqmt_signal_trader_local_config.py")
+        path = os.path.join(self.tmp, "bigqmt_signal_trader_qmt_config.py")
         with io.open(path, "w", encoding="utf-8") as handle:
             handle.write("# hand-tuned, do not clobber\n")
 
@@ -230,7 +230,7 @@ class ApplyTest(unittest.TestCase):
             self.assertIn("hand-tuned", handle.read())
 
     def test_consent_overwrites(self):
-        path = os.path.join(self.tmp, "bigqmt_signal_trader_local_config.py")
+        path = os.path.join(self.tmp, "bigqmt_signal_trader_qmt_config.py")
         with io.open(path, "w", encoding="utf-8") as handle:
             handle.write("# stale\n")
 
@@ -247,12 +247,12 @@ class SingleFileInjectionTest(unittest.TestCase):
     """The generated build ships with placeholders; init has to replace them."""
 
     SAMPLE = (
-        '#coding:gbk\n"""doc mentioning BIGQMT_ACCOUNT_ID / BIGQMT_REDIS_CONFIG"""\n'
+        '#coding:gbk\n"""doc mentioning BIGQMT_ACCOUNT_ID / BIGQMT_CONFIG"""\n'
         "import os\n\n\n"
         "# =========================== config block ===========================\n"
         'BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"\n\n'
         'BIGQMT_ACCOUNT_TYPE = "STOCK"\n\n'
-        "BIGQMT_REDIS_CONFIG = {\n"
+        "BIGQMT_CONFIG = {\n"
         '    "host": "127.0.0.1",\n'
         '    "rpc_allow_order_methods": False,\n'
         "}\n"
@@ -302,12 +302,12 @@ class SingleFileFromPipInstallTest(unittest.TestCase):
     def _silence(self, text):
         pass
 
-    def test_redis_single_file_builds_from_packaged_copy(self):
+    def test_valkey_single_file_builds_from_packaged_copy(self):
         written = init_config.apply(
             self._answers(deployment="single_file"), self.bogus_root,
             self._silence, input, force=True)
 
-        target = os.path.join(self.tmp, "BIGQMT_REDIS_DRYRUN_ALL_IN_ONE.py")
+        target = os.path.join(self.tmp, "BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py")
         self.assertIn(target, written)
         with io.open(target, encoding="utf-8") as handle:
             text = handle.read()

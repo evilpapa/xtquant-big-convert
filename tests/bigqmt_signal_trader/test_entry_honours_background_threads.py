@@ -21,7 +21,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FILES = (
-    os.path.join(ROOT, "src", "BIGQMT_REDIS_DRYRUN.py"),
+    os.path.join(ROOT, "src", "BIGQMT_VALKEY_DRYRUN.py"),
 )
 
 

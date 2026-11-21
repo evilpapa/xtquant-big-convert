@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-from bigqmt_signal_trader.redis_rpc import (
+from bigqmt_signal_trader.valkey_rpc import (
     LISTENER_DEFERRED_METHODS,
     READ_METHODS,
     BigQmtRpcHandlers,

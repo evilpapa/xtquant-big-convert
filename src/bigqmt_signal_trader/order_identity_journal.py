@@ -1,4 +1,4 @@
-"""Small, append-only order attribution journal for Redis-free deployments.
+"""Small, append-only order attribution journal for Valkey-free deployments.
 
 Each instance owns a different segment. A segment lock only coordinates an
 append with expired-segment cleanup; no file handle survives either operation.

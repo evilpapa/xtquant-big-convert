@@ -34,11 +34,11 @@ The reporter's own raw_fields carried it on both callbacks. Everything below
 about the missing trade key and the identity-store fallback still holds; it is
 just no longer the only way back.
 
-That store was read from Redis only. On a zmq deployment whose Redis is
+That store was read from Valkey only. On a zmq deployment whose Valkey is
 configured but not reachable -- which is exactly the "configured is not
 reachable" trap in #145 -- the lookup fails silently and the name stays empty.
 The in-process journal written at submit time (#156, already used by the query
-path) is now the fallback, so a deployment with no working Redis still names
+path) is now the fallback, so a deployment with no working Valkey still names
 what this process submitted.
 """
 
@@ -157,9 +157,9 @@ class _FakeExecEvents(object):
     def __init__(self):
         self.enriched = []
 
-    def enrich_order_identity(self, redis_client, account_id, event):
+    def enrich_order_identity(self, valkey_client, account_id, event):
         self.enriched.append(event.get("event_type"))
-        event["strategy_name"] = "from-redis"
+        event["strategy_name"] = "from-valkey"
         return event
 
     def publish_exec_event(self, sink, account_id, event):
@@ -190,13 +190,13 @@ class _PublishBase(unittest.TestCase):
     def setUp(self):
         self._saved = {name: getattr(strategy, name)
                        for name in ("_build_config", "_exec_event_sink",
-                                    "_exec_event_redis", "_exec_events",
+                                    "_exec_event_valkey", "_exec_events",
                                     "_rpc_service")}
         self._sink = _Sink()
         self._fake = _FakeExecEvents()
         strategy._build_config = lambda: CFG
         strategy._exec_event_sink = lambda config: self._sink
-        strategy._exec_event_redis = lambda config: None
+        strategy._exec_event_valkey = lambda config: None
         strategy._exec_events = self._fake
         strategy._rpc_service = None
         strategy._held_presysid_orders.clear()
@@ -214,15 +214,15 @@ class _PublishBase(unittest.TestCase):
 
 class TradePublishIsEnrichedTest(_PublishBase):
     def test_the_trade_branch_now_enriches_like_the_order_branch(self):
-        strategy._exec_event_redis = lambda config: object()   # a "working" store
+        strategy._exec_event_valkey = lambda config: object()   # a "working" store
 
         strategy._publish_exec_event("trade", _deal_obj(), None)
 
         self.assertEqual(self._fake.enriched, ["trade"])
-        self.assertEqual(self._events()[0]["strategy_name"], "from-redis")
+        self.assertEqual(self._events()[0]["strategy_name"], "from-valkey")
 
     def test_the_order_branch_still_enriches(self):
-        strategy._exec_event_redis = lambda config: object()
+        strategy._exec_event_valkey = lambda config: object()
 
         strategy._publish_exec_event("order", _order_obj(), None)
 
@@ -230,7 +230,7 @@ class TradePublishIsEnrichedTest(_PublishBase):
 
 
 class LocalJournalFallbackTest(_PublishBase):
-    """No Redis, or Redis configured but unreachable -- the #174 case."""
+    """No Valkey, or Valkey configured but unreachable -- the #174 case."""
 
     def _wire_journal(self, name="alpha", age=0.0):
         journal = _Journal({("acct", "sig-1"): (time.time() - age, name)})
@@ -271,18 +271,18 @@ class LocalJournalFallbackTest(_PublishBase):
 
         self.assertEqual(self._events()[0]["strategy_name"], "")
 
-    def test_the_journal_answers_without_touching_redis(self):
+    def test_the_journal_answers_without_touching_valkey(self):
         """This runs on QMT's C++ callback thread. For an order this process
-        submitted the journal already holds what redis holds, so a round trip
-        per event buys nothing -- and costs the full timeout when redis is
+        submitted the journal already holds what valkey holds, so a round trip
+        per event buys nothing -- and costs the full timeout when valkey is
         configured but unreachable, which is the reported deployment."""
-        strategy._exec_event_redis = lambda config: object()
+        strategy._exec_event_valkey = lambda config: object()
         self._wire_journal()
 
         strategy._publish_exec_event("trade", _deal_obj(), None)
 
         self.assertEqual(self._events()[0]["strategy_name"], "alpha")
-        self.assertEqual(self._fake.enriched, [])   # redis never consulted
+        self.assertEqual(self._fake.enriched, [])   # valkey never consulted
 
     def test_the_journal_wins_over_the_rows_bridge_process_name(self):
         """#216 publish-path: the row came pre-named with the bridge's own
@@ -295,14 +295,14 @@ class LocalJournalFallbackTest(_PublishBase):
 
         self.assertEqual(self._events()[0]["strategy_name"], "alpha")
 
-    def test_redis_is_the_fallback_when_the_journal_misses(self):
-        """Another process's order: nothing local, so redis still answers."""
-        strategy._exec_event_redis = lambda config: object()
+    def test_valkey_is_the_fallback_when_the_journal_misses(self):
+        """Another process's order: nothing local, so valkey still answers."""
+        strategy._exec_event_valkey = lambda config: object()
         self._wire_journal()
 
         strategy._publish_exec_event("trade", _deal_obj(m_strRemark="other"), None)
 
-        self.assertEqual(self._events()[0]["strategy_name"], "from-redis")
+        self.assertEqual(self._events()[0]["strategy_name"], "from-valkey")
         self.assertEqual(self._fake.enriched, ["trade"])
 
 

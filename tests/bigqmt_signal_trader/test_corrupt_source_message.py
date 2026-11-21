@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-ENTRIES = ("BIGQMT_REDIS_DRYRUN.py",)
+ENTRIES = ("BIGQMT_VALKEY_DRYRUN.py",)
 
 # The real one, from the reporter's screenshot.
 REAL_TOKEN = ("MiFBOecYoHXT4UUBBOIr3m5aTVbA5Rbt6OnG52cfBT5EAtPG9kA7kQnEsKuDUOO"

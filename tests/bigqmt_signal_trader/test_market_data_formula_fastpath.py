@@ -72,7 +72,7 @@ class ClientEndToEndTest(unittest.TestCase):
 
         transport = _Transport()
         client = BigQmtRpcClient(account_id="acct",
-                                 redis_config={"host": "127.0.0.1"})
+                                 valkey_config={"host": "127.0.0.1"})
         client.transport_name = "zmq"
         client._transport_instance = transport
         client._formula_router_instance = router

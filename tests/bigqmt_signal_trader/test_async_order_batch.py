@@ -119,7 +119,7 @@ class BatchSelectionTest(unittest.TestCase):
         trader, rec, calls = self._trader()
 
         def slow_batch(account, orders, batch_id="", idempotent=True):
-            raise TimeoutError("redis rpc timeout: order_stock_batch")
+            raise TimeoutError("valkey rpc timeout: order_stock_batch")
 
         trader.order_stock_batch = slow_batch
         seqs = [trader.order_stock_async("acct", "60%04d.SH" % i, 23, 100, 11,

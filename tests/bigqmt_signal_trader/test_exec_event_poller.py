@@ -1,8 +1,8 @@
 # coding: utf-8
 """没有推送通道的传输（mysql 等），客户端轮询合成执行回调 (#372)。
 
-通道选择本来就是每轮重探：redis 可达走 redis 频道，zmq 走推送通道，剩下
-（mysql、或 redis 传输的 redis 宕了）0.3.56 之前什么都不干——
+通道选择本来就是每轮重探：valkey 可达走 valkey 频道，zmq 走推送通道，剩下
+（mysql、或 valkey 传输的 valkey 宕了）0.3.56 之前什么都不干——
 on_stock_order 一条都到不了。现在剩下那条路走查询轮询：按 sysid+status
 diff 委托、按 trade_id diff 成交，合成与推送完全同形的事件。首轮只打底
 不补发；查询连续失败退回外层重选。
@@ -58,7 +58,7 @@ class Recorder(XtQuantTraderCallback):
 
 
 class PollClient(object):
-    """query_orders / query_trades 按轮给出剧本；redis 探活恒失败。"""
+    """query_orders / query_trades 按轮给出剧本；valkey 探活恒失败。"""
 
     account_id = "acct"
     transport_name = "shm"
@@ -68,8 +68,8 @@ class PollClient(object):
         self._fail = fail
         self.queries = 0
 
-    def _redis(self):
-        raise RuntimeError("no redis")
+    def _valkey(self):
+        raise RuntimeError("no valkey")
 
     def call(self_, method, params=None, **kwargs):
         self_.queries += 1

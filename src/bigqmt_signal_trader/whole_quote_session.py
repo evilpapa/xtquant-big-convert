@@ -27,7 +27,7 @@ class WholeQuoteClientSession(object):
         ``sub_id_func`` (optional) mints subscription ids; defaults to a counter.
         ``push_silence_replay_heartbeats``: after this many heartbeat rounds
         without any push, replay subscriptions (covers server restarts where
-        keepalive keeps succeeding because the redis request queue buffers
+        keepalive keeps succeeding because the valkey request queue buffers
         during the restart window but the subscription table was reset)."""
         self._rpc = rpc_call
         self._channel = push_channel
@@ -203,7 +203,7 @@ class WholeQuoteClientSession(object):
             else:
                 consecutive_failures = 0
             # Push-silence detection: a server restart can survive with keepalive
-            # succeeding (the redis request queue buffers during the restart
+            # succeeding (the valkey request queue buffers during the restart
             # window) while the subscription table was reset, so pushes stop.
             # Replay when no push arrived for several heartbeat rounds (also
             # covers the case where the very first prime push never arrived).

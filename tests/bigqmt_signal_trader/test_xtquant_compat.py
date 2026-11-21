@@ -35,7 +35,7 @@ class FakeRpcClient:
     def __init__(self):
         self.account_id = "acct"
         self.calls = []
-        self.redis = FakeRedisEvents()
+        self.valkey = FakeValkeyEvents()
         self.full_tick_cache_config = {
             "enabled": True,
             "demand_ttl_seconds": 10,
@@ -44,8 +44,8 @@ class FakeRpcClient:
             "poll_interval_seconds": 0.01,
         }
 
-    def _redis(self):
-        return self.redis
+    def _valkey(self):
+        return self.valkey
 
     def call(self, method, params=None, account_id=None, timeout_seconds=None):
         self.calls.append((method, params or {}, account_id, timeout_seconds))
@@ -164,16 +164,16 @@ class FakeRpcClient:
         raise AssertionError("unexpected method: %s" % method)
 
     def publish_event(self, event_type, payload, stream_template="bigqmt:quote_events:{account_id}"):
-        return self.redis.publish_event(event_type, payload)
+        return self.valkey.publish_event(event_type, payload)
 
     def save_quote_subscription(self, seq, payload, active=True):
         if active:
-            self.redis.hset("bigqmt:quote_subscriptions:%s" % self.account_id, str(seq), payload)
+            self.valkey.hset("bigqmt:quote_subscriptions:%s" % self.account_id, str(seq), payload)
         else:
-            self.redis.hdel("bigqmt:quote_subscriptions:%s" % self.account_id, str(seq))
+            self.valkey.hdel("bigqmt:quote_subscriptions:%s" % self.account_id, str(seq))
 
 
-class FakeRedisEvents:
+class FakeValkeyEvents:
     def __init__(self):
         self.kv = {}
         self.hashes = {}
@@ -222,7 +222,7 @@ class XtquantCompatTest(unittest.TestCase):
         module = types.ModuleType(module_name)
         module.BIGQMT_ACCOUNT_ID = "cfg-account"
         module.BIGQMT_RPC_TIMEOUT_SECONDS = 9
-        module.BIGQMT_REDIS_CONFIG = {
+        module.BIGQMT_CONFIG = {
             "host": "cfg-host",
             "port": 6380,
             "db": 6,
@@ -271,7 +271,7 @@ class XtquantCompatTest(unittest.TestCase):
         self.assertEqual(single.stock_code, "600000.SH")
 
     def test_asset_and_position_objects_carry_native_m_prefixed_aliases(self):
-        # PR #67: 原生 xtquant 客户端（如 miniqmt_redis）读 m_ 前缀字段。
+        # PR #67: 原生 xtquant 客户端（如 miniqmt_valkey）读 m_ 前缀字段。
         # 回归锚点：别名引用的局部变量必须先定义（曾 NameError 漏网）。
         trader = self._trader()
         acc = StockAccount("acct")
@@ -394,13 +394,13 @@ class XtquantCompatTest(unittest.TestCase):
     def test_xtdata_read_methods_and_sector_filter(self):
         xtdata = self._xtdata()
         write_full_tick_cache(
-            xtdata.client.redis,
+            xtdata.client.valkey,
             xtdata.client.account_id,
             ["600000.SH"],
             {"600000.SH": {"lastPrice": 10, "bidPrice": [9.9], "askPrice": [10.1]}},
         )
         write_full_tick_cache(
-            xtdata.client.redis,
+            xtdata.client.valkey,
             xtdata.client.account_id,
             ["SH", "SZ"],
             {
@@ -449,10 +449,10 @@ class XtquantCompatTest(unittest.TestCase):
         self.assertEqual(int(df.iloc[0]["time"]), 1755052020000)
         self.assertNotIn("stime", df.columns)
 
-    def test_xtdata_full_tick_reads_redis_cache_and_renews_demand(self):
+    def test_xtdata_full_tick_reads_valkey_cache_and_renews_demand(self):
         xtdata = self._xtdata()
         write_full_tick_cache(
-            xtdata.client.redis,
+            xtdata.client.valkey,
             xtdata.client.account_id,
             ["SZ", "SH"],
             {"600000.SH": {"lastPrice": 10, "bidPrice": [9.9], "askPrice": [10.1]}},
@@ -463,7 +463,7 @@ class XtquantCompatTest(unittest.TestCase):
         self.assertIn("600000.SH", ticks)
         self.assertFalse([call for call in xtdata.client.calls if call[0] == "get_full_tick"])
         demand_key = full_tick_demand_key(xtdata.client.account_id)
-        self.assertIn(full_tick_request_id(["SH", "SZ"]), xtdata.client.redis.hashes[demand_key])
+        self.assertIn(full_tick_request_id(["SH", "SZ"]), xtdata.client.valkey.hashes[demand_key])
 
     def test_xtdata_full_tick_symbol_miss_falls_back_to_rpc(self):
         xtdata = self._xtdata()
@@ -476,7 +476,7 @@ class XtquantCompatTest(unittest.TestCase):
         self.assertEqual(ticks["600000.SH"]["bidPrice"], [9.9])
         self.assertEqual([call[0] for call in xtdata.client.calls if call[0] == "get_full_tick"], ["get_full_tick"])
         demand_key = full_tick_demand_key(xtdata.client.account_id)
-        self.assertIn(full_tick_request_id(["600000.SH"]), xtdata.client.redis.hashes[demand_key])
+        self.assertIn(full_tick_request_id(["600000.SH"]), xtdata.client.valkey.hashes[demand_key])
 
     def test_xtdata_full_market_tick_miss_raises_without_rpc(self):
         xtdata = self._xtdata()
@@ -489,7 +489,7 @@ class XtquantCompatTest(unittest.TestCase):
 
         self.assertFalse([call for call in xtdata.client.calls if call[0] == "get_full_tick"])
         demand_key = full_tick_demand_key(xtdata.client.account_id)
-        self.assertIn(full_tick_request_id(["SH", "SZ"]), xtdata.client.redis.hashes[demand_key])
+        self.assertIn(full_tick_request_id(["SH", "SZ"]), xtdata.client.valkey.hashes[demand_key])
 
     def test_xtdata_full_market_tick_can_fall_back_to_rpc_when_cache_disabled(self):
         xtdata = self._xtdata()
@@ -500,7 +500,7 @@ class XtquantCompatTest(unittest.TestCase):
         self.assertEqual(xtdata.client.calls[-1][0], "get_full_tick")
         self.assertEqual(xtdata.client.calls[-1][3], 30)
 
-    def test_quote_subscribe_and_unsubscribe_write_redis_events(self):
+    def test_quote_subscribe_and_unsubscribe_write_valkey_events(self):
         xtdata = self._xtdata()
 
         # Tick subscriptions ride the whole-quote push session now (#95), so
@@ -536,10 +536,10 @@ class XtquantCompatTest(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(session.subscribed, [["600000.SH"]])
         self.assertNotIn(seq, session.active)
-        self.assertNotIn(str(seq), xtdata.client.redis.hashes.get(key, {}))
-        self.assertIn((key, str(seq)), xtdata.client.redis.deleted)
-        self.assertEqual(xtdata.client.redis.events[0][0], "subscribe_quote")
-        self.assertEqual(xtdata.client.redis.events[1][0], "unsubscribe_quote")
+        self.assertNotIn(str(seq), xtdata.client.valkey.hashes.get(key, {}))
+        self.assertIn((key, str(seq)), xtdata.client.valkey.deleted)
+        self.assertEqual(xtdata.client.valkey.events[0][0], "subscribe_quote")
+        self.assertEqual(xtdata.client.valkey.events[1][0], "unsubscribe_quote")
 
     def test_optional_xtquant_shim_imports_constants_and_classes(self):
         from xtquant import xtconstant
@@ -554,12 +554,12 @@ class XtquantCompatTest(unittest.TestCase):
 
     def test_configure_updates_imported_xt_trader_object_in_place(self):
         original = xt_trader
-        configure(account_id="acct-new", redis_client=FakeRpcClient())
+        configure(account_id="acct-new", valkey_client=FakeRpcClient())
 
         self.assertIs(xt_trader, original)
         self.assertEqual(xt_trader.client.account_id, "acct-new")
 
-    def test_client_reads_account_and_redis_from_private_config(self):
+    def test_client_reads_account_and_valkey_from_private_config(self):
         module_name, old_env = self._with_fake_config()
         try:
             config = load_client_config()
@@ -569,11 +569,11 @@ class XtquantCompatTest(unittest.TestCase):
 
         self.assertEqual(config["account_id"], "cfg-account")
         self.assertEqual(client.account_id, "cfg-account")
-        self.assertEqual(client.redis_config["host"], "cfg-host")
-        self.assertEqual(client.redis_config["port"], 6380)
-        self.assertEqual(client.redis_config["db"], 6)
-        self.assertEqual(client.redis_config["username"], "cfg-user")
-        self.assertEqual(client.redis_config["password"], "cfg-pass")
+        self.assertEqual(client.valkey_config["host"], "cfg-host")
+        self.assertEqual(client.valkey_config["port"], 6380)
+        self.assertEqual(client.valkey_config["db"], 6)
+        self.assertEqual(client.valkey_config["username"], "cfg-user")
+        self.assertEqual(client.valkey_config["password"], "cfg-pass")
         self.assertEqual(client.timeout_seconds, 9)
         self.assertIs(client.local_cache_config["fallback_rpc"], True)
 
@@ -582,16 +582,16 @@ class XtquantCompatTest(unittest.TestCase):
         try:
             client = BigQmtRpcClient(
                 account_id="explicit-account",
-                redis_config={"host": "explicit-host", "password": ""},
+                valkey_config={"host": "explicit-host", "password": ""},
                 timeout_seconds=3,
             )
         finally:
             self._cleanup_fake_config(module_name, old_env)
 
         self.assertEqual(client.account_id, "explicit-account")
-        self.assertEqual(client.redis_config["host"], "explicit-host")
-        self.assertEqual(client.redis_config["port"], 6380)
-        self.assertEqual(client.redis_config["password"], "")
+        self.assertEqual(client.valkey_config["host"], "explicit-host")
+        self.assertEqual(client.valkey_config["port"], 6380)
+        self.assertEqual(client.valkey_config["password"], "")
         self.assertEqual(client.timeout_seconds, 3)
 
     def _failing_client_with_cache(self, updated_at):
@@ -617,7 +617,7 @@ class XtquantCompatTest(unittest.TestCase):
         }
         if updated_at is not None:
             snapshot["updated_at"] = updated_at
-        client.redis.hashes["bigqmt:positions:acct"] = snapshot
+        client.valkey.hashes["bigqmt:positions:acct"] = snapshot
         return client
 
     def test_a_failed_account_query_is_not_answered_from_cache_by_default(self):
@@ -639,7 +639,7 @@ class XtquantCompatTest(unittest.TestCase):
     def test_opting_in_serves_a_fresh_snapshot(self):
         trader = BigQmtXtTrader(
             account_id="acct",
-            redis_config={"transport": "redis", "account_cache_fallback": True},
+            valkey_config={"transport": "valkey", "account_cache_fallback": True},
         )
         trader.client = self._failing_client_with_cache(_now_stamp())
         acc = StockAccount("acct")
@@ -657,7 +657,7 @@ class XtquantCompatTest(unittest.TestCase):
     def test_opting_in_still_refuses_a_stale_snapshot(self):
         trader = BigQmtXtTrader(
             account_id="acct",
-            redis_config={"transport": "redis", "account_cache_fallback": True},
+            valkey_config={"transport": "valkey", "account_cache_fallback": True},
         )
         trader.client = self._failing_client_with_cache("2000-01-01 00:00:00")
         with self.assertRaises(RuntimeError):
@@ -667,7 +667,7 @@ class XtquantCompatTest(unittest.TestCase):
     def test_client_call_via_transport_builds_valid_request(self):
         # Regression: the swappable-transport path in BigQmtRpcClient.call() built
         # request_id with __import__("uuid").uuid.uuid4() (AttributeError), crashing
-        # every non-redis transport on first call. This path had no coverage.
+        # every non-valkey transport on first call. This path had no coverage.
         captured = {}
 
         class _FakeTransport:
@@ -676,7 +676,7 @@ class XtquantCompatTest(unittest.TestCase):
                 captured["timeout"] = timeout_seconds
                 return {"ok": True, "data": {"pong": True}}
 
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client = BigQmtRpcClient(account_id="acct", valkey_config={"host": "127.0.0.1"})
         client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
@@ -702,7 +702,7 @@ class XtquantCompatTest(unittest.TestCase):
                     "server_error": "passorder submitted but order not found in system",
                 }
 
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client = BigQmtRpcClient(account_id="acct", valkey_config={"host": "127.0.0.1"})
         client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
@@ -716,7 +716,7 @@ class XtquantCompatTest(unittest.TestCase):
             def send_request(self, request, timeout_seconds):
                 return {"ok": True, "data": {"pong": True, "method": request["method"]}}
 
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client = BigQmtRpcClient(account_id="acct", valkey_config={"host": "127.0.0.1"})
         client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
@@ -733,7 +733,7 @@ class XtquantCompatTest(unittest.TestCase):
             def send_request(self, request, timeout_seconds):
                 return {"ok": True, "data": {"i": request["params"]["i"]}}
 
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client = BigQmtRpcClient(account_id="acct", valkey_config={"host": "127.0.0.1"})
         client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
@@ -759,7 +759,7 @@ class XtquantCompatTest(unittest.TestCase):
             def send_request(self, request, timeout_seconds):
                 return {"ok": False, "error": "boom"}
 
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client = BigQmtRpcClient(account_id="acct", valkey_config={"host": "127.0.0.1"})
         client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
 
@@ -771,9 +771,9 @@ class XtquantCompatTest(unittest.TestCase):
         _t.sleep(0.3)  # 给 dispatcher 一个机会（它不应触发）
         self.assertEqual(called, [])
 
-    def test_mysql_quote_metadata_keeps_existing_redis_path(self):
-        """MySQL transport 继续使用既有 Redis 订阅元数据。"""
-        class RedisRecorder:
+    def test_mysql_quote_metadata_keeps_existing_valkey_path(self):
+        """MySQL transport 继续使用既有 Valkey 订阅元数据。"""
+        class ValkeyRecorder:
             def __init__(self):
                 self.calls = []
 
@@ -786,13 +786,13 @@ class XtquantCompatTest(unittest.TestCase):
             def hset(self, *args, **kwargs):
                 self.calls.append("hset")
 
-        redis = RedisRecorder()
-        client = BigQmtRpcClient(account_id="acct", redis_client=redis, redis_config={"transport": "mysql"})
+        valkey = ValkeyRecorder()
+        client = BigQmtRpcClient(account_id="acct", valkey_client=valkey, valkey_config={"transport": "mysql"})
 
         client.publish_event("subscribe_quote", {"seq": 1})
         client.save_quote_subscription(1, {"seq": 1}, active=True)
 
-        self.assertEqual(redis.calls, ["xadd", "publish", "hset"])
+        self.assertEqual(valkey.calls, ["xadd", "publish", "hset"])
 
 
 
@@ -857,7 +857,7 @@ class UseFormulaBypassTest(unittest.TestCase):
                 calls.append(request["method"])
                 return {"ok": True, "data": {"pong": True}}
 
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client = BigQmtRpcClient(account_id="acct", valkey_config={"host": "127.0.0.1"})
         client.transport_name = "mysql"
         client._transport_instance = _FakeTransport()
         client._formula_router_instance = _FakeRouter()
@@ -913,7 +913,7 @@ class FormulaStaleFailoverTest(unittest.TestCase):
         router.fresh_bar = self.fresh_bar
         router._bar = self._bar
         transport = _Transport()
-        client = BigQmtRpcClient(account_id="acct", redis_config={"host": "127.0.0.1"})
+        client = BigQmtRpcClient(account_id="acct", valkey_config={"host": "127.0.0.1"})
         client.transport_name = "zmq"
         client._transport_instance = transport
         client._formula_router_instance = router

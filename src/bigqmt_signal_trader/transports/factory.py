@@ -1,22 +1,22 @@
 """Transport factory: pick a transport backend by name.
 
 ``build_transport(name, config, ...)`` returns a ready transport instance.
-``name`` is the ``rpc.transport`` config value (default ``"redis"``). Unknown
+``name`` is the ``rpc.transport`` config value (default ``"valkey"``). Unknown
 names raise :class:`ValueError`.
 """
 
 from .base import RpcTransport
-from .redis_transport import RedisTransport
+from .valkey_transport import ValkeyTransport
 
 
-KNOWN_TRANSPORTS = ("redis", "serial", "shm")
+KNOWN_TRANSPORTS = ("valkey", "serial", "shm")
 
 
 def transport_supports_drain(name):
     """这个传输自己实现了 drain_request_queue 吗（不构造实例）。
 
     调用方要判断「能不能走 adjust 轮询」，而**构造实例是有副作用的** ——
-    建 redis 连接、起线程。用它做探测污染过测试环境一次，所以这里只导入
+    建 valkey 连接、起线程。用它做探测污染过测试环境一次，所以这里只导入
     模块、比对类属性，不 build。
 
     工厂是「有哪些传输」的唯一来源，这个判断也该在这里，而不是让调用方
@@ -24,10 +24,10 @@ def transport_supports_drain(name):
     """
     from .base import RpcTransport
 
-    name = str(name or "redis").lower()
+    name = str(name or "").lower()
     try:
-        if name in ("redis", "", "default"):
-            from .redis_transport import RedisTransport as cls
+        if name in ("valkey", "", "default"):
+            from .valkey_transport import ValkeyTransport as cls
         elif name == "serial":
             from .serial_transport import SerialTransport as cls
         else:
@@ -48,15 +48,15 @@ def build_transport(
     """Construct a transport by name.
 
     ``config`` is the ``rpc`` config dict.
-    Redis reads the legacy keys
-    (``request_channel_template`` etc.) plus ``redis_client``/
-    ``response_redis_client`` that the caller may inject.
+    Valkey reads the channel and queue keys
+    (``request_channel_template`` etc.) plus ``valkey_client``/
+    ``response_valkey_client`` that the caller may inject.
     """
-    config = dict(config or {})
-    name = str(name or "redis").lower()
+    config = config or {}
+    name = str(name or "").lower()
 
-    if name in ("redis", "", "default"):
-        return _build_redis(config, account_id, print_prefix)
+    if name in ("valkey", "", "default"):
+        return _build_valkey(config, account_id, print_prefix)
     if name == "serial":
         from .serial_transport import SerialTransport
 
@@ -69,20 +69,20 @@ def build_transport(
     )
 
 
-def _build_redis(config, account_id, print_prefix):
-    redis_client = config.get("redis_client")
-    if redis_client is None:
-        from ..adapters.redis_common import build_redis_client
+def _build_valkey(config, account_id, print_prefix):
+    valkey_client = config.get("valkey_client")
+    if valkey_client is None:
+        from ..adapters.valkey_common import build_valkey_client
 
-        redis_config = dict(config.get("redis") or {})
-        redis_client = build_redis_client(redis_config)
-    response_redis_client = config.get("response_redis_client")
-    if response_redis_client is None:
-        response_redis_client = redis_client
-    return RedisTransport(
-        redis_client,
+        valkey_config = dict(config.get("valkey") or {})
+        valkey_client = build_valkey_client(valkey_config)
+    response_valkey_client = config.get("response_valkey_client")
+    if response_valkey_client is None:
+        response_valkey_client = valkey_client
+    return ValkeyTransport(
+        valkey_client,
         account_id=account_id,
-        response_redis_client=response_redis_client,
+        response_valkey_client=response_valkey_client,
         request_channel_template=config.get(
             "request_channel_template", "bigqmt:rpc:req:{account_id}"
         ),

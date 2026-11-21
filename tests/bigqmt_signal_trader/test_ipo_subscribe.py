@@ -206,7 +206,7 @@ class MappingShapeTest(unittest.TestCase):
     """
 
     def test_the_row_normaliser_destroys_a_mapping(self):
-        from bigqmt_signal_trader.redis_rpc import _normalize_detail_rows
+        from bigqmt_signal_trader.valkey_rpc import _normalize_detail_rows
 
         ipos = {"730001": {"issuePrice": 16.0, "maxPurchaseNum": 12000},
                 "001234": {"issuePrice": 8.5, "maxPurchaseNum": 5000}}
@@ -215,7 +215,7 @@ class MappingShapeTest(unittest.TestCase):
         self.assertEqual(wrecked, [{}, {}])   # this is why it needed its own path
 
     def test_the_mapping_path_keeps_codes_and_values(self):
-        from bigqmt_signal_trader.redis_rpc import _normalize_mapping_value
+        from bigqmt_signal_trader.valkey_rpc import _normalize_mapping_value
 
         ipos = {"730001": {"name": "x", "issuePrice": 16.0, "maxPurchaseNum": 12000}}
         kept = dict((k, _normalize_mapping_value(v)) for k, v in ipos.items())
@@ -225,7 +225,7 @@ class MappingShapeTest(unittest.TestCase):
         self.assertEqual(kept["730001"]["maxPurchaseNum"], 12000)
 
     def test_nested_values_survive(self):
-        from bigqmt_signal_trader.redis_rpc import _normalize_mapping_value
+        from bigqmt_signal_trader.valkey_rpc import _normalize_mapping_value
 
         value = _normalize_mapping_value({"a": [1, 2, {"b": "c"}], "d": None})
 

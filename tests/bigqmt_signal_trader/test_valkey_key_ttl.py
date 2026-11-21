@@ -1,5 +1,5 @@
 # coding: utf-8
-"""#213：redis 里不留没用的键。
+"""#213：valkey 里不留没用的键。
 
 线上统计（账号 8886800503，休市期间）暴露三件事：
 
@@ -19,12 +19,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader import exec_events
-from bigqmt_signal_trader.adapters.position_sync_redis import RedisPositionSyncSink
-from bigqmt_signal_trader.adapters.redis_common import EVENT_STREAM_TTL_SECONDS
-from bigqmt_signal_trader.adapters import signal_redis
+from bigqmt_signal_trader.adapters.position_sync_valkey import ValkeyPositionSyncSink
+from bigqmt_signal_trader.adapters.valkey_common import EVENT_STREAM_TTL_SECONDS
+from bigqmt_signal_trader.adapters import signal_valkey
 
 
-class _Redis(object):
+class _Valkey(object):
     """记下所有写操作，好断言「写了什么」和「没写什么」。"""
 
     def __init__(self):
@@ -81,14 +81,14 @@ class UnchangedSnapshotIsNotRewrittenTest(unittest.TestCase):
     """publish() 每个 adjust tick 被调一次 —— 没变就不该写。"""
 
     def test_first_publish_writes(self):
-        r = _Redis()
-        RedisPositionSyncSink(r).publish(_Snapshot())
+        r = _Valkey()
+        ValkeyPositionSyncSink(r).publish(_Snapshot())
         self.assertEqual(len(r.setexs), 1)
         self.assertEqual(len(r.xadds), 1)
 
     def test_identical_snapshot_writes_nothing_more(self):
-        r = _Redis()
-        sink = RedisPositionSyncSink(r)
+        r = _Valkey()
+        sink = ValkeyPositionSyncSink(r)
         for _ in range(50):
             sink.publish(_Snapshot())
         self.assertEqual(len(r.setexs), 1, "重复快照又写了 %d 次" % len(r.setexs))
@@ -96,8 +96,8 @@ class UnchangedSnapshotIsNotRewrittenTest(unittest.TestCase):
 
     def test_the_string_key_is_still_kept_alive_while_silent(self):
         """string 那份带 120 秒 TTL —— 静默期要续期，否则持仓查询会落空。"""
-        r = _Redis()
-        sink = RedisPositionSyncSink(r)
+        r = _Valkey()
+        sink = ValkeyPositionSyncSink(r)
         sink.publish(_Snapshot())
         sink.publish(_Snapshot())
         self.assertIn(("bigqmt:positions:acct", 120), r.expires)
@@ -109,8 +109,8 @@ class UnchangedSnapshotIsNotRewrittenTest(unittest.TestCase):
         1 条/秒。实测相邻两条之间唯一不同的字段就是 updated_at，
         account_id / reason / asset / positions 全部相同（#213）。
         """
-        r = _Redis()
-        sink = RedisPositionSyncSink(r)
+        r = _Valkey()
+        sink = ValkeyPositionSyncSink(r)
         for second in range(30, 60):
             sink.publish(_Snapshot(updated_at="2026-09-07 09:30:%02d" % second))
         self.assertEqual(len(r.xadds), 1,
@@ -118,8 +118,8 @@ class UnchangedSnapshotIsNotRewrittenTest(unittest.TestCase):
         self.assertEqual(len(r.setexs), 1)
 
     def test_a_real_change_writes_again(self):
-        r = _Redis()
-        sink = RedisPositionSyncSink(r)
+        r = _Valkey()
+        sink = ValkeyPositionSyncSink(r)
         sink.publish(_Snapshot(volume=100))
         sink.publish(_Snapshot(volume=100))
         sink.publish(_Snapshot(volume=200))
@@ -128,8 +128,8 @@ class UnchangedSnapshotIsNotRewrittenTest(unittest.TestCase):
 
     def test_changing_back_and_forth_is_not_suppressed(self):
         """只比对上一次，不能因为「见过」就永久跳过。"""
-        r = _Redis()
-        sink = RedisPositionSyncSink(r)
+        r = _Valkey()
+        sink = ValkeyPositionSyncSink(r)
         for volume in (100, 200, 100, 200):
             sink.publish(_Snapshot(volume=volume))
         self.assertEqual(len(r.xadds), 4)
@@ -140,15 +140,15 @@ class EmptyAccountIdTest(unittest.TestCase):
 
     def test_empty_account_id_writes_nothing(self):
         for bad in ("", "   ", None):
-            r = _Redis()
-            RedisPositionSyncSink(r).publish(_Snapshot(account_id=bad))
+            r = _Valkey()
+            ValkeyPositionSyncSink(r).publish(_Snapshot(account_id=bad))
             self.assertEqual(r.xadds, [], repr(bad))
             self.assertEqual(r.setexs, [], repr(bad))
             self.assertEqual(r.sets, [], repr(bad))
 
     def test_a_real_account_id_still_writes(self):
-        r = _Redis()
-        RedisPositionSyncSink(r).publish(_Snapshot(account_id="8886800503"))
+        r = _Valkey()
+        ValkeyPositionSyncSink(r).publish(_Snapshot(account_id="8886800503"))
         self.assertEqual(r.xadds[0][0], "bigqmt:position_events:8886800503")
 
 
@@ -156,8 +156,8 @@ class EveryStreamGetsATtlTest(unittest.TestCase):
     """maxlen 挡不住键本身永远不消失。"""
 
     def test_position_event_stream_is_given_a_ttl(self):
-        r = _Redis()
-        RedisPositionSyncSink(r).publish(_Snapshot())
+        r = _Valkey()
+        ValkeyPositionSyncSink(r).publish(_Snapshot())
         self.assertIn(("bigqmt:position_events:acct", EVENT_STREAM_TTL_SECONDS),
                       r.expires)
 
@@ -166,7 +166,7 @@ class EveryStreamGetsATtlTest(unittest.TestCase):
                         exec_events.publish_trade_event,
                         exec_events.publish_order_error_event,
                         exec_events.publish_cancel_error_event):
-            r = _Redis()
+            r = _Valkey()
             publish(r, "acct", {"kind": "x"})
             self.assertEqual(len(r.xadds), 1, publish.__name__)
             stream_key = r.xadds[0][0]
@@ -174,8 +174,8 @@ class EveryStreamGetsATtlTest(unittest.TestCase):
                           "%s 写了 %s 却没给它过期时间" % (publish.__name__, stream_key))
 
     def test_signal_stream_is_given_a_ttl(self):
-        r = _Redis()
-        signal_redis.push_trade_signal(r, {"account_id": "acct", "code": "600000.SH"})
+        r = _Valkey()
+        signal_valkey.push_trade_signal(r, {"account_id": "acct", "code": "600000.SH"})
         self.assertEqual(len(r.xadds), 1)
         self.assertIn((r.xadds[0][0], EVENT_STREAM_TTL_SECONDS), r.expires)
 
@@ -185,7 +185,7 @@ class EveryStreamGetsATtlTest(unittest.TestCase):
 
     def test_a_failing_expire_never_breaks_the_write(self):
         """续期是清理，不是主路径 —— 它失败不能让事件丢掉。"""
-        class _Exploding(_Redis):
+        class _Exploding(_Valkey):
             def expire(self, key, ttl):
                 raise RuntimeError("no expire here")
 

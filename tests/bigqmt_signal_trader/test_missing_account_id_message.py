@@ -75,7 +75,7 @@ class MissingAccountIdMessageTest(unittest.TestCase):
         not -- telling the reader to check sys.path would send them the wrong
         way."""
         module = type(sys)("fake_client_config")
-        module.BIGQMT_REDIS_CONFIG = {"host": "127.0.0.1"}
+        module.BIGQMT_CONFIG = {"host": "127.0.0.1"}
         sys.modules["fake_client_config"] = module
         os.environ[xtquant_compat.CLIENT_CONFIG_MODULE_ENV] = "fake_client_config"
         try:

@@ -1,6 +1,6 @@
 """根据配置装配 SignalTradingApp。
 
-当前第一版只提供安全的空信号 + dry-run 默认实现，后续再接 Redis/MySQL/大 QMT
+当前第一版只提供安全的空信号 + dry-run 默认实现，后续再接 Valkey/MySQL/大 QMT
 真实 adapter。这样大 QMT 运行文件可以先加载和响应调度，不会误发真实委托。
 """
 
@@ -34,7 +34,7 @@ class EmptyPositionProvider:
 
 
 class NoopPositionSyncSink:
-    """The sink non-redis transports fall back to (redis gets the real one).
+    """The sink non-valkey transports fall back to (valkey gets the real one).
 
     Nothing in src reads ``snapshots``; it exists so the app has somewhere to
     publish. A plain append grew without bound -- app.tick() publishes on
@@ -84,48 +84,48 @@ def build_app(context_info=None, config=None):
     order_gateway = config.get("order_gateway")
     position_sync_sink = config.get("position_sync_sink")
     state_store = config.get("state_store")
-    redis_client = config.get("redis_client")
+    valkey_client = config.get("valkey_client")
 
-    if source_type == "redis" or state_type == "redis" or position_sync_type == "redis":
-        from .adapters.redis_common import build_redis_client
+    if source_type == "valkey" or state_type == "valkey" or position_sync_type == "valkey":
+        from .adapters.valkey_common import build_valkey_client
 
-        redis_client = redis_client or build_redis_client(config.get("redis") or {})
+        valkey_client = valkey_client or build_valkey_client(config.get("valkey") or {})
 
-    if source_type == "redis":
-        from .adapters.signal_redis import RedisStreamSignalSource
+    if source_type == "valkey":
+        from .adapters.signal_valkey import ValkeyStreamSignalSource
 
-        redis_cfg = config.get("redis") or {}
-        signal_source = signal_source or RedisStreamSignalSource(
-            redis_client=redis_client,
-            stream_key_template=redis_cfg.get("stream_key_template", "bigqmt:signals:{account_id}"),
-            group_name=redis_cfg.get("group_name", "bigqmt-signal-trader"),
-            consumer_name=redis_cfg.get("consumer_name", "bigqmt-consumer"),
-            block_ms=int(redis_cfg.get("block_ms", 0)),
+        valkey_cfg = config.get("valkey") or {}
+        signal_source = signal_source or ValkeyStreamSignalSource(
+            valkey_client=valkey_client,
+            stream_key_template=valkey_cfg.get("stream_key_template", "bigqmt:signals:{account_id}"),
+            group_name=valkey_cfg.get("group_name", "bigqmt-signal-trader"),
+            consumer_name=valkey_cfg.get("consumer_name", "bigqmt-consumer"),
+            block_ms=int(valkey_cfg.get("block_ms", 0)),
         )
 
-    if state_type == "redis" or (source_type == "redis" and state_store is None):
-        from .adapters.state_redis import RedisStateStore
+    if state_type == "valkey" or (source_type == "valkey" and state_store is None):
+        from .adapters.state_valkey import ValkeyStateStore
 
-        redis_cfg = config.get("redis") or {}
-        state_store = state_store or RedisStateStore(
-            redis_client=redis_client,
+        valkey_cfg = config.get("valkey") or {}
+        state_store = state_store or ValkeyStateStore(
+            valkey_client=valkey_client,
             account_id=account_id,
-            claim_key_template=redis_cfg.get("claim_key_template", "bigqmt:signal_claim:{account_id}:{signal_id}"),
-            status_key_template=redis_cfg.get("status_key_template", "bigqmt:signal_status:{account_id}:{signal_id}"),
-            claim_ttl_seconds=int(redis_cfg.get("claim_ttl_seconds", 3600)),
-            status_ttl_seconds=int(redis_cfg.get("status_ttl_seconds", 86400)),
+            claim_key_template=valkey_cfg.get("claim_key_template", "bigqmt:signal_claim:{account_id}:{signal_id}"),
+            status_key_template=valkey_cfg.get("status_key_template", "bigqmt:signal_status:{account_id}:{signal_id}"),
+            claim_ttl_seconds=int(valkey_cfg.get("claim_ttl_seconds", 3600)),
+            status_ttl_seconds=int(valkey_cfg.get("status_ttl_seconds", 86400)),
         )
 
-    if position_sync_type == "redis":
-        from .adapters.position_sync_redis import RedisPositionSyncSink
+    if position_sync_type == "valkey":
+        from .adapters.position_sync_valkey import ValkeyPositionSyncSink
 
-        redis_cfg = config.get("redis") or {}
-        position_sync_sink = position_sync_sink or RedisPositionSyncSink(
-            redis_client=redis_client,
-            key_template=redis_cfg.get("position_key_template", "bigqmt:positions:{account_id}"),
-            event_stream_template=redis_cfg.get("position_event_stream_template", "bigqmt:position_events:{account_id}"),
-            ttl_seconds=int(redis_cfg.get("position_ttl_seconds", 120)),
-            publish_events=_config_bool(redis_cfg.get("position_publish_events"), True),
+        valkey_cfg = config.get("valkey") or {}
+        position_sync_sink = position_sync_sink or ValkeyPositionSyncSink(
+            valkey_client=valkey_client,
+            key_template=valkey_cfg.get("position_key_template", "bigqmt:positions:{account_id}"),
+            event_stream_template=valkey_cfg.get("position_event_stream_template", "bigqmt:position_events:{account_id}"),
+            ttl_seconds=int(valkey_cfg.get("position_ttl_seconds", 120)),
+            publish_events=_config_bool(valkey_cfg.get("position_publish_events"), True),
         )
 
     if mode == "bigqmt":

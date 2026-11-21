@@ -1,15 +1,15 @@
 # coding: utf-8
-"""No-Redis deployments must still attribute strategy_name (issue #156 / #133).
+"""No-Valkey deployments must still attribute strategy_name (issue #156 / #133).
 
 QMT's ORDER/DEAL rows never carry the strategy name -- the terminal filters
 by it but does not report it. The bridge answers that with an identity store
-keyed by remark, but the store is Redis, so a zmq single-file deployment (no
-Redis anywhere) read strategy_name as "" forever.
+keyed by remark, but the store is Valkey, so a zmq single-file deployment (no
+Valkey anywhere) read strategy_name as "" forever.
 
 The handlers now keep an in-process journal as well: submit writes
 (account, remark) -> strategy_name, query reads it back for rows QMT could
-not name. Redis remains the primary store (survives restarts, covers other
-processes); the local journal is the no-Redis floor.
+not name. Valkey remains the primary store (survives restarts, covers other
+processes); the local journal is the no-Valkey floor.
 """
 
 import os
@@ -22,9 +22,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.models import OrderSnapshot
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
-from test_redis_rpc import (  # noqa: E402  -- reuse the established fakes
+from test_valkey_rpc import (  # noqa: E402  -- reuse the established fakes
     FakeMarketData,
     FakePositionProvider,
 )
@@ -121,7 +121,7 @@ class LocalIdentityJournalTest(unittest.TestCase):
         the QMT-side strategy's registered name (the bridge process), never
         the caller's -- so a submit-time identity record (this journal) is the
         authoritative one and WINS over the row's value."""
-        gateway = _QueryGateway([_row(user_order_id="sig-1", strategy_name="from_redis")])
+        gateway = _QueryGateway([_row(user_order_id="sig-1", strategy_name="from_valkey")])
         handlers = _handlers(gateway)
         _submit(handlers, "sig-1", "from_local")
 
@@ -173,33 +173,33 @@ class FilteredQueryNamesRowsTest(unittest.TestCase):
 class ProbeOrderIdentityTest(unittest.TestCase):
     """The probe must answer each link of the backfill chain (#156)."""
 
-    def test_probe_reports_redis_and_local_hits(self):
+    def test_probe_reports_valkey_and_local_hits(self):
         gateway = _QueryGateway([])
         handlers = _handlers(gateway)
 
-        class FakeRedis(object):
+        class FakeValkey(object):
             def get(self, key):
                 return b'{"strategy_name": "TEST"}' if key.endswith(":sig-1") else None
 
-        handlers.order_identity_redis_client = FakeRedis()
+        handlers.order_identity_valkey_client = FakeValkey()
         handlers._remember_order_identity_local("acct", "sig-2", "local_strat")
 
         out = handlers._handle_probe_order_identity({"remark": "sig-1"})
-        self.assertTrue(out["identity_redis_wired"])
-        self.assertTrue(out["redis_hit"])
+        self.assertTrue(out["identity_valkey_wired"])
+        self.assertTrue(out["valkey_hit"])
         self.assertFalse(out["local_hit"])
         self.assertEqual(out["identity_key"],
                          "bigqmt:order_identity:acct:sig-1")
 
         out = handlers._handle_probe_order_identity({"remark": "sig-2"})
-        self.assertFalse(out["redis_hit"])
+        self.assertFalse(out["valkey_hit"])
         self.assertTrue(out["local_hit"])
         self.assertEqual(out["local_strategy_name"], "local_strat")
 
-    def test_probe_without_redis_says_so(self):
+    def test_probe_without_valkey_says_so(self):
         handlers = _handlers(_QueryGateway([]))
         out = handlers._handle_probe_order_identity({"remark": "sig-x"})
-        self.assertFalse(out["identity_redis_wired"])
+        self.assertFalse(out["identity_valkey_wired"])
         self.assertFalse(out["local_hit"])
 
 

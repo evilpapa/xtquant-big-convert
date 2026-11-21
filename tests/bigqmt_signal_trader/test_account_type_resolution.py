@@ -7,7 +7,7 @@ returns an all-zero asset row. So getting this setting wrong shows up as
 Three places looked plausible and only one worked:
 
   BIGQMT_ACCOUNT_TYPE in the local config      worked
-  account_type inside BIGQMT_REDIS_CONFIG      silently ignored
+  account_type inside BIGQMT_CONFIG      silently ignored
   ACCOUNT_TYPE in the runtime module           silently overwritten, because
                                                the shipped example config sets
                                                BIGQMT_ACCOUNT_TYPE = "STOCK"
@@ -31,7 +31,7 @@ sys.path.insert(0, SRC)
 PROBE = (
     "import sys\n"
     "sys.path.insert(0, %r)\n"
-    "import bigqmt_signal_trader_redis_rpc_runtime as rt\n"
+    "import bigqmt_signal_trader_valkey_rpc_runtime as rt\n"
     "print('RESOLVED|%%s|%%s' %% (rt.ACCOUNT_TYPE, rt.ACCOUNT_TYPE_SOURCE))\n"
 ) % SRC
 
@@ -39,7 +39,7 @@ PROBE = (
 def resolve(config_source):
     """Import the runtime in a fresh interpreter against a generated config."""
     workdir = tempfile.mkdtemp()
-    with io.open(os.path.join(workdir, "bigqmt_signal_trader_local_config.py"),
+    with io.open(os.path.join(workdir, "bigqmt_signal_trader_qmt_config.py"),
                  "w", encoding="utf-8") as handle:
         handle.write(config_source)
     script = os.path.join(workdir, "probe.py")
@@ -65,22 +65,22 @@ class AccountTypeSourcesTest(unittest.TestCase):
     def test_documented_variable_wins(self):
         account_type, source, _ = resolve(
             BASE + 'BIGQMT_ACCOUNT_TYPE = "CREDIT"\n'
-                   'BIGQMT_REDIS_CONFIG = {"host": "127.0.0.1"}\n')
+                   'BIGQMT_CONFIG = {"host": "127.0.0.1"}\n')
 
         self.assertEqual(account_type, "CREDIT")
         self.assertEqual(source, "BIGQMT_ACCOUNT_TYPE")
 
-    def test_redis_config_key_is_honoured(self):
+    def test_valkey_config_key_is_honoured(self):
         """Where the reporter put it. It used to be read by nothing."""
         account_type, source, _ = resolve(
-            BASE + 'BIGQMT_REDIS_CONFIG = {"host": "1", "account_type": "CREDIT"}\n')
+            BASE + 'BIGQMT_CONFIG = {"host": "1", "account_type": "CREDIT"}\n')
 
         self.assertEqual(account_type, "CREDIT")
-        self.assertIn("BIGQMT_REDIS_CONFIG", source)
+        self.assertIn("BIGQMT_CONFIG", source)
 
     def test_nothing_set_falls_back_to_stock(self):
         account_type, source, _ = resolve(
-            BASE + 'BIGQMT_REDIS_CONFIG = {"host": "127.0.0.1"}\n')
+            BASE + 'BIGQMT_CONFIG = {"host": "127.0.0.1"}\n')
 
         self.assertEqual(account_type, "STOCK")
         self.assertEqual(source, "default")
@@ -88,7 +88,7 @@ class AccountTypeSourcesTest(unittest.TestCase):
     def test_value_is_normalised(self):
         account_type, _source, _ = resolve(
             BASE + 'BIGQMT_ACCOUNT_TYPE = "  credit  "\n'
-                   'BIGQMT_REDIS_CONFIG = {}\n')
+                   'BIGQMT_CONFIG = {}\n')
 
         self.assertEqual(account_type, "CREDIT")
 
@@ -96,7 +96,7 @@ class AccountTypeSourcesTest(unittest.TestCase):
         """An older local config must not lose its account id just because it
         predates BIGQMT_ACCOUNT_TYPE."""
         _account_type, _source, output = resolve(
-            BASE + 'BIGQMT_REDIS_CONFIG = {"host": "10.0.0.5"}\n')
+            BASE + 'BIGQMT_CONFIG = {"host": "10.0.0.5"}\n')
 
         self.assertNotIn("Traceback", output)
 
@@ -107,7 +107,7 @@ class ResolutionIsVisibleTest(unittest.TestCase):
     def test_the_resolved_type_and_its_source_are_printed(self):
         _account_type, _source, output = resolve(
             BASE + 'BIGQMT_ACCOUNT_TYPE = "CREDIT"\n'
-                   'BIGQMT_REDIS_CONFIG = {}\n')
+                   'BIGQMT_CONFIG = {}\n')
 
         self.assertIn("account_type=CREDIT", output)
         self.assertIn("BIGQMT_ACCOUNT_TYPE", output)
@@ -115,17 +115,17 @@ class ResolutionIsVisibleTest(unittest.TestCase):
     def test_conflicting_settings_are_called_out(self):
         _account_type, _source, output = resolve(
             BASE + 'BIGQMT_ACCOUNT_TYPE = "CREDIT"\n'
-                   'BIGQMT_REDIS_CONFIG = {"account_type": "STOCK"}\n')
+                   'BIGQMT_CONFIG = {"account_type": "STOCK"}\n')
 
         self.assertIn("忽略以下来源中冲突", output)
-        self.assertIn("BIGQMT_REDIS_CONFIG", output)
+        self.assertIn("BIGQMT_CONFIG", output)
 
     def test_the_shipped_default_is_not_reported_as_a_conflict(self):
         """ACCOUNT_TYPE ships as STOCK, so every credit setup would otherwise
         report a phantom conflict with it."""
         _account_type, _source, output = resolve(
             BASE + 'BIGQMT_ACCOUNT_TYPE = "CREDIT"\n'
-                   'BIGQMT_REDIS_CONFIG = {}\n')
+                   'BIGQMT_CONFIG = {}\n')
 
         self.assertNotIn("忽略以下来源中冲突", output)
 

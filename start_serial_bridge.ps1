@@ -1,19 +1,19 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  启动 bigqmt-serial-bridge：Windows 串口 <-> Redis 桥接进程。
+  启动 bigqmt-serial-bridge：Windows 串口 <-> Valkey 桥接进程。
 
 .DESCRIPTION
-  链路：QMT 模型交易(如 COM10) <-com0com-> 本脚本的串口(如 COM11) <-串口帧-> 桥接 <-Redis-> 策略。
+  链路：QMT 模型交易(如 COM10) <-com0com-> 本脚本的串口(如 COM11) <-串口帧-> 桥接 <-Valkey-> 策略。
 
-  默认从 bigqmt_signal_trader_local_config.py 读取 QMT 侧在用的 Redis 地址，
+  默认从 bigqmt_signal_trader_qmt_config.py 读取 QMT 侧在用的 Valkey 地址，
   避免桥接连到 127.0.0.1 而 QMT 连到别的机器 —— 这是
   "ERROR Bridge stopped (TimeoutError)" 最常见的原因。
-  启动前预检 Redis 连通性和串口能否打开；-CheckOnly 只预检不启动。
+  启动前预检 Valkey 连通性和串口能否打开；-CheckOnly 只预检不启动。
 
-.PARAMETER RedisUrl
-  redis://[user:password@]host:port/db。
-  优先级：本参数 > -LocalConfig 的 BIGQMT_REDIS_CONFIG > 环境变量 BIGQMT_SERIAL_REDIS_URL。
+.PARAMETER ValkeyUrl
+  valkey://[user:password@]host:port/db，也接受 redis://。
+  优先级：本参数 > -LocalConfig 的 BIGQMT_CONFIG > 环境变量 BIGQMT_SERIAL_VALKEY_URL。
 
 .PARAMETER Account
   资金账号。默认读取环境变量 BIGQMT_ACCOUNT_ID；可用本参数覆盖。
@@ -30,14 +30,14 @@
 .PARAMETER LocalConfig
   QMT 侧本地配置文件；默认依次在脚本目录、脚本目录\src、当前目录查找。
 
-.PARAMETER RedisPubsub
-  客户端用 Redis pub/sub 发请求时加上（等价 --redis-pubsub）。
+.PARAMETER ValkeyPubsub
+  客户端用 Valkey pub/sub 发请求时加上（等价 --valkey-pubsub）。
 
 .PARAMETER LogFile
   输出同时追加写入该文件。
 
 .PARAMETER CheckOnly
-  只预检账号 / Redis / 串口，不启动桥接。
+  只预检账号 / Valkey / 串口，不启动桥接。
 
 .PARAMETER Force
   预检失败时仍然启动（仅供确认桥接自身报错用，一般不要加）。
@@ -56,20 +56,20 @@
 
 .EXAMPLE
   .\start_serial_bridge.ps1 -Port COM11 -Baudrate 921600 `
-      -RedisUrl redis://192.168.2.112:6379/5 -RedisPubsub
+      -ValkeyUrl valkey://192.168.2.112:6379/5 -ValkeyPubsub
 
 .NOTES
   Ctrl+C 退出。桥接停止后 QMT 侧串口会话失效，需重启 QMT 策略；
-  已从 Redis 取出的请求不会重放，重启前先查委托和成交。
+  已从 Valkey 取出的请求不会重放，重启前先查委托和成交。
 #>
 param(
-    [string]$RedisUrl = "",
+    [string]$ValkeyUrl = "",
     [string]$Account = "",
     [string]$Port = "COM11",
     [int]$Baudrate = 921600,
     [int]$MaxFrameBytes = 8388608,
     [string]$LocalConfig = "",
-    [switch]$RedisPubsub,
+    [switch]$ValkeyPubsub,
     [string]$LogFile = "",
     [switch]$CheckOnly,
     [switch]$Force,
@@ -101,17 +101,18 @@ function Find-LocalConfig([string]$Explicit) {
     }
     $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
     foreach ($candidate in @(
-            (Join-Path $scriptDir "bigqmt_signal_trader_local_config.py"),
-            (Join-Path $scriptDir "src\bigqmt_signal_trader_local_config.py"),
-            (Join-Path (Get-Location).Path "bigqmt_signal_trader_local_config.py"))) {
+            (Join-Path $scriptDir "bigqmt_signal_trader_qmt_config.py"),
+            (Join-Path $scriptDir "src\bigqmt_signal_trader_qmt_config.py"),
+            (Join-Path (Get-Location).Path "bigqmt_signal_trader_qmt_config.py"))) {
         if (Test-Path -LiteralPath $candidate) { return (Resolve-Path -LiteralPath $candidate).Path }
     }
     return ""
 }
 
-function Get-RedisConfigBlock([string]$Text) {
+function Get-ValkeyConfigBlock([string]$Text) {
     if (-not $Text) { return "" }
-    $start = $Text.IndexOf("BIGQMT_REDIS_CONFIG")
+    $start = $Text.IndexOf("BIGQMT_CONFIG")
+    if ($start -lt 0) { $start = $Text.IndexOf("BIGQMT_CONFIG") }
     if ($start -lt 0) { return "" }
     $open = $Text.IndexOf("{", $start)
     if ($open -lt 0) { return "" }
@@ -135,7 +136,9 @@ function Get-ConfigValue([string]$Block, [string]$Key) {
     return $m.Groups["value"].Value.Trim().Trim([char]0x22, [char]0x27).Trim()
 }
 
-function New-RedisUrlFromBlock([string]$Block) {
+function New-ValkeyUrlFromBlock([string]$Block) {
+    $url = Get-ConfigValue $Block "url"
+    if ($url) { return $url }
     $h = Get-ConfigValue $Block "host"
     if (-not $h) { return "" }
     $p = Get-ConfigValue $Block "port"; if (-not $p) { $p = "6379" }
@@ -147,10 +150,10 @@ function New-RedisUrlFromBlock([string]$Block) {
         if ($u) { $auth = [uri]::EscapeDataString($u) + ":" + [uri]::EscapeDataString($w) + "@" }
         else { $auth = ":" + [uri]::EscapeDataString($w) + "@" }
     }
-    return ("redis://" + $auth + $h + ":" + $p + "/" + $d)
+    return ("valkey://" + $auth + $h + ":" + $p + "/" + $d)
 }
 
-function Format-RedisUrl([string]$Url) {
+function Format-ValkeyUrl([string]$Url) {
     # 日志里隐藏用户名/密码
     return [regex]::Replace($Url, "//[^/@]*@", "//***@")
 }
@@ -160,15 +163,15 @@ function Resolve-BridgeEntry([string]$Explicit) {
     if ($Explicit) {
         $leaf = [System.IO.Path]::GetFileName($Explicit)
         if ($leaf -match "^pythonw?([0-9]+(\.[0-9]+)?)?\.exe$") {
-            return @{ Exe = $Explicit; Prefix = @("-m", "bigqmt_signal_trader.serial_redis_bridge") }
+            return @{ Exe = $Explicit; Prefix = @("-m", "bigqmt_signal_trader.serial_valkey_bridge") }
         }
         return @{ Exe = $Explicit; Prefix = @() }
     }
     $cmd = Get-Command "bigqmt-serial-bridge" -ErrorAction SilentlyContinue
     if ($cmd) { return @{ Exe = $cmd.Source; Prefix = @() } }
     $py = Get-Command "python" -ErrorAction SilentlyContinue
-    if ($py) { return @{ Exe = $py.Source; Prefix = @("-m", "bigqmt_signal_trader.serial_redis_bridge") } }
-    throw "找不到 bigqmt-serial-bridge，也没有 python。请先 pip install -e . 或 pip install `"xtquant-big-convert[redis,serial]`"。"
+    if ($py) { return @{ Exe = $py.Source; Prefix = @("-m", "bigqmt_signal_trader.serial_valkey_bridge") } }
+    throw "找不到 bigqmt-serial-bridge，也没有 python。请先 pip install -e . 或 pip install `"xtquant-big-convert[valkey,serial]`"。"
 }
 
 function Resolve-Python($Entry) {
@@ -184,26 +187,26 @@ Say-Step "配置"
 
 $configPath = Find-LocalConfig $LocalConfig
 $configText = ""
-$redisBlock = ""
+$valkeyBlock = ""
 $configTransport = ""
 if ($configPath) {
     $configText = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
-    $redisBlock = Get-RedisConfigBlock $configText
-    $configTransport = Get-ConfigValue $redisBlock "transport"
+    $valkeyBlock = Get-ValkeyConfigBlock $configText
+    $configTransport = Get-ConfigValue $valkeyBlock "transport"
 }
 
-$redisSource = "命令行 -RedisUrl"
-if (-not $RedisUrl) {
-    $RedisUrl = New-RedisUrlFromBlock $redisBlock
-    if ($RedisUrl) { $redisSource = "本地配置" }
+$valkeySource = "命令行 -ValkeyUrl"
+if (-not $ValkeyUrl) {
+    $ValkeyUrl = New-ValkeyUrlFromBlock $valkeyBlock
+    if ($ValkeyUrl) { $valkeySource = "本地配置" }
 }
-if (-not $RedisUrl -and $env:BIGQMT_SERIAL_REDIS_URL) {
-    $RedisUrl = $env:BIGQMT_SERIAL_REDIS_URL
-    $redisSource = "环境变量 BIGQMT_SERIAL_REDIS_URL"
+if (-not $ValkeyUrl -and $env:BIGQMT_SERIAL_VALKEY_URL) {
+    $ValkeyUrl = $env:BIGQMT_SERIAL_VALKEY_URL
+    $valkeySource = "环境变量 BIGQMT_SERIAL_VALKEY_URL"
 }
-if (-not $RedisUrl) {
-    $RedisUrl = "redis://127.0.0.1:6379/5"
-    $redisSource = "内置默认值（未找到 QMT 侧配置）"
+if (-not $ValkeyUrl) {
+    $ValkeyUrl = "valkey://127.0.0.1:6379/5"
+    $valkeySource = "内置默认值（未找到 QMT 侧配置）"
 }
 
 $accountSource = "命令行 -Account"
@@ -221,15 +224,15 @@ $entry = Resolve-BridgeEntry $BridgeExe
 
 Write-Host ("   账号      : " + $Account + "   (" + $accountSource + ")")
 Write-Host ("   串口      : " + $Port + " @ " + $Baudrate + " baud, 帧上限 " + $MaxFrameBytes)
-Write-Host ("   Redis     : " + (Format-RedisUrl $RedisUrl) + "   (" + $redisSource + ")")
+Write-Host ("   Valkey     : " + (Format-ValkeyUrl $ValkeyUrl) + "   (" + $valkeySource + ")")
 Write-Host ("   本地配置  : " + $(if ($configPath) { $configPath } else { "未找到（可用 -LocalConfig 指定）" }))
 Write-Host ("   启动入口  : " + $entry.Exe + " " + (@($entry.Prefix) -join " "))
 
 if ($configTransport -and $configTransport -ne "serial") {
-    Say-Warn ('本地配置里的 transport 是 "' + $configTransport + '"，串口桥接需要 QMT 侧 BIGQMT_REDIS_CONFIG 写 "transport": "serial" 并配好 "serial": {"port": "COM10", "baudrate": 921600}。')
+    Say-Warn ('本地配置里的 transport 是 "' + $configTransport + '"，串口桥接需要 QMT 侧 BIGQMT_CONFIG 写 "transport": "serial" 并配好 "serial": {"port": "COM10", "baudrate": 921600}。')
 }
 elseif ($configPath -and -not $configTransport) {
-    Say-Warn '本地配置里没有 "transport": "serial"，QMT 侧默认仍走 Redis，不会用到本桥接。'
+    Say-Warn '本地配置里没有 "transport": "serial"，QMT 侧默认仍走 Valkey，不会用到本桥接。'
 }
 
 function Invoke-Capture([string]$Exe, [string[]]$Arguments) {
@@ -251,21 +254,21 @@ $pyExe = Resolve-Python $entry
 $preflightOk = $true
 
 if (-not $pyExe) {
-    Say-Warn "找不到 python，跳过 Redis/串口预检（桥接启动时会再检查一遍）。"
+    Say-Warn "找不到 python，跳过 Valkey/串口预检（桥接启动时会再检查一遍）。"
 }
 else {
-    $env:BIGQMT_PREFLIGHT_REDIS_URL = $RedisUrl
-    $probe = Invoke-Capture $pyExe @("-c", "import os, redis; redis.Redis.from_url(os.environ['BIGQMT_PREFLIGHT_REDIS_URL'], socket_timeout=2, socket_connect_timeout=2).ping(); print('ok')")
+    $env:BIGQMT_PREFLIGHT_VALKEY_URL = $ValkeyUrl
+    $probe = Invoke-Capture $pyExe @("-c", "import os; from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client; build_valkey_client(dict(url=os.environ['BIGQMT_PREFLIGHT_VALKEY_URL'], socket_timeout=2, socket_connect_timeout=2)).ping(); print('ok')")
     if ($probe.Code -eq 0) {
-        Say-Ok ("Redis 可达: " + (Format-RedisUrl $RedisUrl))
+        Say-Ok ("Valkey 可达: " + (Format-ValkeyUrl $ValkeyUrl))
     }
     else {
         $preflightOk = $false
-        Say-Fail ("Redis 不可达: " + (Format-RedisUrl $RedisUrl))
+        Say-Fail ("Valkey 不可达: " + (Format-ValkeyUrl $ValkeyUrl))
         Say-Probe $probe.Output
-        Say-Detail "桥接默认连 redis://127.0.0.1:6379/5，请用 -RedisUrl 或 BIGQMT_SERIAL_REDIS_URL 指向 QMT 策略用的同一个 Redis 和 db。"
-        if (($probe.Output -join "`n") -match "No module named 'redis'") {
-            Say-Detail '缺少 redis 客户端：pip install "xtquant-big-convert[redis,serial]"'
+        Say-Detail "桥接默认连 valkey://127.0.0.1:6379/5，请用 -ValkeyUrl 或 BIGQMT_SERIAL_VALKEY_URL 指向 QMT 策略用的同一个 Valkey 和 db。"
+        if (($probe.Output -join "`n") -match "No module named 'valkey'") {
+            Say-Detail '缺少 valkey 客户端：pip install "xtquant-big-convert[valkey,serial]"'
         }
     }
 
@@ -281,11 +284,11 @@ else {
         Say-Probe $probe.Output
         Say-Detail ("确认 com0com 已建立端口对（如 COM10 <-> COM11），端口名拼写正确，且 QMT 或另一个桥接没有占用 " + $Port + " 这一端。")
         if (($probe.Output -join "`n") -match "No module named 'serial'") {
-            Say-Detail '缺少 pyserial：pip install "xtquant-big-convert[redis,serial]"'
+            Say-Detail '缺少 pyserial：pip install "xtquant-big-convert[valkey,serial]"'
         }
     }
 
-    Remove-Item Env:\BIGQMT_PREFLIGHT_REDIS_URL -ErrorAction SilentlyContinue
+    Remove-Item Env:\BIGQMT_PREFLIGHT_VALKEY_URL -ErrorAction SilentlyContinue
     Remove-Item Env:\BIGQMT_PREFLIGHT_PORT -ErrorAction SilentlyContinue
     Remove-Item Env:\BIGQMT_PREFLIGHT_BAUD -ErrorAction SilentlyContinue
 }
@@ -311,18 +314,18 @@ $bridgeArgs = @($entry.Prefix) + @(
     "--baudrate", [string]$Baudrate,
     "--account-id", $Account,
     "--max-frame-bytes", [string]$MaxFrameBytes,
-    "--redis-url", $RedisUrl
+    "--valkey-url", $ValkeyUrl
 )
-if ($RedisPubsub) { $bridgeArgs += "--redis-pubsub" }
+if ($ValkeyPubsub) { $bridgeArgs += "--valkey-pubsub" }
 
 $printed = (@($entry.Exe) + $bridgeArgs) -join " "
-if ($RedisUrl -ne (Format-RedisUrl $RedisUrl)) { $printed = $printed.Replace($RedisUrl, (Format-RedisUrl $RedisUrl)) }
+if ($ValkeyUrl -ne (Format-ValkeyUrl $ValkeyUrl)) { $printed = $printed.Replace($ValkeyUrl, (Format-ValkeyUrl $ValkeyUrl)) }
 Write-Host ("   " + $printed)
 Write-Host "   Ctrl+C 停止。" -ForegroundColor DarkGray
 Write-Host ""
 
-# 同一个 Redis 也通过环境变量传一份，方便子进程/后续排错保持一致
-$env:BIGQMT_SERIAL_REDIS_URL = $RedisUrl
+# 同一个 Valkey 也通过环境变量传一份，方便子进程/后续排错保持一致
+$env:BIGQMT_SERIAL_VALKEY_URL = $ValkeyUrl
 $env:PYTHONUNBUFFERED = "1"
 
 if ($LogFile) {
@@ -356,8 +359,8 @@ if ($code -eq 0) {
 }
 else {
     Say-Fail ("桥接异常退出，exit=" + $code + "。对照上面的 ERROR 行：")
-    Say-Detail "Cannot reach Redis ...     Redis 地址/端口/db 不对，或 Redis 没启动、被防火墙挡住。"
+    Say-Detail "Cannot reach Valkey ...     Valkey 地址/端口/db 不对，或 Valkey 没启动、被防火墙挡住。"
     Say-Detail "Cannot open serial port ... 串口名不对，或被 QMT/另一个桥接占用，或 com0com 端口对不存在。"
-    Say-Detail "Bridge stopped ...         运行中串口或 Redis 断链；重启桥接和 QMT 策略，重启前先查委托和成交。"
+    Say-Detail "Bridge stopped ...         运行中串口或 Valkey 断链；重启桥接和 QMT 策略，重启前先查委托和成交。"
 }
 exit $code

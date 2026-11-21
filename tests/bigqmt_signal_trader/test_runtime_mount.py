@@ -1,4 +1,4 @@
-"""Mount-behavior tests for bigqmt_signal_trader_redis_rpc_runtime.
+"""Mount-behavior tests for bigqmt_signal_trader_valkey_rpc_runtime.
 
 QMT mounts a strategy file by exec'ing it into a namespace that carries the
 injected global functions (passorder, download_history_data, ...). Those
@@ -18,7 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-RUNTIME_FILE = os.path.join(SRC, "bigqmt_signal_trader_redis_rpc_runtime.py")
+RUNTIME_FILE = os.path.join(SRC, "bigqmt_signal_trader_valkey_rpc_runtime.py")
 
 
 def _noop(*args, **kwargs):
@@ -81,7 +81,7 @@ class RuntimeMountBehaviorTest(unittest.TestCase):
     def test_runtime_has_no_hand_copied_name_list(self):
         """The dedup itself: the runtime must capture via the strategy's
         helper and must not carry its own copy of the injected-name list
-        (bigqmt_no_redis/DRYRUN_no_redis.py drifted exactly this way and lost
+        (bigqmt_no_valkey/DRYRUN_no_valkey.py drifted exactly this way and lost
         download_history_data)."""
         source = open(RUNTIME_FILE, "rb").read().decode("utf-8")
         self.assertIn("capture_qmt_injected_funcs(globals())", source)

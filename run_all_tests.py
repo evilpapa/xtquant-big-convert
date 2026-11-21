@@ -2,7 +2,7 @@
 """Run the full test suite from a single entry point.
 
 Groups tests by area and prints a clear per-group + total report. Optional
-live/API tests (need a running QMT + redis) are skipped by default.
+live/API tests (need a running QMT + valkey) are skipped by default.
 
 Usage:
     python run_all_tests.py              # all offline tests (default)

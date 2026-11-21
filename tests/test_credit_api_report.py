@@ -317,7 +317,7 @@ class CoverageTest(unittest.TestCase):
     """清单要盖全 —— 漏一个接口，别人跑一趟也照样查不出来。"""
 
     def test_every_credit_rpc_method_is_covered(self):
-        from bigqmt_signal_trader.redis_rpc import READ_METHODS
+        from bigqmt_signal_trader.valkey_rpc import READ_METHODS
 
         credit_methods = set(m for m in READ_METHODS
                              if "credit" in m or "compact" in m
@@ -342,7 +342,7 @@ class CoverageTest(unittest.TestCase):
 
     def test_deferred_method_list_and_report_checklist_agree(self):
         """defer 名单里的交易类方法，报告清单要跟着走 —— 两边别再漂。"""
-        from bigqmt_signal_trader.redis_rpc import LISTENER_DEFERRED_METHODS
+        from bigqmt_signal_trader.valkey_rpc import LISTENER_DEFERRED_METHODS
 
         covered = set(check[0] for check in ALL_CHECKS)
         credit_ish = set(m for m in LISTENER_DEFERRED_METHODS

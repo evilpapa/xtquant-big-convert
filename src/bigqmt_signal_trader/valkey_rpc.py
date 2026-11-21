@@ -1,6 +1,6 @@
-"""Redis Pub/Sub RPC for the Big QMT runtime.
+"""Valkey Pub/Sub RPC for the Big QMT runtime.
 
-By default the service can process selected requests directly in the Redis
+By default, the service can process selected requests directly in the Valkey
 listener thread. The in-memory queue and ``drain_pending`` are kept as a
 runtime fallback for environments where a QMT API must run from a strategy
 callback thread.
@@ -17,7 +17,7 @@ import time
 import traceback
 import uuid
 
-from .adapters.redis_common import decode_text
+from .adapters.valkey_common import decode_text
 from .code_utils import normalize_stock_code
 from . import exec_events as _exec_events
 from .models import AccountSnapshot, OrderRef, OrderRequest
@@ -445,11 +445,12 @@ def _maybe_scalar(value):
     return value
 
 
-def _is_redis_timeout(exc):
+def _is_valkey_timeout(exc):
     name = exc.__class__.__name__.lower()
     module = getattr(exc.__class__, "__module__", "")
     text = str(exc).lower()
-    return ("redis" in module and "timeout" in name) or "timeout reading from socket" in text
+    return (module.startswith("valkey.") and "timeout" in name
+            or "timeout reading from socket" in text)
 
 
 def to_jsonable(value):
@@ -713,12 +714,12 @@ class BigQmtRpcHandlers:
         self.qmt_api = dict(qmt_api or {})
         self._submit_journal = {}
         # In-process order-identity journal: remark -> strategy_name, written
-        # at submit time and read back at query time. The Redis identity store
+        # at submit time and read back at query time. The Valkey identity store
         # covers restarts and other processes; this covers deployments with no
-        # Redis at all (zmq single-file), where attribution used to silently
+        # Valkey at all (zmq single-file), where attribution used to silently
         # read "" forever (issue #156 follow-up to #133). The runtime enables
-        # a disk journal for Redis-free deployments before serving requests.
-        # Bounded FIFO, same seven-day TTL as the Redis store.
+        # a disk journal for Valkey-free deployments before serving requests.
+        # Bounded FIFO, same seven-day TTL as the Valkey store.
         self._order_identity_local = collections.OrderedDict()
         # Settled-id journal (#299 follow-up): remark -> OrderedDict of the
         # order_sys_ids already handed out for it, insertion-ordered. The
@@ -1573,26 +1574,26 @@ class BigQmtRpcHandlers:
         manager = self._require_quote_manager()
         return {"unsubscribed": manager.unsubscribe_all()}
 
-    def _identity_redis(self):
-        """Redis for the order-identity store, or None.
+    def _identity_valkey(self):
+        """Valkey for the order-identity store, or None.
 
         Deliberately its own attribute rather than reusing the download-job
-        client. Only a redis TRANSPORT builds that one, so on a zmq deployment
+        client. Only a valkey TRANSPORT builds that one, so on a zmq deployment
         it is None -- which silently meant orders were never remembered at
         submit time and so could never be attributed on query (issue #133).
-        The strategy wires this one from the redis config whatever the
+        The strategy wires this one from the valkey config whatever the
         transport, and falls back to the download-job client for deployments
         that predate it. Everything here treats None as "no attribution",
         never as an error: naming an order is a nicety, the order is not.
         """
-        return (getattr(self, "order_identity_redis_client", None)
-                or getattr(self, "download_job_redis_client", None))
+        return (getattr(self, "order_identity_valkey_client", None)
+                or getattr(self, "download_job_valkey_client", None))
 
-    def _download_job_redis(self):
-        redis_client = getattr(self, "download_job_redis_client", None)
-        if redis_client is None:
-            raise RuntimeError("download jobs require a Redis client")
-        return redis_client
+    def _download_job_valkey(self):
+        valkey_client = getattr(self, "download_job_valkey_client", None)
+        if valkey_client is None:
+            raise RuntimeError("download jobs require a Valkey client")
+        return valkey_client
 
     def _require_download_worker(self):
         """Refuse to queue work nothing is going to pick up.
@@ -1625,7 +1626,7 @@ class BigQmtRpcHandlers:
         if isinstance(stock_list, str):
             stock_list = [stock_list]
         return submit_download_job(
-            self._download_job_redis(),
+            self._download_job_valkey(),
             self.account_id,
             stock_list,
             params.get("period"),
@@ -1649,7 +1650,7 @@ class BigQmtRpcHandlers:
         job_id = params.get("job_id")
         if not job_id:
             raise ValueError("job_id is required")
-        status = read_download_status(self._download_job_redis(), self.account_id, job_id)
+        status = read_download_status(self._download_job_valkey(), self.account_id, job_id)
         if status is None:
             raise KeyError("download job not found or expired: %s" % job_id)
         return status
@@ -1661,7 +1662,7 @@ class BigQmtRpcHandlers:
         if not job_id:
             raise ValueError("job_id is required")
         return wait_download_job(
-            self._download_job_redis(),
+            self._download_job_valkey(),
             self.account_id,
             job_id,
             wait_seconds=float(params.get("wait_seconds", 600.0)),
@@ -1764,7 +1765,7 @@ class BigQmtRpcHandlers:
 
     def _recover_order_remarks(self, account_id, snapshots):
         return _exec_events.recover_order_remarks(
-            getattr(self, "order_remark_redis_client", None), account_id,
+            getattr(self, "order_remark_valkey_client", None), account_id,
             self._configured_account_type(account_id), snapshots,
             _exec_events.ORDER_IDENTITY_TTL_SECONDS)
 
@@ -1775,7 +1776,7 @@ class BigQmtRpcHandlers:
         m_strStrategyName -- checked by listing every attribute on a live
         terminal. What the row DOES carry (m_strSource) is the QMT-side
         strategy's registered name -- this bridge process's name, e.g.
-        BIGQMT_REDIS_DRYRUN -- not the strategy_name the caller passed at order
+        BIGQMT_VALKEY_DRYRUN -- not the strategy_name the caller passed at order
         time (#216: placed as 'DaBanStrategy', reported as '大QMT桥接器').
         #174 misread that field as "passorder's strategyName coming back".
 
@@ -1791,13 +1792,13 @@ class BigQmtRpcHandlers:
                       if str(getattr(row, "user_order_id", "") or "").strip()]
         if not candidates:
             return rows
-        redis_client = self._identity_redis()
-        if redis_client is not None:
+        valkey_client = self._identity_valkey()
+        if valkey_client is not None:
             try:
                 from .exec_events import order_identity_map
 
                 identities = order_identity_map(
-                    redis_client, account_id,
+                    valkey_client, account_id,
                     [getattr(row, "user_order_id", "") for row in candidates])
                 for row in candidates:
                     identity = identities.get(
@@ -1806,9 +1807,9 @@ class BigQmtRpcHandlers:
                         row.strategy_name = str(identity.get("strategy_name") or "")
             except Exception:
                 pass
-        # No-Redis deployments still name what THIS process submitted: the
+        # No-Valkey deployments still name what THIS process submitted: the
         # in-process journal written at submit time (issue #156). It runs
-        # after the redis store so this process's own record wins a collision.
+        # after the valkey store so this process's own record wins a collision.
         journal = getattr(self, "_order_identity_local", None)
         if journal:
             now = time.time()
@@ -1830,7 +1831,7 @@ class BigQmtRpcHandlers:
     _ORDER_IDENTITY_LOCAL_TTL_SECONDS = 7 * 86400.0
 
     def enable_order_identity_persistence(self, directory=None, account_types=None):
-        """Restore Redis-free attribution before the RPC service starts."""
+        """Restore Valkey-free attribution before the RPC service starts."""
         from .account_type_map import get_account_type_map, primary_account_type
 
         self._order_identity_journals = {}
@@ -2491,21 +2492,21 @@ class BigQmtRpcHandlers:
     def _handle_probe_order_identity(self, params):
         """Diagnose the strategy_name backfill chain, one link at a time.
 
-        #156's reporter: the identity record exists in Redis, the key matches,
+        #156's reporter: the identity record exists in Valkey, the key matches,
         and the query still reads strategy_name="". Nothing along the chain
         can say which link dropped it from the outside -- this answers that
-        from the inside: is the identity Redis wired at all, does the key
+        from the inside: is the identity Valkey wired at all, does the key
         exist under THIS account, is the local journal covering it (#156's
         in-process fallback), and does the raw lookup raise.
         """
         account_id = self._request_account_id(params)
         remark = str(params.get("remark") or params.get("user_order_id") or "").strip()
-        redis_client = self._identity_redis()
+        valkey_client = self._identity_valkey()
         journal = getattr(self, "_order_identity_local", None) or {}
         out = {
             "account_id": account_id,
             "remark": remark,
-            "identity_redis_wired": redis_client is not None,
+            "identity_valkey_wired": valkey_client is not None,
             "local_journal_size": len(journal),
         }
         store = self._load_order_identity_journal(account_id)
@@ -2522,14 +2523,14 @@ class BigQmtRpcHandlers:
 
         key = order_identity_key(account_id, remark)
         out["identity_key"] = key
-        if redis_client is not None:
+        if valkey_client is not None:
             try:
-                identity = _exec_events._read_order_identity(redis_client, account_id, remark)
-                out["redis_hit"] = bool(identity)
+                identity = _exec_events._read_order_identity(valkey_client, account_id, remark)
+                out["valkey_hit"] = bool(identity)
                 if identity:
-                    out["redis_strategy_name"] = str(identity.get("strategy_name") or "")
+                    out["valkey_strategy_name"] = str(identity.get("strategy_name") or "")
             except Exception as exc:
-                out["redis_hit"] = None
+                out["valkey_hit"] = None
                 out["lookup_error"] = "%s: %s" % (exc.__class__.__name__, exc)
         entry = journal.get((account_id, remark))
         out["local_hit"] = bool(entry and entry[1])
@@ -2699,25 +2700,25 @@ class BigQmtRpcHandlers:
                   "（#330）" % ("[bigqmt_rpc]", request.volume, request.price))
 
         identity = None
-        identity_redis = self._identity_redis()
+        identity_valkey = self._identity_valkey()
         try:
             identity = _exec_events.remember_order_identity(
-                identity_redis,
+                identity_valkey,
                 request.account_id,
                 request.remark,
                 strategy_name=request.strategy_name,
                 stock_code=request.stock_code,
             )
-            if identity is None and identity_redis is not None:
+            if identity is None and identity_valkey is not None:
                 # A repeated remark retained an existing record. A fresh
                 # process must cache THAT name, or its new local journal
-                # would override Redis and rename the old order again.
+                # would override Valkey and rename the old order again.
                 identity = _exec_events._read_order_identity(
-                    identity_redis, request.account_id, request.remark)
+                    identity_valkey, request.account_id, request.remark)
         except Exception as exc:
             _exec_events._warn_order_identity(exc)
         # Always journal locally too -- cheap, and the only attribution a
-        # no-Redis deployment has (issue #156).
+        # no-Valkey deployment has (issue #156).
         self._remember_order_identity_local(
             request.account_id, request.remark,
             (identity or {}).get("strategy_name") or request.strategy_name)
@@ -2779,14 +2780,14 @@ class BigQmtRpcHandlers:
         return result
 
     def _exec_event_sink(self):
-        """Where an exec event this handler emits goes: redis, else the quote
+        """Where an exec event this handler emits goes: valkey, else the quote
         push channel, else None."""
         transport = getattr(self, "rpc_transport", None)
         if getattr(transport, "name", None) == "serial":
             return transport if getattr(self, "exec_events_enabled", True) else None
-        redis_client = self._identity_redis()
-        if redis_client is not None:
-            return redis_client
+        valkey_client = self._identity_valkey()
+        if valkey_client is not None:
+            return valkey_client
         manager = getattr(self, "quote_subscription_manager", None)
         publisher = getattr(manager, "_on_push_publisher", None)
         if callable(publisher):
@@ -3693,7 +3694,7 @@ def loads_rpc_response(raw):
 
 
 def encode_rpc_request_payload(request):
-    """Encode request JSON so patched QMT Redis clients do not inspect stock-code text."""
+    """Encode request JSON using the RPC request payload format."""
 
     raw = json.dumps(request, ensure_ascii=False).encode("utf-8")
     encoded = base64.b64encode(raw).decode("ascii").translate(SAFE_B64_DIGIT_ENCODE)
@@ -3708,15 +3709,15 @@ def decode_rpc_request_payload(text):
     return base64.b64decode(encoded.encode("ascii")).decode("utf-8")
 
 
-class RedisPubSubRpcService:
-    """Receive RPC requests from Redis and write responses back to Redis."""
+class ValkeyPubSubRpcService:
+    """Receive RPC requests from Valkey and write responses back to Valkey."""
 
     def __init__(
         self,
-        redis_client,
+        valkey_client,
         handlers,
         account_id="",
-        response_redis_client=None,
+        response_valkey_client=None,
         request_channel_template="bigqmt:rpc:req:{account_id}",
         request_queue_template="bigqmt:rpc:queue:{account_id}",
         response_channel_template="bigqmt:rpc:resp:{account_id}:{request_id}",
@@ -3737,7 +3738,7 @@ class RedisPubSubRpcService:
         heavy_offload=True,
         heavy_codes_threshold=HEAVY_READ_CODES_THRESHOLD,
     ):
-        self.listen_redis = redis_client
+        self.listen_valkey = valkey_client
         # Heavy reads leave the adjust thread for one worker (#351). Only in
         # the adjust drain: with background threads the receive thread already
         # runs them off the strategy thread. See HEAVY_READ_METHODS.
@@ -3765,7 +3766,7 @@ class RedisPubSubRpcService:
         # even the first order, done at 0.2s -- gets an answer.
         self.settle_interval_seconds = max(0.0, float(settle_interval_seconds))
         self._expired_request_count = 0
-        self.redis = response_redis_client or redis_client
+        self.valkey = response_valkey_client or valkey_client
         self.handlers = handlers
         self.account_id = str(account_id or "")
         self.request_channel_template = request_channel_template
@@ -3803,16 +3804,16 @@ class RedisPubSubRpcService:
         self._thread = None
         self._queue_thread = None
         self._pubsub = None
-        # Transport owns the wire. Default to a RedisTransport built from the
+        # Transport owns the wire. Default to a ValkeyTransport built from the
         # same clients/templates so behavior is unchanged. An explicit
-        # ``transport`` (e.g. ZmqTransport) overrides the Redis path entirely.
+        # ``transport`` (e.g. ZmqTransport) overrides the Valkey path entirely.
         if transport is None:
-            from .transports.redis_transport import RedisTransport
+            from .transports.valkey_transport import ValkeyTransport
 
-            transport = RedisTransport(
-                redis_client,
+            transport = ValkeyTransport(
+                valkey_client,
                 account_id=self.account_id,
-                response_redis_client=response_redis_client,
+                response_valkey_client=response_valkey_client,
                 request_channel_template=request_channel_template,
                 request_queue_template=request_queue_template,
                 response_channel_template=response_channel_template,
@@ -3856,7 +3857,7 @@ class RedisPubSubRpcService:
         # on_request callback with a decoded request dict; enqueue_payload routes
         # it through the inline-vs-deferred fork and publishes the response
         # itself (returns None so the transport's deliver() does not double-send).
-        # RedisTransport additionally routes raw bytes through on_raw_payload
+        # ValkeyTransport additionally routes raw bytes through on_raw_payload
         # (set in __init__) for its own receive loops.
         self._transport.start_receiving(
             self.enqueue_payload,
@@ -3993,7 +3994,7 @@ class RedisPubSubRpcService:
     def _listen_loop(self):
         while self._running.is_set():
             try:
-                pubsub = self.listen_redis.pubsub(ignore_subscribe_messages=True)
+                pubsub = self.listen_valkey.pubsub(ignore_subscribe_messages=True)
                 self._pubsub = pubsub
                 pubsub.subscribe(self.request_channel)
                 if self.debug_log_limit > 0:
@@ -4030,7 +4031,7 @@ class RedisPubSubRpcService:
                     # ~1ms of being pushed instead of waiting up to
                     # queue_poll_interval_seconds. The 1s ceiling lets us
                     # re-check _running for a clean shutdown.
-                    item = self.listen_redis.brpop(self.request_queue, timeout=1)
+                    item = self.listen_valkey.brpop(self.request_queue, timeout=1)
                     if not self._running.is_set():
                         break
                     if not item:
@@ -4280,8 +4281,8 @@ class RedisPubSubRpcService:
     def _push_shadow_order_error(self, settlement):
         """order_error for an async order the terminal never recorded (#345).
 
-        Same channels the 废单 callback path uses: the redis exec-event
-        channels when there is a redis client, else the quote push channel's
+        Same channels the 废单 callback path uses: the valkey exec-event
+        channels when there is a valkey client, else the quote push channel's
         exec:* topic. A deployment with neither channel cannot carry
         it -- the client falls back to a synchronous settlement there.
         """
@@ -4341,7 +4342,7 @@ class RedisPubSubRpcService:
         return processed
 
     def drain_request_queue(self, max_items=20):
-        # Delegate to the transport when it owns the wire directly; for Redis
+        # Delegate to the transport when it owns the wire directly; for Valkey
         # the transport's drain drives _handle_received_payload (which honors
         # the inline-vs-deferred fork), matching the original semantics.
         transport_drain = getattr(self._transport, "drain_request_queue", None)
@@ -4349,7 +4350,7 @@ class RedisPubSubRpcService:
             return transport_drain(max_items=max_items)
         processed = 0
         for _ in range(int(max_items)):
-            item = self.listen_redis.lpop(self.request_queue)
+            item = self.listen_valkey.lpop(self.request_queue)
             if not item:
                 break
             self.process_request(self._loads(item))
@@ -4484,7 +4485,7 @@ class RedisPubSubRpcService:
         account_id = str(request.get("account_id") or self.account_id or "")
         method = str(request.get("method") or "")
 
-        # At-most-once for writes (#245). The client's redis-py connection
+        # At-most-once for writes (#245). The client's valkey-py connection
         # retries transparently on ConnectionError/TimeoutError, and the retry
         # re-sends the whole command -- conn.retry wraps send AND parse, so an
         # RPUSH the server already accepted is sent again when the reply is
@@ -4590,7 +4591,7 @@ class RedisPubSubRpcService:
         try:
             self._publish_response(request, response)
         except Exception:
-            # A response-publish failure (e.g. redis outage) must not propagate
+            # A response-publish failure (e.g. valkey outage) must not propagate
             # to the adjust thread — QMT stops the strategy on a callback raise.
             # The request already ran; the client will just see a timeout.
             import traceback as _tb
@@ -4702,15 +4703,15 @@ class RedisPubSubRpcService:
             # reply, a RequestExpired refusal -- parks here.
             self._heavy_replies.put((request, response))
             return
-        # Delegate to the transport (RedisTransport fans out to key/list/channel;
+        # Delegate to the transport (ValkeyTransport fans out to key/list/channel;
         # ZMQ/MySQL transports use their native reply path).
         self._transport.send_response(request, response)
         self._published_count = getattr(self._transport, "_published_count", self._published_count)
 
     def _response_clients(self):
-        clients = [self.redis]
-        if self.listen_redis is not self.redis:
-            clients.append(self.listen_redis)
+        clients = [self.valkey]
+        if self.listen_valkey is not self.valkey:
+            clients.append(self.listen_valkey)
         return clients
 
     def _write_response_key(self, response_key, ttl_seconds, payload):
@@ -4765,8 +4766,8 @@ class RedisPubSubRpcService:
         return receivers
 
 
-def call_redis_rpc(
-    redis_client,
+def call_valkey_rpc(
+    valkey_client,
     account_id,
     method,
     params=None,
@@ -4805,11 +4806,11 @@ def call_redis_rpc(
     }
     payload = encode_rpc_request_payload(request)
     if str(transport or "queue").lower() in ("queue", "list", "blpop"):
-        redis_client.rpush(request_queue, payload)
-        redis_client.expire(request_queue, max(60, int(ttl_seconds)))
+        valkey_client.rpush(request_queue, payload)
+        valkey_client.expire(request_queue, max(60, int(ttl_seconds)))
         deadline = time.time() + float(timeout_seconds)
         while True:
-            raw_response = redis_client.get(response_key)
+            raw_response = valkey_client.get(response_key)
             if raw_response:
                 return loads_rpc_response(raw_response)
             remaining = deadline - time.time()
@@ -4817,29 +4818,29 @@ def call_redis_rpc(
                 break
             wait_timeout = max(1, int(min(remaining, 1.0) + 0.999))
             try:
-                item = redis_client.blpop(response_list, timeout=wait_timeout)
+                item = valkey_client.blpop(response_list, timeout=wait_timeout)
             except Exception as exc:
-                if _is_redis_timeout(exc):
+                if _is_valkey_timeout(exc):
                     continue
                 raise
             if item:
                 raw_response = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else item
                 try:
-                    redis_client.delete(response_list)
+                    valkey_client.delete(response_list)
                 except Exception:
                     pass
                 return loads_rpc_response(raw_response)
-        raw_response = redis_client.get(response_key)
+        raw_response = valkey_client.get(response_key)
         if raw_response:
             return loads_rpc_response(raw_response)
         raise TimeoutError(
-            "redis rpc timeout: %s account_id=%s request_queue=%s" % (method, account_id, request_queue)
+            "valkey rpc timeout: %s account_id=%s request_queue=%s" % (method, account_id, request_queue)
         )
 
-    pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
+    pubsub = valkey_client.pubsub(ignore_subscribe_messages=True)
     try:
         pubsub.subscribe(response_channel)
-        redis_client.publish(request_channel, payload)
+        valkey_client.publish(request_channel, payload)
         deadline = time.time() + float(timeout_seconds)
         while True:
             remaining = deadline - time.time()
@@ -4851,10 +4852,10 @@ def call_redis_rpc(
             response = loads_rpc_response(message.get("data"))
             if response.get("request_id") == request_id:
                 return response
-        raw_response = redis_client.get(response_key)
+        raw_response = valkey_client.get(response_key)
         if raw_response:
             return loads_rpc_response(raw_response)
-        raise TimeoutError("redis rpc timeout: %s" % method)
+        raise TimeoutError("valkey rpc timeout: %s" % method)
     finally:
         try:
             pubsub.close()

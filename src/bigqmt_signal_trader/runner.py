@@ -40,7 +40,7 @@ def tick_app(context_info, now=None):
 
 def forward_order_event(event):
     # Unguarded events reach QMT's order_callback, which stops the strategy on
-    # raise. Guard like tick_app so a bad event (e.g. redis outage during the
+    # raise. Guard like tick_app so a bad event (e.g. valkey outage during the
     # position-sync publish) never stops the strategy.
     if _APP is None:
         return None

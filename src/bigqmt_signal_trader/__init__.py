@@ -1,5 +1,10 @@
 """可替换的大 QMT 信号下单包核心模块。"""
 
+import sys
+
+if sys.version_info < (3, 12):
+    raise RuntimeError("xtquant-big-convert requires Python 3.12 or newer.")
+
 from .version import __version__, deployment_report
 
 from .app import SignalTradingApp

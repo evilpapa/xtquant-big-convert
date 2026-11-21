@@ -336,8 +336,8 @@ class FakeClient(object):
             return self.trades
         return {}
 
-    def _redis(self):
-        raise AssertionError("redis not expected here")
+    def _valkey(self):
+        raise AssertionError("valkey not expected here")
 
 
 def _trader(orders=(), trades=(), account_type="STOCK", connect=True):

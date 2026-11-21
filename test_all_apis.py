@@ -8,14 +8,14 @@ like:
   - submit_order returns SUBMITTED but the order never entered the system
   - query_orders returns [] because strategy_name didn't match
 
-Config is read from bigqmt_signal_trader_local_config (gitignored) or env vars;
+Config is read from bigqmt_signal_trader_qmt_config (gitignored) or env vars;
 no credentials are hard-coded here. Run from a dir where that config module
 resolves, e.g.:
 
     PYTHONPATH="src;D:\\国金证券QMT交易端\\python" python test_all_apis.py
 
-or set BIGQMT_ACCOUNT_ID / BIGQMT_REDIS_HOST / BIGQMT_REDIS_PORT /
-BIGQMT_REDIS_DB / BIGQMT_REDIS_PASSWORD env vars.
+or set BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST / BIGQMT_VALKEY_PORT /
+BIGQMT_VALKEY_DB / BIGQMT_VALKEY_PASSWORD env vars.
 """
 import os
 import sys
@@ -24,46 +24,37 @@ import time
 # Add src to path so bigqmt_signal_trader resolves when run from repo root.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from bigqmt_signal_trader.redis_rpc import call_redis_rpc
+from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
+from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client, local_valkey_config
 
 
 def _load_config():
     cfg = {}
     try:
-        import bigqmt_signal_trader_local_config as _c  # noqa
-        cfg = getattr(_c, "BIGQMT_REDIS_CONFIG", {}) or {}
+        import bigqmt_signal_trader_qmt_config as _c  # noqa
+        cfg = local_valkey_config(_c)
         account = getattr(_c, "BIGQMT_ACCOUNT_ID", None) or cfg.get("account_id")
     except Exception:
         account = None
     account = account or os.environ.get("BIGQMT_ACCOUNT_ID", "")
-    redis_cfg = dict(
-        host=cfg.get("host") or os.environ.get("BIGQMT_REDIS_HOST", "127.0.0.1"),
-        port=int(cfg.get("port") or os.environ.get("BIGQMT_REDIS_PORT", 6379)),
-        db=int(cfg.get("db") or os.environ.get("BIGQMT_REDIS_DB", 5)),
-        password=cfg.get("password", os.environ.get("BIGQMT_REDIS_PASSWORD", "")),
-        socket_timeout=15,
-    )
-    if not redis_cfg["password"]:
-        redis_cfg.pop("password")
+    valkey_cfg = dict(cfg, socket_timeout=15)
     transport = str(
-        os.environ.get("BIGQMT_RPC_TRANSPORT") or cfg.get("transport") or "redis"
+        os.environ.get("BIGQMT_RPC_TRANSPORT") or cfg.get("transport") or "valkey"
     ).lower()
-    return str(account), redis_cfg, transport
+    return str(account), valkey_cfg, transport
 
 
-ACCOUNT, REDIS, TRANSPORT = _load_config()
+ACCOUNT, VALKEY, TRANSPORT = _load_config()
 
 
 def _build_caller():
-    """Build the Redis caller used by the checks."""
-    if TRANSPORT not in ("redis", "", "default"):
-        raise ValueError("test_all_apis.py requires Redis transport")
-    import redis
-
-    r = redis.Redis(**REDIS)
+    """Build the Valkey caller used by the checks."""
+    if TRANSPORT not in ("valkey", "", "default"):
+        raise ValueError("test_all_apis.py requires Valkey transport")
+    r = build_valkey_client(VALKEY)
 
     def call(method, params, timeout):
-        return call_redis_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
+        return call_valkey_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
 
     return call
 # account_id placeholder filled in main() once ACCOUNT is confirmed.
@@ -138,7 +129,7 @@ def _call(caller, method, params, timeout=12):
 
 def main():
     if not ACCOUNT:
-        raise SystemExit("ACCOUNT is empty: set BIGQMT_ACCOUNT_ID or configure bigqmt_signal_trader_local_config")
+        raise SystemExit("ACCOUNT is empty: set BIGQMT_ACCOUNT_ID or configure bigqmt_signal_trader_qmt_config")
     # Fill the account_id into the account-query test params now that we know it.
     for i, (method, params, label) in enumerate(TESTS):
         if "account_id" in params and params["account_id"] is None:
@@ -160,7 +151,7 @@ def main():
         if "timeout" in ping_err.lower():
             print("   可能原因: 客户端 transport 和服务端不匹配")
             print("   - 客户端配置 transport=%s" % TRANSPORT)
-            print("   - 如果服务端是 redis, 客户端保持 redis 即可")
+            print("   - 如果服务端是 valkey, 客户端保持 valkey 即可")
         return
     print("✅ ping OK (%.0fms) — 客户端/服务端连通 (%s)" % (ping_ms, TRANSPORT.upper()))
 

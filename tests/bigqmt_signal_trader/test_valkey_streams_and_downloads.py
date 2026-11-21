@@ -1,14 +1,8 @@
 # coding: utf-8
-"""redis without streams and terminal-maintained download tables (#163).
+"""Unavailable streams and terminal-maintained download tables (#163).
 
-@Randall-Chan, on a Windows redis 3.0.504:
-
-    redis.exceptions.ResponseError: unknown command 'XADD'
-
--- raised on EVERY position-sync tick. Streams (XADD) need redis >= 5.0, but
-pub/sub works on 3.0, so realtime callbacks were fine all along; only the
-replay streams spammed. The failure is now learned once and xadd is skipped
-for the rest of the process.
+When an endpoint reports `unknown command 'XADD'`, skip further stream writes
+until the process restarts. Pub/sub callbacks remain available.
 
 And MiniQMT's download_holiday_data / download_his_st_data raised
 NotImplementedError on big QMT, whose terminal maintains those tables itself.
@@ -24,15 +18,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader import exec_events
-from bigqmt_signal_trader.adapters import redis_common
-from bigqmt_signal_trader.adapters.position_sync_redis import RedisPositionSyncSink
+from bigqmt_signal_trader.adapters import valkey_common
+from bigqmt_signal_trader.adapters.position_sync_valkey import ValkeyPositionSyncSink
 
 
 class ResponseError(Exception):
     pass
 
 
-class FakeRedis(object):
+class FakeValkey(object):
     def __init__(self, xadd_error=None):
         self.xadd_error = xadd_error
         self.xadd_calls = 0
@@ -67,16 +61,16 @@ class _Snapshot(object):
 
 class _StreamsState(unittest.TestCase):
     def setUp(self):
-        self._dead = redis_common._STREAMS_DEAD
-        redis_common._STREAMS_DEAD = False
+        self._dead = valkey_common._STREAMS_DEAD
+        valkey_common._STREAMS_DEAD = False
 
     def tearDown(self):
-        redis_common._STREAMS_DEAD = self._dead
+        valkey_common._STREAMS_DEAD = self._dead
 
 
 class StreamFallbackTest(_StreamsState):
     def test_unknown_command_disables_xadd_after_one_warning(self):
-        r = FakeRedis(ResponseError("unknown command 'XADD'"))
+        r = FakeValkey(ResponseError("unknown command 'XADD'"))
         warnings = []
 
         class Log(object):
@@ -88,20 +82,20 @@ class StreamFallbackTest(_StreamsState):
 
         self.assertEqual(len(r.published), 2, "pub/sub must keep working")
         self.assertEqual(r.xadd_calls, 1, "the dead command must not be retried")
-        self.assertTrue(redis_common.streams_dead())
+        self.assertTrue(valkey_common.streams_dead())
 
     def test_transient_failure_does_not_disable(self):
-        r = FakeRedis(ConnectionError("redis went away"))
+        r = FakeValkey(ConnectionError("valkey went away"))
         exec_events._publish(r, "ch", {"e": 1})
         exec_events._publish(r, "ch", {"e": 2})
 
         self.assertEqual(r.xadd_calls, 2, "transient failures stay retried")
-        self.assertFalse(redis_common.streams_dead())
+        self.assertFalse(valkey_common.streams_dead())
 
     def test_position_sink_skips_xadd_once_dead(self):
-        redis_common._STREAMS_DEAD = True
-        r = FakeRedis(ResponseError("unknown command 'XADD'"))
-        sink = RedisPositionSyncSink(r)
+        valkey_common._STREAMS_DEAD = True
+        r = FakeValkey(ResponseError("unknown command 'XADD'"))
+        sink = ValkeyPositionSyncSink(r)
 
         sink.publish(_Snapshot())
 
@@ -111,8 +105,8 @@ class StreamFallbackTest(_StreamsState):
 
 class DownloadNoopTest(unittest.TestCase):
     def _handlers(self):
-        from test_redis_rpc import FakeMarketData, FakePositionProvider
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from test_valkey_rpc import FakeMarketData, FakePositionProvider
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
         return BigQmtRpcHandlers(
             account_id="acct", market_data=FakeMarketData(),
             position_provider=FakePositionProvider())
@@ -129,7 +123,7 @@ class DownloadNoopTest(unittest.TestCase):
         self.assertFalse(result["downloaded"])
 
     def test_both_methods_whitelisted_and_on_the_client(self):
-        from bigqmt_signal_trader.redis_rpc import READ_METHODS, MARKET_DATA_METHODS
+        from bigqmt_signal_trader.valkey_rpc import READ_METHODS, MARKET_DATA_METHODS
         from bigqmt_signal_trader import xtquant_compat
         for method in ("download_holiday_data", "download_his_st_data"):
             self.assertIn(method, READ_METHODS)

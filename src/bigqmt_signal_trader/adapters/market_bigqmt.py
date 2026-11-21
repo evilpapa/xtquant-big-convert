@@ -593,7 +593,7 @@ def _load_native_xtdata():
 
     The Big QMT process ships two ``xtquant.xtdata`` modules:
 
-    * ``python/xtquant/xtdata.py`` — our RPC shim (forwards back over Redis).
+    * ``python/xtquant/xtdata.py`` — our RPC shim (forwards back over Valkey).
     * ``bin.x64/Lib/site-packages/xtquant/xtdata.py`` — the real SDK that
       connects to the local quote service via ``get_client()``.
 

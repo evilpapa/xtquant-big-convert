@@ -201,7 +201,7 @@ class ProviderCompatibilityTest(unittest.TestCase):
     working -- three tests went red on exactly this while building the feature."""
 
     def test_the_handler_calls_a_one_argument_provider(self):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
         seen = []
 
@@ -217,7 +217,7 @@ class ProviderCompatibilityTest(unittest.TestCase):
         self.assertEqual(seen, [["600000.SH"]])
 
     def test_the_handler_forwards_types_when_asked(self):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
         seen = {}
 
@@ -233,7 +233,7 @@ class ProviderCompatibilityTest(unittest.TestCase):
         self.assertEqual(seen["types"], ["all"])
 
     def test_a_string_type_is_accepted(self):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
         seen = {}
 
@@ -281,7 +281,7 @@ class WholeQuotePrimeScopeTest(unittest.TestCase):
             account_id = "acct"
             local_cache_config = {}
             full_tick_cache_config = {}
-            transport_name = "redis"
+            transport_name = "valkey"
 
             def __init__(self):
                 self.params = []

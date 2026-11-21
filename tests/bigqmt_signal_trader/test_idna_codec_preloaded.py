@@ -1,12 +1,12 @@
 # coding: utf-8
-"""Importing the redis transport must leave the idna codec ready to use.
+"""Importing the valkey transport must leave the idna codec ready to use.
 
 First run of a strategy inside big QMT logged, once, on the first adjust
 tick:
 
     LookupError: unknown encoding: idna
 
-from socket.getaddrinfo inside the first Redis connect. The codec is lazy:
+from socket.getaddrinfo inside the first Valkey connect. The codec is lazy:
 codecs.lookup('idna') -> encodings.search_function -> import encodings.idna
 -> stringprep -> unicodedata (a C extension). That import ran on the adjust
 thread -- a C++ timer callback -- and the sandboxed importer failed it there;
@@ -48,7 +48,7 @@ SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
 CHAIN = ("encodings.idna", "stringprep", "unicodedata")
-TRANSPORT = "bigqmt_signal_trader.transports.redis_transport"
+TRANSPORT = "bigqmt_signal_trader.transports.valkey_transport"
 
 
 class IdnaPreloadedTest(unittest.TestCase):
@@ -87,7 +87,7 @@ class IdnaPreloadedTest(unittest.TestCase):
                 # What getaddrinfo actually encodes: an ASCII host. Pure-ASCII
                 # labels take idna's fast path and never touch punycode, so
                 # this is the exact operation the adjust thread performs.
-                hosts = [h.encode("idna").decode("ascii") for h in ("192.168.8.13", "redis.local")]
+                hosts = [h.encode("idna").decode("ascii") for h in ("192.168.8.13", "valkey.local")]
                 print("OK", info.name, *hosts)
             except LookupError as exc:
                 print("LOOKUPERROR", exc)
@@ -97,7 +97,7 @@ class IdnaPreloadedTest(unittest.TestCase):
                              text=True, encoding="utf-8", timeout=60)
 
         self.assertEqual(0, out.returncode, out.stderr)
-        self.assertEqual("OK idna 192.168.8.13 redis.local", out.stdout.strip(),
+        self.assertEqual("OK idna 192.168.8.13 valkey.local", out.stdout.strip(),
                         "codec not primed at import; lookup fell through to the finder:\n%s%s"
                         % (out.stdout, out.stderr))
 
@@ -116,7 +116,7 @@ class IdnaPreloadedTest(unittest.TestCase):
             sys.meta_path.insert(0, Refuse())
 
             module = importlib.import_module(%r)
-            print("OK" if hasattr(module, "RedisTransport") else "MISSING")
+            print("OK" if hasattr(module, "ValkeyTransport") else "MISSING")
         """) % (SRC, TRANSPORT)
 
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True,

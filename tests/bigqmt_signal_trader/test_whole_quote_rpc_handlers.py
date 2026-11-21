@@ -10,7 +10,7 @@ from bigqmt_signal_trader.quote_subscription_manager import (
     QuoteSourceAdapter,
     QuoteSubscriptionManager,
 )
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
 
 class FakeQuoteSource(QuoteSourceAdapter):

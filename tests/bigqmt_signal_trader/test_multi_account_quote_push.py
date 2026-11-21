@@ -10,7 +10,7 @@ request channel to the shared handlers and returned a seq, so nothing
 failed -- the pushes just went to a channel nobody was listening on.
 
 Market data is not account-specific: the publisher now speaks for every
-account the bridge serves, one publish per account (redis) or one extra
+account the bridge serves, one publish per account (valkey) or one extra
 PUB bind per account (zmq). The client role is untouched.
 """
 
@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.account_type_map import reload as reload_map  # noqa: E402
 from bigqmt_signal_trader.quote_push_channel import (  # noqa: E402
-    RedisQuotePushChannel,
+    ValkeyQuotePushChannel,
     decode_push_payload,
 )
 from bigqmt_signal_trader.quote_subscription_manager import (  # noqa: E402
@@ -35,7 +35,7 @@ from bigqmt_signal_trader.quote_subscription_manager import (  # noqa: E402
 )
 
 
-class _Redis(object):
+class _Valkey(object):
     def __init__(self):
         self.published = []
 
@@ -58,51 +58,51 @@ class _Ctx(object):
 
 
 def _with_map(mapping):
-    fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+    fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
     fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = dict(mapping)
-    return mock.patch.dict("sys.modules", {"bigqmt_signal_trader_local_config": fake_cfg})
+    return mock.patch.dict("sys.modules", {"bigqmt_signal_trader_qmt_config": fake_cfg})
 
 
-class RedisChannelFansOutTest(unittest.TestCase):
+class ValkeyChannelFansOutTest(unittest.TestCase):
     def test_one_publish_per_account(self):
-        redis = _Redis()
-        channel = RedisQuotePushChannel(redis, account_id="primary", account_ids=["primary", "second"])
+        valkey = _Valkey()
+        channel = ValkeyQuotePushChannel(valkey, account_id="primary", account_ids=["primary", "second"])
 
         channel.publish("600000.SH", {"lastPrice": 1.0})
 
-        channels = [c for c, _ in redis.published]
+        channels = [c for c, _ in valkey.published]
         self.assertEqual(["bigqmt:quote_push:primary:600000.SH",
                           "bigqmt:quote_push:second:600000.SH"], channels)
-        for _, raw in redis.published:
+        for _, raw in valkey.published:
             self.assertEqual({"lastPrice": 1.0}, decode_push_payload(raw)["data"])
 
     def test_the_secondarys_channel_is_the_one_its_client_subscribes(self):
         """The client side derives the channel from its own account; the
         server side must produce exactly that name."""
-        server = RedisQuotePushChannel(_Redis(), account_id="primary", account_ids=["second"])
-        client = RedisQuotePushChannel(_Redis(), account_id="second")
+        server = ValkeyQuotePushChannel(_Valkey(), account_id="primary", account_ids=["second"])
+        client = ValkeyQuotePushChannel(_Valkey(), account_id="second")
 
         self.assertEqual(client._channel("t"), server._channel("t", "second"))
 
     def test_a_single_account_publishes_once_as_before(self):
-        redis = _Redis()
-        RedisQuotePushChannel(redis, account_id="only").publish("t", {})
-        self.assertEqual(["bigqmt:quote_push:only:t"], [c for c, _ in redis.published])
+        valkey = _Valkey()
+        ValkeyQuotePushChannel(valkey, account_id="only").publish("t", {})
+        self.assertEqual(["bigqmt:quote_push:only:t"], [c for c, _ in valkey.published])
 
     def test_duplicates_and_blanks_in_the_list_collapse(self):
-        channel = RedisQuotePushChannel(_Redis(), account_id="a", account_ids=["a", "", "b", "b", None])
+        channel = ValkeyQuotePushChannel(_Valkey(), account_id="a", account_ids=["a", "", "b", "b", None])
         self.assertEqual(["a", "b"], channel.account_ids)
 
     def test_one_failing_publish_does_not_stop_the_others(self):
-        class Flaky(_Redis):
+        class Flaky(_Valkey):
             def publish(self, channel, value):
                 if ":a:" in channel:
                     raise RuntimeError("boom")
                 return super(Flaky, self).publish(channel, value)
 
-        redis = Flaky()
-        RedisQuotePushChannel(redis, account_id="a", account_ids=["b"]).publish("t", {})
-        self.assertEqual(["bigqmt:quote_push:b:t"], [c for c, _ in redis.published])
+        valkey = Flaky()
+        ValkeyQuotePushChannel(valkey, account_id="a", account_ids=["b"]).publish("t", {})
+        self.assertEqual(["bigqmt:quote_push:b:t"], [c for c, _ in valkey.published])
 
 
 class ServedAccountsTest(unittest.TestCase):
@@ -119,42 +119,42 @@ class ServedAccountsTest(unittest.TestCase):
         reload_map()
 
     def test_no_map_means_the_primary_alone(self):
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
         self.assertEqual(["ACCT1"], _served_account_ids("ACCT1"))
 
 
 class BuilderWiresTheMapTest(unittest.TestCase):
     def tearDown(self):
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
 
     def test_a_push_reaches_the_secondary_account(self):
         """End to end through the manager: a ContextInfo push for a
         subscribed combo lands on both accounts' channels."""
-        redis = _Redis()
+        valkey = _Valkey()
         with _with_map({"ACCT1": "STOCK", "ACCT2": "FUTURE"}):
             reload_map()
             ctx = _Ctx()
             manager, channel = build_quote_subscription_service(
-                ctx, transport_name="redis", account_id="ACCT1", redis_client=redis, enabled=True)
+                ctx, transport_name="valkey", account_id="ACCT1", valkey_client=valkey, enabled=True)
         self.assertEqual(["ACCT1", "ACCT2"], channel.account_ids)
 
         manager.subscribe("issue315", "s1", ["600000.SH"])
         ctx.callback({"600000.SH": {"lastPrice": 3.69}})
 
-        published = sorted(c for c, _ in redis.published)
+        published = sorted(c for c, _ in valkey.published)
         self.assertEqual(2, len(published), published)
         self.assertTrue(any(":ACCT2:" in c for c in published), published)
         self.assertTrue(any(":ACCT1:" in c for c in published), published)
 
 
     def test_the_single_account_shape_is_unchanged(self):
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
-        redis = _Redis()
+        valkey = _Valkey()
         manager, channel = build_quote_subscription_service(
-            _Ctx(), transport_name="redis", account_id="ACCT1", redis_client=redis, enabled=True)
+            _Ctx(), transport_name="valkey", account_id="ACCT1", valkey_client=valkey, enabled=True)
         self.assertEqual(["ACCT1"], channel.account_ids)
 
 

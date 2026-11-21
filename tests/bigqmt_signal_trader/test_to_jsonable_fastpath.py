@@ -28,7 +28,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.redis_rpc import to_jsonable
+from bigqmt_signal_trader.valkey_rpc import to_jsonable
 
 
 class ScalarTest(unittest.TestCase):
@@ -147,7 +147,7 @@ class ExactTypeGuardTest(unittest.TestCase):
     def test_the_fast_path_uses_identity_not_isinstance(self):
         import io
 
-        path = os.path.join(ROOT, "src", "bigqmt_signal_trader", "redis_rpc.py")
+        path = os.path.join(ROOT, "src", "bigqmt_signal_trader", "valkey_rpc.py")
         with io.open(path, encoding="utf-8") as handle:
             source = handle.read()
         start = source.index("def to_jsonable(value):")

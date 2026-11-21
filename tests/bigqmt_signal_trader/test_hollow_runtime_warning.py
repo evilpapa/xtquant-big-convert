@@ -24,8 +24,8 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-from bigqmt_signal_trader import redis_rpc
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader import valkey_rpc
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
 
 class _Ctx(object):
@@ -122,7 +122,7 @@ class HollowRuntimeWarningTest(unittest.TestCase):
         self.assertEqual(len(log.warnings), 1, len(log.warnings))
 
     def test_throttle_interval_is_a_minute_scale_not_a_millisecond_one(self):
-        self.assertGreaterEqual(redis_rpc.HOLLOW_WARNING_INTERVAL_SECONDS, 30.0)
+        self.assertGreaterEqual(valkey_rpc.HOLLOW_WARNING_INTERVAL_SECONDS, 30.0)
 
     def test_get_trade_detail_data_path_is_covered_too(self):
         """走 gateway 的那条路（get_asset / query_account_infos …）也要盯。"""

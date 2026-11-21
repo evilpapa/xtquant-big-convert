@@ -1,4 +1,4 @@
-"""Optional xtquant import shim backed by Big QMT Redis RPC.
+"""Optional xtquant import shim backed by Big QMT Valkey RPC.
 
 Put this package before the real xtquant package on PYTHONPATH only when the
 caller intentionally wants Big QMT RPC compatibility.

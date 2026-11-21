@@ -4,12 +4,12 @@
 Reported against 0.3.60: the strategy reads
 ``rpc_config.get("order_settle_timeout_seconds", 3.0)``, but the runtime's
 ``_apply_config`` rpc block never carried the key and
-``configure_runtime_redis`` never read it from the redis config -- so a
+``configure_runtime_valkey`` never read it from the valkey config -- so a
 value set in ``local_config`` silently never took effect and every settle
 window stayed at the 3.0s default.
 
 The chain now mirrors drain_budget_seconds: a module global (default None =
-the strategy/handlers default owns it), read from the redis config, and
+the strategy/handlers default owns it), read from the valkey config, and
 forwarded into the rpc block only when explicitly named -- forwarding None
 would crash the strategy's ``float(...)``.
 """
@@ -21,7 +21,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-import bigqmt_signal_trader_redis_rpc_runtime as runtime
+import bigqmt_signal_trader_valkey_rpc_runtime as runtime
 
 
 class OrderSettleTimeoutForwardingTest(unittest.TestCase):
@@ -54,19 +54,19 @@ class OrderSettleTimeoutForwardingTest(unittest.TestCase):
         self.assertEqual(
             self._rpc_block().get("order_settle_timeout_seconds"), 10.0)
 
-    def test_configure_runtime_redis_reads_the_key(self):
+    def test_configure_runtime_valkey_reads_the_key(self):
         runtime.RPC_ORDER_SETTLE_TIMEOUT_SECONDS = None
 
-        runtime.configure_runtime_redis({"order_settle_timeout_seconds": 7.5})
+        runtime.configure_runtime_valkey({"order_settle_timeout_seconds": 7.5})
 
         self.assertEqual(runtime.RPC_ORDER_SETTLE_TIMEOUT_SECONDS, 7.5)
         self.assertEqual(
             self._rpc_block().get("order_settle_timeout_seconds"), 7.5)
 
-    def test_configure_runtime_redis_keeps_default_when_key_absent(self):
+    def test_configure_runtime_valkey_keeps_default_when_key_absent(self):
         runtime.RPC_ORDER_SETTLE_TIMEOUT_SECONDS = None
 
-        runtime.configure_runtime_redis({"host": "127.0.0.1"})
+        runtime.configure_runtime_valkey({"host": "127.0.0.1"})
 
         self.assertIsNone(runtime.RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
         self.assertNotIn("order_settle_timeout_seconds", self._rpc_block())

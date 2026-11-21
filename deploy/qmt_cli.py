@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Big QMT redis-bridge CLI client (Jianghai Securities deployment).
+"""Big QMT valkey-bridge CLI client (Jianghai Securities deployment).
 
 External-python entry point for querying assets/positions/orders/trades and
 market data through the xtquant_big_convert RPC bridge, plus order submit and
@@ -19,7 +19,7 @@ cancel. Usage examples:
     python qmt_cli.py watch
 
 The account id is read from bigqmt_signal_trader_client_config.BIGQMT_ACCOUNT_ID,
-or from --account / BIGQMT_ACCOUNT_ID env var. `discover` scans Redis for the
+or from --account / BIGQMT_ACCOUNT_ID env var. `discover` scans Valkey for the
 account id the QMT-side strategy registered.
 """
 import argparse
@@ -40,9 +40,9 @@ from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
     BigQmtXtTrader,
     BigQmtXtData,
 )
+from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client, local_valkey_config
 from xtquant import xtconstant  # noqa: E402
 from xtquant.xttype import StockAccount  # noqa: E402
-import redis  # noqa: E402
 
 
 def account_id(args):
@@ -61,28 +61,24 @@ def account_id(args):
     return value
 
 
-def redis_kwargs():
+def valkey_kwargs():
     if cfg is None:
         sys.exit(
             "bigqmt_signal_trader_client_config.py not found next to this "
             "script -- run deploy_qmt_bridge.ps1 first, or create it with "
-            "BIGQMT_REDIS_CONFIG (see deploy/README.md)"
+            "BIGQMT_CONFIG (see deploy/README.md)"
         )
-    return dict(cfg.BIGQMT_REDIS_CONFIG)
+    return local_valkey_config(cfg)
 
 
-def raw_redis():
-    kw = redis_kwargs()
-    kw.pop("transport", None)
-    username = kw.get("username") or None
-    kw["username"] = username
-    return redis.Redis(**kw)
+def raw_valkey():
+    return build_valkey_client(valkey_kwargs())
 
 
 def make_trader(acc_id):
     return BigQmtXtTrader(
         account_id=acc_id,
-        redis_config=redis_kwargs(),
+        valkey_config=valkey_kwargs(),
         timeout_seconds=getattr(cfg, "BIGQMT_RPC_TIMEOUT_SECONDS", 30.0),
     )
 
@@ -90,7 +86,7 @@ def make_trader(acc_id):
 def make_data(acc_id):
     client = BigQmtRpcClient(
         account_id=acc_id,
-        redis_config=redis_kwargs(),
+        valkey_config=valkey_kwargs(),
         timeout_seconds=getattr(cfg, "BIGQMT_RPC_TIMEOUT_SECONDS", 30.0),
     )
     return BigQmtXtData(client)
@@ -112,17 +108,17 @@ def fmt_row(obj, fields):
 
 
 def cmd_discover(args):
-    r = raw_redis()
+    r = raw_valkey()
     keys = [k.decode() if isinstance(k, bytes) else k for k in r.keys("bigqmt:*")]
     if not keys:
-        print("no bigqmt:* keys in redis db=%s -- is the QMT strategy running?" % r.connection_pool.connection_kwargs.get("db"))
+        print("no bigqmt:* keys in valkey db=%s -- is the QMT strategy running?" % r.connection_pool.connection_kwargs.get("db"))
         return
     accounts = set()
     for key in keys:
         for prefix in ("bigqmt:positions:", "bigqmt:rpc:req:", "bigqmt:order_events:", "bigqmt:trade_events:"):
             if key.startswith(prefix):
                 accounts.add(key[len(prefix):])
-    print("redis keys:")
+    print("valkey keys:")
     for key in sorted(keys):
         print("  ", key)
     print("discovered accounts:", sorted(accounts) or "(none yet)")
@@ -302,11 +298,11 @@ def cmd_watch(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Big QMT redis-bridge CLI")
+    parser = argparse.ArgumentParser(description="Big QMT valkey-bridge CLI")
     parser.add_argument("--account", default="", help="override account id")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("discover", help="scan redis for registered accounts")
+    sub.add_parser("discover", help="scan valkey for registered accounts")
     sub.add_parser("ping", help="rpc ping")
     sub.add_parser("asset", help="query account asset")
     sub.add_parser("positions", help="query positions")

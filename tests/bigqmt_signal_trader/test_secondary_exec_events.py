@@ -218,7 +218,7 @@ class PollerTest(unittest.TestCase):
 
 
 class _Sink(object):
-    """A redis stand-in that records channel names only."""
+    """A valkey stand-in that records channel names only."""
 
     def __init__(self):
         self.channels = []
@@ -326,7 +326,7 @@ class ManagerWiringTest(unittest.TestCase):
 
         class Service(object):
             account_id = "PRI"
-            redis = listen_redis = object()
+            valkey = listen_valkey = object()
 
             def drain_pending(self, max_items=20, budget_seconds=None):
                 return 0
@@ -357,14 +357,14 @@ class ManagerWiringTest(unittest.TestCase):
         class Handlers(object):
             order_gateway = Gateway()
 
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"PRI": "STOCK", "SEC": "CREDIT"}
-        with mock.patch.dict("sys.modules", {"bigqmt_signal_trader_local_config": fake_cfg}):
+        with mock.patch.dict("sys.modules", {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             primary = mock.MagicMock()
             primary.account_id = "PRI"
-            primary.redis = _Sink()
-            primary.listen_redis = "listen"
+            primary.valkey = _Sink()
+            primary.listen_valkey = "listen"
             primary.handlers = Handlers()
             with mock.patch("bigqmt_signal_trader.multi_account._build_secondary",
                             side_effect=lambda p, aid, cfg: types.SimpleNamespace(account_id=aid)):
@@ -377,13 +377,13 @@ class ManagerWiringTest(unittest.TestCase):
 
     def test_a_zero_interval_disables_the_poller(self):
         from bigqmt_signal_trader.multi_account import _build_secondary_exec_poller
-        primary = types.SimpleNamespace(redis=_Sink(), handlers=types.SimpleNamespace(order_gateway=object()))
+        primary = types.SimpleNamespace(valkey=_Sink(), handlers=types.SimpleNamespace(order_gateway=object()))
         self.assertIsNone(_build_secondary_exec_poller(
             None, primary, ["SEC"], {"rpc": {"secondary_exec_poll_seconds": 0}}))
 
     def test_exec_events_off_disables_the_poller(self):
         from bigqmt_signal_trader.multi_account import _build_secondary_exec_poller
-        primary = types.SimpleNamespace(redis=_Sink(), handlers=types.SimpleNamespace(order_gateway=object()))
+        primary = types.SimpleNamespace(valkey=_Sink(), handlers=types.SimpleNamespace(order_gateway=object()))
         self.assertIsNone(_build_secondary_exec_poller(
             None, primary, ["SEC"], {"exec_events": {"enabled": False}}))
 

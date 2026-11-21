@@ -31,10 +31,10 @@ QMT 自带 Python 里就有它的官方客户端：`bin.x64/Lib/site-packages/qm
 
 | 路径 | p50 |
 |------|-----|
-| redis RPC | ~13ms |
+| 迁移 Valkey 前的 Redis RPC | ~13ms |
 | **FormulaServer 直连** | **0.07ms**，无 GIL 竞争 |
 
-穿过完整客户端栈（`BigQmtRpcClient.call`）实测 **0.145ms/次**，比 redis 快约 90 倍。
+穿过完整客户端栈（`BigQmtRpcClient.call`）实测 **0.145ms/次**，比当时的 RPC 路径快约 90 倍。
 
 ## 能力边界
 
@@ -86,7 +86,7 @@ getFullTick / getQuote                                   -> 200005
   结构完整但值错误的答案比没有答案更糟，且适配层无法区分陈旧与正确，所以一律走 RPC。
   2026-10-11 补充（#405）：ContextInfo 侧的合约库在个别机器上同样会被污染且重启不自愈
   （OpenDate=0/更名日）；`get_instrument` 因此改为 native SDK 优先（miniQMT 共存时天然
-  对齐）、ContextInfo 回落——native 开关沿用 `native_xtdata_enabled`（redis 传输默认开）。
+  对齐）、ContextInfo 回落——native 开关沿用 `native_xtdata_enabled`（valkey 传输默认开）。
   激活条件＝同机保持一个已登录的 miniQMT 进程。
 
 - **复权 K 线** —— 实测 `dividendType` 传 `none` 和 `front` 返回**完全相同**的价格，
@@ -149,7 +149,7 @@ BIGQMT_FORMULA_SERVER_CONFIG = {
 }
 ```
 
-也可以写在 `BIGQMT_REDIS_CONFIG["formula_server"]` 里，后者优先级更高。
+也可以写在 `BIGQMT_CONFIG["formula_server"]` 里，后者优先级更高。
 
 ## 排查
 

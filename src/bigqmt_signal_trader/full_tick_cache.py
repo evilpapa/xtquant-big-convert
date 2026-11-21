@@ -1,4 +1,4 @@
-"""Demand-driven Redis cache for Big QMT full tick snapshots."""
+"""Demand-driven Valkey cache for Big QMT full tick snapshots."""
 
 import hashlib
 import json
@@ -76,7 +76,7 @@ def _load_snapshot(raw):
             return None
 
 
-def request_full_tick_cache(redis_client, account_id, codes, demand_ttl_seconds=10, cache_ttl_seconds=10):
+def request_full_tick_cache(valkey_client, account_id, codes, demand_ttl_seconds=10, cache_ttl_seconds=10):
     normalized = normalize_full_tick_codes(codes)
     if not normalized:
         raise ValueError("full tick codes are required")
@@ -90,15 +90,15 @@ def request_full_tick_cache(redis_client, account_id, codes, demand_ttl_seconds=
         "cache_ttl_seconds": float(cache_ttl_seconds),
     }
     key = full_tick_demand_key(account_id)
-    redis_client.hset(key, request_id, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    valkey_client.hset(key, request_id, json.dumps(payload, ensure_ascii=False, sort_keys=True))
     try:
-        redis_client.expire(key, max(30, int(float(demand_ttl_seconds) * 3)))
+        valkey_client.expire(key, max(30, int(float(demand_ttl_seconds) * 3)))
     except Exception:
         pass
     return payload
 
 
-def write_full_tick_cache(redis_client, account_id, codes, data, cache_ttl_seconds=10):
+def write_full_tick_cache(valkey_client, account_id, codes, data, cache_ttl_seconds=10):
     normalized = normalize_full_tick_codes(codes)
     request_id = full_tick_request_id(normalized)
     now = time.time()
@@ -111,14 +111,14 @@ def write_full_tick_cache(redis_client, account_id, codes, data, cache_ttl_secon
     }
     key = full_tick_cache_key(account_id, request_id=request_id)
     ttl = int(max(1, float(cache_ttl_seconds)))
-    redis_client.setex(key, ttl, _dump_snapshot(payload))
+    valkey_client.setex(key, ttl, _dump_snapshot(payload))
     return payload
 
 
-def read_full_tick_cache(redis_client, account_id, codes, max_age_seconds=10):
+def read_full_tick_cache(valkey_client, account_id, codes, max_age_seconds=10):
     normalized = normalize_full_tick_codes(codes)
     key = full_tick_cache_key(account_id, codes=normalized)
-    snapshot = _load_snapshot(redis_client.get(key))
+    snapshot = _load_snapshot(valkey_client.get(key))
     if not isinstance(snapshot, dict):
         return None
     if normalize_full_tick_codes(snapshot.get("codes") or []) != normalized:
@@ -132,10 +132,10 @@ def read_full_tick_cache(redis_client, account_id, codes, max_age_seconds=10):
     return data if isinstance(data, dict) else None
 
 
-def wait_full_tick_cache(redis_client, account_id, codes, max_age_seconds=10, wait_seconds=3.5, poll_interval_seconds=0.2):
+def wait_full_tick_cache(valkey_client, account_id, codes, max_age_seconds=10, wait_seconds=3.5, poll_interval_seconds=0.2):
     deadline = time.time() + max(0.0, float(wait_seconds))
     while True:
-        data = read_full_tick_cache(redis_client, account_id, codes, max_age_seconds=max_age_seconds)
+        data = read_full_tick_cache(valkey_client, account_id, codes, max_age_seconds=max_age_seconds)
         if data is not None:
             return data
         if time.time() >= deadline:
@@ -143,9 +143,9 @@ def wait_full_tick_cache(redis_client, account_id, codes, max_age_seconds=10, wa
         time.sleep(max(0.05, float(poll_interval_seconds)))
 
 
-def iter_active_full_tick_demands(redis_client, account_id, demand_ttl_seconds=10, max_requests=8):
+def iter_active_full_tick_demands(valkey_client, account_id, demand_ttl_seconds=10, max_requests=8):
     key = full_tick_demand_key(account_id)
-    raw_mapping = redis_client.hgetall(key) or {}
+    raw_mapping = valkey_client.hgetall(key) or {}
     now = time.time()
     active = []
     for field, raw_payload in list(raw_mapping.items()):
@@ -154,21 +154,21 @@ def iter_active_full_tick_demands(redis_client, account_id, demand_ttl_seconds=1
             payload = _loads_json(raw_payload)
         except Exception:
             try:
-                redis_client.hdel(key, field_text)
+                valkey_client.hdel(key, field_text)
             except Exception:
                 pass
             continue
         expires_at = float(payload.get("expires_at_ts") or 0)
         if expires_at <= now:
             try:
-                redis_client.hdel(key, field_text)
+                valkey_client.hdel(key, field_text)
             except Exception:
                 pass
             continue
         codes = normalize_full_tick_codes(payload.get("codes") or [])
         if not codes:
             try:
-                redis_client.hdel(key, field_text)
+                valkey_client.hdel(key, field_text)
             except Exception:
                 pass
             continue
@@ -184,7 +184,7 @@ def _demand_is_market(codes):
 
 
 def refresh_full_tick_cache(
-    redis_client,
+    valkey_client,
     context_info,
     account_id,
     demand_ttl_seconds=10,
@@ -204,7 +204,7 @@ def refresh_full_tick_cache(
     started_at = time.time()
     refreshed = 0
     for demand in iter_active_full_tick_demands(
-        redis_client,
+        valkey_client,
         account_id,
         demand_ttl_seconds=demand_ttl_seconds,
         max_requests=max_requests,
@@ -219,6 +219,6 @@ def refresh_full_tick_cache(
             break
         tick_data = context_info.get_full_tick(codes) or {}
         ttl = demand.get("cache_ttl_seconds") or cache_ttl_seconds
-        write_full_tick_cache(redis_client, account_id, codes, tick_data, cache_ttl_seconds=ttl)
+        write_full_tick_cache(valkey_client, account_id, codes, tick_data, cache_ttl_seconds=ttl)
         refreshed += 1
     return refreshed

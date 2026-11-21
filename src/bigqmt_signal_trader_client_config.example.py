@@ -5,11 +5,11 @@ Copy this file to ``bigqmt_signal_trader_client_config.py`` in the directory
 of the script that runs the client. It is found by ``import``, so it has to
 be on ``sys.path``: next to the script is simplest; anywhere on PYTHONPATH
 works; ``BIGQMT_CLIENT_CONFIG_MODULE=<module>`` names one explicitly. When
-none is found the client falls back to ``bigqmt_signal_trader_local_config``
+none is found the client falls back to ``bigqmt_signal_trader_qmt_config``
 (the QMT-side file), which is why running from the QMT python directory
 happens to work and running from anywhere else does not.
 
-Do not commit the real file. It may contain account ids and Redis credentials.
+Do not commit the real file. It may contain account ids and Valkey credentials.
 """
 
 BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
@@ -17,25 +17,25 @@ BIGQMT_RPC_TIMEOUT_SECONDS = 30.0
 BIGQMT_DOWNLOAD_WAIT_SECONDS = 1800
 BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
 
-BIGQMT_REDIS_CONFIG = {
-    # 账户查询（持仓/资产）失败时，是否用 redis 里的上一份快照作答。
+BIGQMT_CONFIG = {
+    # 账户查询（持仓/资产）失败时，是否用 valkey 里的上一份快照作答。
     # 默认 False —— 查询失败就抛给调用方。打开它等于接受
     # 「拿旧持仓当当前持仓」，策略据此算仓位是会出事的（#243）。
     # 打开后仍要求快照带 updated_at 且在时限内，否则照样抛。
     # "account_cache_fallback": False,
     # "account_cache_max_age_seconds": 30,
 
-    "host": "YOUR_REDIS_HOST",
+    "host": "YOUR_VALKEY_HOST",
     "port": 6379,
     "db": 5,
     "username": "",
     "password": "",
     # Transport must match the QMT-side configuration.
-    "transport": "redis",
+    "transport": "valkey",
 }
 
 # Default direct mode calls get_full_tick through RPC. Set enabled=True only when
-# you want client-side get_full_tick to read demand-driven Redis snapshots.
+# you want client-side get_full_tick to read demand-driven Valkey snapshots.
 BIGQMT_FULL_TICK_CACHE_CONFIG = {
     "enabled": False,
     "demand_ttl_seconds": 10,
@@ -66,7 +66,7 @@ BIGQMT_LOCAL_CACHE_CONFIG = {
 # FormulaServer direct read fast-path (port 58600).
 #   Big QMT's built-in C++ quote/reference service. Routing reads straight to it
 #   bypasses the RPC bridge AND the QMT python thread's GIL: ~0.07ms vs ~13ms
-#   over redis. Enabled by default; you normally do not need this block.
+#   over valkey. Enabled by default; you normally do not need this block.
 #
 #   Covers reference/history reads only. Account, position, order, trade and
 #   五档 (get_full_tick) calls are NOT served by FormulaServer and always go over
@@ -88,7 +88,7 @@ BIGQMT_FORMULA_SERVER_CONFIG = {
 #   Server pushes each incremental tick batch to every client subscribed to the
 #   same combination; the RPC methods above only manage the subscription lifecycle.
 #   Data flows over a separate push channel matching `transport` above
-#   (redis pub/sub), msgpack-encoded
+#   (valkey pub/sub), msgpack-encoded
 #   (install the `msgpack` extra; falls back to json if absent).
 #
 #   quote_client_id: process-stable subscriber id. The server counts references

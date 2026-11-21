@@ -1,25 +1,25 @@
-"""Publish Big QMT position snapshots to Redis."""
+"""Publish Big QMT position snapshots to Valkey."""
 
 import datetime as _dt
 import json
 
 
-class RedisPositionSyncSink:
+class ValkeyPositionSyncSink:
     def __init__(
         self,
-        redis_client,
+        valkey_client,
         key_template="bigqmt:positions:{account_id}",
         event_stream_template="bigqmt:position_events:{account_id}",
         ttl_seconds=120,
         publish_events=True,
         stream_ttl_seconds=None,
     ):
-        self.redis = redis_client
+        self.valkey = valkey_client
         self.key_template = key_template
         self.event_stream_template = event_stream_template
         self.ttl_seconds = int(ttl_seconds)
         self.publish_events = bool(publish_events)
-        from .redis_common import EVENT_STREAM_TTL_SECONDS
+        from .valkey_common import EVENT_STREAM_TTL_SECONDS
 
         self.stream_ttl_seconds = int(
             EVENT_STREAM_TTL_SECONDS if stream_ttl_seconds is None else stream_ttl_seconds)
@@ -89,18 +89,18 @@ class RedisPositionSyncSink:
         if unchanged:
             if self.ttl_seconds > 0:
                 try:
-                    self.redis.expire(key, self.ttl_seconds)
+                    self.valkey.expire(key, self.ttl_seconds)
                 except Exception:
                     pass
             return None
         self._last_material = material
 
         if self.ttl_seconds > 0:
-            self.redis.setex(key, self.ttl_seconds, payload)
+            self.valkey.setex(key, self.ttl_seconds, payload)
         else:
-            self.redis.set(key, payload)
+            self.valkey.set(key, payload)
         if self.publish_events:
-            from .redis_common import (
+            from .valkey_common import (
                 note_stream_failure, streams_dead, touch_stream_ttl,
             )
 
@@ -108,13 +108,13 @@ class RedisPositionSyncSink:
             # Cap the stream to prevent unbounded memory growth. Order/trade
             # events already use maxlen=2000; position events were missing it,
             # causing 4.2GB+ streams in production (issue #21).
-            # redis < 5.0 has no streams at all: learn it once and stop
+            # If XADD is unavailable, learn it once and stop
             # raising every tick (issue #163).
             if not streams_dead():
                 try:
-                    self.redis.xadd(stream_key, {"payload": payload}, maxlen=2000, approximate=True)
+                    self.valkey.xadd(stream_key, {"payload": payload}, maxlen=2000, approximate=True)
                     # maxlen 挡的是单键膨胀，挡不住键永远不消失。续期一次，
                     # 停写的流自然过期（#213）。
-                    touch_stream_ttl(self.redis, stream_key, self.stream_ttl_seconds)
+                    touch_stream_ttl(self.valkey, stream_key, self.stream_ttl_seconds)
                 except Exception as exc:
                     note_stream_failure(exc)

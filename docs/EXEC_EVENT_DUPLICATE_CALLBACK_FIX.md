@@ -8,7 +8,7 @@
 
 ## 修复
 
-策略入口只保留 `order_callback(ContextInfo, orderInfo)` 和 `deal_callback(ContextInfo, dealInfo)`，直接发布 Redis 执行事件并转发给本地 runner；运行时和 dry-run 入口不再导入或导出旧别名。相关策略入口、运行时及测试均已更新。
+策略入口只保留 `order_callback(ContextInfo, orderInfo)` 和 `deal_callback(ContextInfo, dealInfo)`，直接发布 Valkey 执行事件并转发给本地 runner；运行时和 dry-run 入口不再导入或导出旧别名。相关策略入口、运行时及测试均已更新。
 
 ## 验证
 

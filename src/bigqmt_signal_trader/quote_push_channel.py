@@ -3,8 +3,8 @@
 The RPC transport is request/response only; whole-quote data needs the opposite
 direction — the server pushes each incremental tick batch to every client
 subscribed to that combination. This module provides an abstract channel with
-* :class:`RedisQuotePushChannel` — redis ``publish``/``subscribe`` on a
-  per-account, per-combination channel, for redis deployments.
+* :class:`ValkeyQuotePushChannel` — valkey ``publish``/``subscribe`` on a
+  per-account, per-combination channel, for valkey deployments.
 
 Wire encoding is msgpack when available (smaller + faster for the
 ``{code: {field: number}}`` payload shape), falling back to stdlib json so the
@@ -72,9 +72,9 @@ class QuotePushChannel(object):
 
 
 class NullQuotePushChannel(QuotePushChannel):
-    """No-op push channel for deployments with no push wire (redis
+    """No-op push channel for deployments with no push wire (valkey
     absent). Publishing is a silent no-op -- the alternative was
-    RedisQuotePushChannel(None), whose publish raised AttributeError per event.
+    ValkeyQuotePushChannel(None), whose publish raised AttributeError per event.
     """
 
     def start_publisher(self):
@@ -99,9 +99,9 @@ def _unique_accounts(values):
     return seen
 
 
-class RedisQuotePushChannel(QuotePushChannel):
-    def __init__(self, redis_client, account_id="", channel_template="bigqmt:quote_push:{account_id}:{topic}", print_prefix="[bigqmt_quote_push]", account_ids=None):
-        self.redis = redis_client
+class ValkeyQuotePushChannel(QuotePushChannel):
+    def __init__(self, valkey_client, account_id="", channel_template="bigqmt:quote_push:{account_id}:{topic}", print_prefix="[bigqmt_quote_push]", account_ids=None):
+        self.valkey = valkey_client
         self.account_id = str(account_id or "")
         self.channel_template = channel_template
         self.print_prefix = print_prefix
@@ -125,16 +125,16 @@ class RedisQuotePushChannel(QuotePushChannel):
 
     # -- server side ---------------------------------------------------------
     def start_publisher(self):
-        # Redis publish needs no setup; present for interface symmetry.
+        # Valkey publish needs no setup; present for interface symmetry.
         self._running = True
 
     def publish(self, topic, data):
         payload = encode_push_payload({"combo_key": topic, "data": data})
         for account_id in self.account_ids or [self.account_id]:
             try:
-                self.redis.publish(self._channel(topic, account_id), payload)
+                self.valkey.publish(self._channel(topic, account_id), payload)
             except Exception as exc:
-                print("%s redis publish failed: %s" % (self.print_prefix, exc))
+                print("%s valkey publish failed: %s" % (self.print_prefix, exc))
 
     # -- client side ---------------------------------------------------------
     def start_subscriber(self, topics, on_msg):
@@ -156,7 +156,7 @@ class RedisQuotePushChannel(QuotePushChannel):
         while not stopped.is_set():
             pubsub = None
             try:
-                pubsub = self.redis.pubsub(ignore_subscribe_messages=True)
+                pubsub = self.valkey.pubsub(ignore_subscribe_messages=True)
                 self._pubsub = pubsub
                 pubsub.subscribe(*channels)
                 while not stopped.is_set():
@@ -178,7 +178,7 @@ class RedisQuotePushChannel(QuotePushChannel):
             except Exception as exc:
                 if not stopped.is_set():
                     # Retry every second -- quotes should come back fast -- but
-                    # do NOT print every second. Redis down over a weekend is
+                    # do NOT print every second. Valkey down over a weekend is
                     # 3600 lines/hour, and this repo has been bitten by log
                     # volume before (#139 wrote one line 16 times; #144 grew a
                     # log without bound because rotation could never run). The
@@ -190,7 +190,7 @@ class RedisQuotePushChannel(QuotePushChannel):
                     now = time.time()
                     if (failures & (failures - 1)) == 0 or now - last_report >= 60.0:
                         last_report = now
-                        print("%s redis subscriber reconnecting (attempt %d): %s"
+                        print("%s valkey subscriber reconnecting (attempt %d): %s"
                               % (self.print_prefix, failures, exc))
             else:
                 failures = 0

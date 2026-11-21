@@ -1,15 +1,15 @@
 """Say so when the entry runs as a script instead of as a strategy (#123).
 
-lzxN put the files in the QMT python directory, ran BIGQMT_REDIS_DRYRUN.py from
+lzxN put the files in the QMT python directory, ran BIGQMT_VALKEY_DRYRUN.py from
 the strategy editor, and got:
 
-    [BIGQMT_REDIS_DRYRUN]开始运行
+    [BIGQMT_VALKEY_DRYRUN]开始运行
     [bigqmt_shell] importlib entry source_root=...
     [bigqmt_shell] account_type=STOCK (from BIGQMT_ACCOUNT_TYPE)
-    [bigqmt_shell] local redis config loaded keys=[...]
+    [bigqmt_shell] local valkey config loaded keys=[...]
     [bigqmt_shell] local account config loaded=True
     [bigqmt_shell] download globals bound=[]
-    [BIGQMT_REDIS_DRYRUN]结束运行
+    [BIGQMT_VALKEY_DRYRUN]结束运行
 
 Every line looks like a healthy start. The tell is `download globals bound=[]`
 -- empty -- and the absence of `init ok` and the diagnostics block. QMT injects
@@ -32,7 +32,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-ENTRY = os.path.join(SRC, "BIGQMT_REDIS_DRYRUN.py")
+ENTRY = os.path.join(SRC, "BIGQMT_VALKEY_DRYRUN.py")
 
 
 def _source():

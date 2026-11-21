@@ -47,36 +47,36 @@ class AccountTypeForTest(unittest.TestCase):
 
     def test_no_map_falls_back_to_default(self):
         """Scenario 1: no BIGQMT_ACCOUNT_TYPE_MAP → default_type."""
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
         result = account_type_for("any_account", default_type="CREDIT")
         self.assertEqual(result, "CREDIT")
 
     def test_map_present_correct_mapping(self):
         """Scenario 2: MAP has the key → returns mapped type."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"123456": "CREDIT", "789012": "FUTURE"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             self.assertEqual(account_type_for("123456", "STOCK"), "CREDIT")
             self.assertEqual(account_type_for("789012", "STOCK"), "FUTURE")
 
     def test_key_not_in_map_falls_back(self):
         """Scenario 3: key exists but account_id is not in MAP → default."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"111": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             self.assertEqual(account_type_for("999", "STOCK"), "STOCK")
 
     def test_empty_or_none_account_id_falls_back(self):
         """Scenario 4: account_id is empty string or None → default."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"111": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             self.assertEqual(account_type_for("", "STOCK"), "STOCK")
             self.assertEqual(account_type_for(None, "CREDIT"), "CREDIT")
@@ -90,10 +90,10 @@ class AccountTypeForTest(unittest.TestCase):
         "123456". This is the designed behavior: account_ids in QMT are
         always strings, and the str() cast catches accidental int usage.
         """
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"123456": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             # int 123456 is str()-converted and matches "123456"
             result = account_type_for(123456, "STOCK")
@@ -101,35 +101,35 @@ class AccountTypeForTest(unittest.TestCase):
 
     def test_int_key_not_in_still_falls_back(self):
         """An int that has no corresponding string key → default."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"111": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             self.assertEqual(account_type_for(999, "STOCK"), "STOCK")
 
     def test_reload_clears_cached_map(self):
         """reload() forces a fresh load on next access."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"AAA": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             self.assertEqual(account_type_for("AAA", "STOCK"), "CREDIT")
 
         # Change the config
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"AAA": "FUTURE"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             self.assertEqual(account_type_for("AAA", "STOCK"), "FUTURE")
 
     def test_map_with_none_value_treated_as_empty(self):
         """BIGQMT_ACCOUNT_TYPE_MAP = None → treated as {} → fallback."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = None
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             self.assertEqual(account_type_for("any", "STOCK"), "STOCK")
 
@@ -144,10 +144,10 @@ class GatewayResolveAccountTypeTest(unittest.TestCase):
     def test_order_gateway_uses_map(self):
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"ACCT_CREDIT": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             gw = BigQmtOrderGateway(context_info=None, account_type="STOCK")
             self.assertEqual(gw._resolve_account_type("ACCT_CREDIT"), "CREDIT")
@@ -156,10 +156,10 @@ class GatewayResolveAccountTypeTest(unittest.TestCase):
     def test_position_gateway_uses_map(self):
         from bigqmt_signal_trader.adapters.position_bigqmt import BigQmtPositionProvider
 
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"ACCT_CREDIT": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             prov = BigQmtPositionProvider(
                 get_trade_detail_data_func=None, account_type="STOCK")
@@ -177,10 +177,10 @@ class AccountTypeCodePerRequestTest(unittest.TestCase):
     def test_with_map_returns_mapped_code(self):
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"CREDIT_ACCT": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             gw = BigQmtOrderGateway(context_info=None, account_type="STOCK")
             code_mapped = gw._account_type_code("CREDIT_ACCT")
@@ -192,10 +192,10 @@ class AccountTypeCodePerRequestTest(unittest.TestCase):
     def test_without_account_id_uses_self_account_type(self):
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"CREDIT_ACCT": "CREDIT"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             gw = BigQmtOrderGateway(context_info=None, account_type="CREDIT")
             # No account_id → uses self.account_type = "CREDIT"
@@ -206,7 +206,7 @@ class AccountTypeCodePerRequestTest(unittest.TestCase):
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
         # No MAP configured
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
         gw = BigQmtOrderGateway(context_info=None, account_type="STOCK")
         code_no_id = gw._account_type_code()
@@ -223,17 +223,17 @@ class ConfiguredAccountTypePerRequestTest(unittest.TestCase):
     """_configured_account_type(account_id=...) avoids _current_params race."""
 
     def _make_handlers(self, gateway_account_type="STOCK", account_type_map=None):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
         if account_type_map is not None:
-            fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+            fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
             fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = account_type_map
             with mock.patch.dict("sys.modules",
-                                 {"bigqmt_signal_trader_local_config": fake_cfg}):
+                                 {"bigqmt_signal_trader_qmt_config": fake_cfg}):
                 reload_map()
         else:
-            sys.modules.pop("bigqmt_signal_trader_local_config", None)
+            sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
             reload_map()
 
         gw = BigQmtOrderGateway(context_info=None, account_type=gateway_account_type)
@@ -284,17 +284,17 @@ class ReportedAccountTypePerRequestTest(unittest.TestCase):
     """_reported_account_type(account_id=...) respects per-request MAP."""
 
     def _make_handlers(self, gateway_account_type="STOCK", account_type_map=None):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
         if account_type_map is not None:
-            fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+            fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
             fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = account_type_map
             with mock.patch.dict("sys.modules",
-                                 {"bigqmt_signal_trader_local_config": fake_cfg}):
+                                 {"bigqmt_signal_trader_qmt_config": fake_cfg}):
                 reload_map()
         else:
-            sys.modules.pop("bigqmt_signal_trader_local_config", None)
+            sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
             reload_map()
 
         gw = BigQmtOrderGateway(context_info=None, account_type=gateway_account_type)
@@ -307,7 +307,7 @@ class ReportedAccountTypePerRequestTest(unittest.TestCase):
         return handlers
 
     def test_no_gateway_returns_empty(self):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
         h = BigQmtRpcHandlers.__new__(BigQmtRpcHandlers)
         h.order_gateway = None
         self.assertEqual(h._reported_account_type(), "")
@@ -337,10 +337,10 @@ class NoImportlibReloadTest(unittest.TestCase):
         with mock.patch.object(importlib, "reload") as mock_reload:
             # Force a fresh load
             atm._ACCOUNT_TYPE_MAP = None
-            fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+            fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
             fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"X": "CREDIT"}
             with mock.patch.dict("sys.modules",
-                                 {"bigqmt_signal_trader_local_config": fake_cfg}):
+                                 {"bigqmt_signal_trader_qmt_config": fake_cfg}):
                 atm.get_account_type_map()
             mock_reload.assert_not_called()
 

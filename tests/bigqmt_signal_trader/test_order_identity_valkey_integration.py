@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Exercise identity migration with Redis's real Lua and expiry semantics."""
+"""Exercise identity migration with Valkey's real Lua and expiry semantics."""
 
 import json
 import os
@@ -22,7 +22,7 @@ from bigqmt_signal_trader.exec_events import (
     order_identity_map,
     remember_order_identity,
 )
-from bigqmt_signal_trader.redis_safe_value import LUA_ENCODE, LUA_RESEGMENT, decode_json, encode_json
+from bigqmt_signal_trader.valkey_safe_value import LUA_ENCODE, LUA_RESEGMENT, decode_json, encode_json
 from test_order_identity_safe_storage import _assert_bounded_response
 
 
@@ -32,7 +32,7 @@ NAME = "中文策略_T4_D1"
 PREFIX = b"bqidentity:"
 _ALPHA_TO_DIGIT = str.maketrans("ghijklmnop", "0123456789")
 
-# Guojin QMT's redis/client.py response-wide filters (lines 926-927). Only
+# Guojin QMT's historical client response filters. Only
 # GET/MGET and real Lua EVAL replies are filtered before Python consumes them.
 _STOCK_RE = re.compile(
     r"(^|[^\d])+([36]0[\d]{4}|00(000[1-9]|[1-9][\d]{3}|[\d][1-9][\d]{2}|[\d]{2}[1-9][\d]))([^\d]|$)+"
@@ -47,7 +47,7 @@ class _JsonBytesEncoder(json.JSONEncoder):
         return super().default(value)
 
 
-class _FilteredRedis(object):
+class _FilteredValkey(object):
     def __init__(self, client, before_eval=None):
         self.client = client
         self.before_eval = before_eval
@@ -60,7 +60,7 @@ class _FilteredRedis(object):
         text = (json.dumps(value, cls=_JsonBytesEncoder)
                 if isinstance(value, (list, dict)) else str(value))
         if _STOCK_RE.findall(text) and _OP_RE.findall(text):
-            from redis.exceptions import DataError
+            from valkey.exceptions import DataError
             raise DataError("Sensitive Data Detected, Forbidden!")
         return value
 
@@ -78,27 +78,27 @@ class _FilteredRedis(object):
 
 
 @pytest.fixture(scope="module")
-def _isolated_redis(tmp_path_factory):
-    redis = pytest.importorskip("redis")
+def _isolated_valkey(tmp_path_factory):
+    valkey = pytest.importorskip("valkey")
     try:
-        from redis.backoff import NoBackoff
-        from redis.retry import Retry
+        from valkey.backoff import NoBackoff
+        from valkey.retry import Retry
     except ImportError:
         no_retry = {"retry_on_timeout": False}
     else:
         no_retry = {"retry": Retry(NoBackoff(), 0)}
 
-    executable = shutil.which("redis-server")
+    executable = shutil.which("valkey-server")
     if executable is None:
-        pytest.skip("redis-server is unavailable for isolated Lua integration tests")
+        pytest.skip("valkey-server is unavailable for isolated Lua integration tests")
     # Reserve a loopback port, then release it immediately before starting our
-    # own server. Never inspect or reuse an existing Redis/account database.
+    # own server. Never inspect or reuse an existing Valkey/account database.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    directory = tmp_path_factory.mktemp("identity-redis")
-    logfile = directory / "redis.log"
-    client = redis.Redis(host="127.0.0.1", port=port, db=0,
+    directory = tmp_path_factory.mktemp("identity-valkey")
+    logfile = directory / "valkey.log"
+    client = valkey.Valkey(host="127.0.0.1", port=port, db=0,
                          socket_connect_timeout=0.2, socket_timeout=0.5,
                          **no_retry)
     options = {}
@@ -114,23 +114,23 @@ def _isolated_redis(tmp_path_factory):
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 if process.poll() is not None:
-                    pytest.fail("isolated Redis exited at startup: " +
+                    pytest.fail("isolated Valkey exited at startup: " +
                                 logfile.read_text(encoding="utf-8", errors="replace"))
                 try:
                     if client.ping():
                         break
-                except redis.exceptions.RedisError:
+                except valkey.exceptions.ValkeyError:
                     pass
                 time.sleep(0.02)
             else:
-                pytest.fail("isolated Redis did not become ready: " +
+                pytest.fail("isolated Valkey did not become ready: " +
                             logfile.read_text(encoding="utf-8", errors="replace"))
             yield client
         finally:
             if process.poll() is None:
                 try:
                     client.shutdown(nosave=True)
-                except redis.exceptions.RedisError:
+                except valkey.exceptions.ValkeyError:
                     pass
                 try:
                     process.wait(timeout=2)
@@ -145,9 +145,9 @@ def _isolated_redis(tmp_path_factory):
 
 
 @pytest.fixture
-def real_redis(_isolated_redis):
-    _isolated_redis.flushdb()
-    return _isolated_redis
+def real_valkey(_isolated_valkey):
+    _isolated_valkey.flushdb()
+    return _isolated_valkey
 
 
 def _legacy(account=ACCOUNT, remark=REMARK):
@@ -180,16 +180,16 @@ def _expiry_deadline(client, key):
 
 
 @pytest.mark.parametrize("reader", ["query", "callback", "remember"])
-def test_real_lua_migrates_filtered_legacy_without_changing_bytes_or_ttl(real_redis, reader):
-    from redis.exceptions import DataError
+def test_real_lua_migrates_filtered_legacy_without_changing_bytes_or_ttl(real_valkey, reader):
+    from valkey.exceptions import DataError
 
     payload, raw = _legacy()
     key = order_identity_key(ACCOUNT, REMARK)
-    real_redis.set(key, raw, px=120000)
-    filtered = _FilteredRedis(real_redis)
+    real_valkey.set(key, raw, px=120000)
+    filtered = _FilteredValkey(real_valkey)
     with pytest.raises(DataError, match="Sensitive Data Detected"):
         filtered.get(key)
-    before = _expiry_deadline(real_redis, key)
+    before = _expiry_deadline(real_valkey, key)
 
     if reader == "query":
         assert order_identity_map(filtered, ACCOUNT, [REMARK]) == {REMARK: payload}
@@ -203,45 +203,45 @@ def test_real_lua_migrates_filtered_legacy_without_changing_bytes_or_ttl(real_re
         assert remember_order_identity(filtered, ACCOUNT, REMARK,
                                        "another strategy", "000001.SZ") is None
 
-    assert _decode_storage(real_redis.get(key)) == raw
-    assert abs(_expiry_deadline(real_redis, key) - before) < 50
+    assert _decode_storage(real_valkey.get(key)) == raw
+    assert abs(_expiry_deadline(real_valkey, key) - before) < 50
     assert sum("SETRANGE" in script for script, _, _ in filtered.evals) == 1
     # A fresh client with no submit-time memory reads the migrated record.
-    assert order_identity_map(_FilteredRedis(real_redis), ACCOUNT, [REMARK]) == {REMARK: payload}
+    assert order_identity_map(_FilteredValkey(real_valkey), ACCOUNT, [REMARK]) == {REMARK: payload}
 
 
-def test_real_lua_keeps_a_persistent_legacy_record_persistent(real_redis):
+def test_real_lua_keeps_a_persistent_legacy_record_persistent(real_valkey):
     payload, raw = _legacy()
     key = order_identity_key(ACCOUNT, REMARK)
-    real_redis.set(key, raw)
+    real_valkey.set(key, raw)
 
-    assert order_identity_map(_FilteredRedis(real_redis), ACCOUNT, [REMARK]) == {REMARK: payload}
+    assert order_identity_map(_FilteredValkey(real_valkey), ACCOUNT, [REMARK]) == {REMARK: payload}
 
-    assert real_redis.pttl(key) == -1
-    assert _decode_storage(real_redis.get(key)) == raw
+    assert real_valkey.pttl(key) == -1
+    assert _decode_storage(real_valkey.get(key)) == raw
 
 
 @pytest.mark.parametrize("field", ["account", "remark"])
-def test_real_lua_does_not_rewrite_a_mismatched_identity(real_redis, field):
+def test_real_lua_does_not_rewrite_a_mismatched_identity(real_valkey, field):
     values = {"account": ACCOUNT, "remark": REMARK}
     values[field] = "different"
     _, raw = _legacy(**values)
     key = order_identity_key(ACCOUNT, REMARK)
-    real_redis.set(key, raw, px=120000)
-    before = _expiry_deadline(real_redis, key)
-    filtered = _FilteredRedis(real_redis)
+    real_valkey.set(key, raw, px=120000)
+    before = _expiry_deadline(real_valkey, key)
+    filtered = _FilteredValkey(real_valkey)
 
     assert order_identity_map(filtered, ACCOUNT, [REMARK]) == {}
 
-    assert real_redis.get(key) == raw
-    assert abs(_expiry_deadline(real_redis, key) - before) < 50
+    assert real_valkey.get(key) == raw
+    assert abs(_expiry_deadline(real_valkey, key) - before) < 50
     assert sum("SETRANGE" in script for script, _, _ in filtered.evals) == 1
 
 
-def test_real_lua_does_not_resurrect_a_record_that_expires_before_eval(real_redis):
+def test_real_lua_does_not_resurrect_a_record_that_expires_before_eval(real_valkey):
     _, raw = _legacy()
     key = order_identity_key(ACCOUNT, REMARK)
-    real_redis.set(key, raw, px=120000)
+    real_valkey.set(key, raw, px=120000)
 
     def expire_before_eval(client, identity_key):
         client.pexpire(identity_key, 1)
@@ -250,36 +250,36 @@ def test_real_lua_does_not_resurrect_a_record_that_expires_before_eval(real_redi
             time.sleep(0.001)
         assert not client.exists(identity_key)
 
-    filtered = _FilteredRedis(real_redis, before_eval=expire_before_eval)
+    filtered = _FilteredValkey(real_valkey, before_eval=expire_before_eval)
 
     assert order_identity_map(filtered, ACCOUNT, [REMARK]) == {}
 
     assert len(filtered.evals) == 1
-    assert real_redis.pttl(key) == -2
-    assert real_redis.get(key) is None
+    assert real_valkey.pttl(key) == -2
+    assert real_valkey.get(key) is None
 
 
-def test_real_redis_new_record_survives_a_fresh_filtered_client(real_redis):
+def test_real_valkey_new_record_survives_a_fresh_filtered_client(real_valkey):
     key = order_identity_key(ACCOUNT, REMARK)
-    payload = remember_order_identity(_FilteredRedis(real_redis), ACCOUNT,
+    payload = remember_order_identity(_FilteredValkey(real_valkey), ACCOUNT,
                                       REMARK, NAME, "cu2610.SF")
 
     assert payload is not None
-    assert order_identity_map(_FilteredRedis(real_redis), ACCOUNT, [REMARK]) == {REMARK: payload}
-    stored = json.loads(_decode_storage(real_redis.get(key)).decode("utf-8"))
+    assert order_identity_map(_FilteredValkey(real_valkey), ACCOUNT, [REMARK]) == {REMARK: payload}
+    stored = json.loads(_decode_storage(real_valkey.get(key)).decode("utf-8"))
     assert stored == payload
     assert stored["strategy_name"] == NAME
     assert stored["stock_code"] == "cu2610.SF"
 
 
 @pytest.mark.parametrize("size", [0, 1, 13, 14, 15, 16, 17, 30, 31, 32, 33, 10000])
-def test_real_lua_codec_matches_python_at_chunk_boundaries(real_redis, size):
+def test_real_lua_codec_matches_python_at_chunk_boundaries(real_valkey, size):
     value = "x" * size
     raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
-    encoded = real_redis.eval(LUA_ENCODE + "return safe_encode(ARGV[1], ARGV[2])",
+    encoded = real_valkey.eval(LUA_ENCODE + "return safe_encode(ARGV[1], ARGV[2])",
                               0, raw, PREFIX)
     assert not re.search(rb"\d", encoded)
-    reply = real_redis.eval(LUA_RESEGMENT + "return safe_resegment(ARGV[1], ARGV[2])",
+    reply = real_valkey.eval(LUA_RESEGMENT + "return safe_resegment(ARGV[1], ARGV[2])",
                             0, encoded, PREFIX)
     _assert_bounded_response([reply] * 200)
     assert decode_json(reply) == value
@@ -288,7 +288,7 @@ def test_real_lua_codec_matches_python_at_chunk_boundaries(real_redis, size):
     assert len(encoded) > len(raw)  # SETRANGE must overwrite every old byte
 
 
-def test_real_lua_batch_migration_preserves_long_original_bytes_and_expiry(real_redis):
+def test_real_lua_batch_migration_preserves_long_original_bytes_and_expiry(real_valkey):
     before = {}
     for i in range(200):
         remark = "synthetic-" + str(i)
@@ -296,42 +296,42 @@ def test_real_lua_batch_migration_preserves_long_original_bytes_and_expiry(real_
         if i == 199:
             raw = raw[:-1] + b', "padding": "' + b"x" * 10000 + b'"}'
         key = order_identity_key(ACCOUNT, remark)
-        real_redis.set(key, raw, px=120000)
-        before[key] = (raw, _expiry_deadline(real_redis, key))
+        real_valkey.set(key, raw, px=120000)
+        before[key] = (raw, _expiry_deadline(real_valkey, key))
     # Exercise the actual migration script without first returning legacy
     # values through the guard. Existing per-key fallback semantics stay intact.
     from bigqmt_signal_trader.exec_events import _MIGRATE_ORDER_IDENTITY
-    replies = [real_redis.eval(_MIGRATE_ORDER_IDENTITY, 1, key, ACCOUNT,
+    replies = [real_valkey.eval(_MIGRATE_ORDER_IDENTITY, 1, key, ACCOUNT,
                               json.loads(raw.decode("utf-8"))["user_order_id"], PREFIX)
                for key, (raw, _) in before.items()]
     assert all(not re.search(rb"\d", reply) for reply in replies)
     for key, (raw, deadline) in before.items():
-        stored = real_redis.get(key)
+        stored = real_valkey.get(key)
         assert len(stored) > len(raw)
         assert _decode_storage(stored) == raw
-        assert abs(_expiry_deadline(real_redis, key) - deadline) < 50
+        assert abs(_expiry_deadline(real_valkey, key) - deadline) < 50
 
 
-def test_real_redis_reads_old_unseparated_identity_without_rewriting(real_redis):
+def test_real_valkey_reads_old_unseparated_identity_without_rewriting(real_valkey):
     payload, raw = _legacy()
     key = order_identity_key(ACCOUNT, REMARK)
     old = PREFIX + raw.hex().translate(str.maketrans("0123456789", "ghijklmnop")).encode("ascii")
-    real_redis.set(key, old, px=120000)
-    deadline = _expiry_deadline(real_redis, key)
-    reader = _FilteredRedis(real_redis)
+    real_valkey.set(key, old, px=120000)
+    deadline = _expiry_deadline(real_valkey, key)
+    reader = _FilteredValkey(real_valkey)
     assert order_identity_map(reader, ACCOUNT, [REMARK]) == {REMARK: payload}
-    assert real_redis.get(key) == old
-    assert abs(_expiry_deadline(real_redis, key) - deadline) < 50
+    assert real_valkey.get(key) == old
+    assert abs(_expiry_deadline(real_valkey, key) - deadline) < 50
     assert len(reader.evals) == 1
 
 
-def test_real_redis_large_new_identity_batch_needs_no_migration(real_redis):
-    filtered = _FilteredRedis(real_redis)
+def test_real_valkey_large_new_identity_batch_needs_no_migration(real_valkey):
+    filtered = _FilteredValkey(real_valkey)
     expected = {}
     for i in range(200):
         remark = "synthetic-" + str(i)
         expected[remark] = remember_order_identity(filtered, ACCOUNT, remark, NAME, "600036.SH")
-    values = real_redis.mget([order_identity_key(ACCOUNT, remark) for remark in expected])
+    values = real_valkey.mget([order_identity_key(ACCOUNT, remark) for remark in expected])
     assert all(not re.search(rb"\d", value) for value in values)
     assert all(value is not None for value in expected.values())
     assert order_identity_map(filtered, ACCOUNT, list(expected)) == expected

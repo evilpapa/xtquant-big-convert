@@ -2,7 +2,7 @@
 
 Some brokers' QMT sandboxes reject external imports and file loading outright,
 so the only way in is one self-contained strategy file. tools/build_single_file
-and tools/build_no_redis_single_file_flat generate those.
+and tools/build_no_valkey_single_file_flat generate those.
 
 The flat builder execs every embedded module inside a ``def _mod_N():`` body.
 That is precisely the shape that made ``from xtquant.xtconstant import *`` a
@@ -26,7 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, "tools")
 
 BUILDERS = {
-    "redis": ("build_single_file.py", "utf-8"),
+    "valkey": ("build_single_file.py", "utf-8"),
 }
 
 _built = {}
@@ -53,8 +53,8 @@ def build(kind):
 
 
 class BuildsSucceedTest(unittest.TestCase):
-    def test_redis_build_compiles(self):
-        path, _source = build("redis")
+    def test_valkey_build_compiles(self):
+        path, _source = build("valkey")
         with open(path, "rb") as stream:
             compile(stream.read(), path, "exec")
 
@@ -121,7 +121,7 @@ class ConfigBlockTest(unittest.TestCase):
         """Drift between the two silently gives single-file users a different
         default than everyone else."""
         example = os.path.join(
-            ROOT, "src", "bigqmt_signal_trader_local_config.example.py")
+            ROOT, "src", "bigqmt_signal_trader_qmt_config.example.py")
         with io.open(example, encoding="utf-8") as stream:
             example_source = stream.read()
         keys = re.findall(r'^\s{4}"([a-z_]+)":', example_source, re.M)
@@ -172,7 +172,7 @@ class EmbeddedContentTest(unittest.TestCase):
         top_dir, package_dir = build_single_file.resolve_source_dirs()
         with self.assertRaises(SystemExit):
             build_single_file.collect_package(
-                package_dir, top_dir, excluded=("redis_common.py",))
+                package_dir, top_dir, excluded=("valkey_common.py",))
 
     pass
 

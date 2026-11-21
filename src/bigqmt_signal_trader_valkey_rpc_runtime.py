@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Big QMT Redis Pub/Sub RPC strategy entry.
+"""Big QMT Valkey Pub/Sub RPC strategy entry.
 
 This entry does not consume trade signals. RPC order methods are disabled by
 default; read-only methods and position sync are enabled.
@@ -12,7 +12,7 @@ import sys
 # QMT loads strategy scripts via exec, so __file__ may be undefined. Build a
 # list of candidate directories (script dir guesses + cwd) and put any that
 # holds bigqmt_signal_trader_strategy.py on sys.path[0]. This keeps the package
-# and bigqmt_signal_trader_local_config importable regardless of how QMT
+# and bigqmt_signal_trader_qmt_config importable regardless of how QMT
 # invokes the script.
 _CANDIDATE_DIRS = []
 try:
@@ -27,6 +27,9 @@ for _dir in _CANDIDATE_DIRS:
         if _dir not in sys.path:
             sys.path.insert(0, _dir)
         break
+
+
+from bigqmt_signal_trader.adapters.valkey_common import local_valkey_config
 
 
 try:
@@ -97,23 +100,25 @@ ACCOUNT_ID = ""
 # 账号类型：STOCK(股票) / CREDIT(信用/两融) / FUTURE(期货) / OPTION(期权)
 # 对应 xtconstant 枚举：SECURITY_ACCOUNT=2 / CREDIT_ACCOUNT=3 / FUTURE_ACCOUNT=1
 ACCOUNT_TYPE = "STOCK"
-# 这台机器上到底有没有 redis 可用。默认 True 只是为了不改变既有部署的行为；
-# 它并不代表「配了 redis」—— 下面 REDIS_HOST/PORT 有默认值，所以光看配置永远
-# 分辨不出「我配了 redis」和「我什么都没写」（issue #147）。
+# 这台机器上到底有没有 valkey 可用。默认 True 只是为了不改变既有部署的行为；
+# 它并不代表「配了 valkey」—— 下面 VALKEY_HOST/PORT 有默认值，所以光看配置永远
+# 分辨不出「我配了 valkey」和「我什么都没写」（issue #147）。
 #
-# 设成 False 时 configure_runtime 干脆不发 redis 块，于是 config["redis"] 为空，
+# 设成 False 时 configure_runtime 干脆不发 valkey 块，于是 config["valkey"] 为空，
 # 五个使用方（委托身份库、异步下载任务、全推快照缓存、exec 事件、身份回填）
-# 各自的 `if not redis_config: return None` 自然生效，一次都不会去连。
+# 各自的 `if not valkey_config: return None` 自然生效，一次都不会去连。
 #
-# 用在 redis 根本不可用的环境：券商 QMT 的 import 白名单不含 redis（issue #145），
-# transport=redis 时这个开关被忽略 ——
-# 那种部署没有 redis 就没有 RPC。
-REDIS_ENABLED = True
-REDIS_HOST = "127.0.0.1"
-REDIS_PORT = 6379
-REDIS_DB = 5
-REDIS_USERNAME = ""
-REDIS_PASSWORD = ""
+# 用在 QMT 无法加载 RESP 客户端的环境（issue #145），
+# transport=valkey 时这个开关被忽略 ——
+# 那种部署没有 valkey 就没有 RPC。
+VALKEY_ENABLED = True
+VALKEY_HOST = os.environ.get("BIGQMT_VALKEY_HOST") or "127.0.0.1"
+VALKEY_PORT = int(os.environ.get("BIGQMT_VALKEY_PORT") or 6379)
+VALKEY_DB = int(os.environ.get("BIGQMT_VALKEY_DB") or 5)
+VALKEY_USERNAME = os.environ.get("BIGQMT_VALKEY_USERNAME") or ""
+VALKEY_PASSWORD = os.environ.get("BIGQMT_VALKEY_PASSWORD") or ""
+VALKEY_URL = os.environ.get("BIGQMT_VALKEY_URL")
+VALKEY_PROTOCOL = os.environ.get("BIGQMT_VALKEY_PROTOCOL") or 2
 RPC_ALLOW_ORDER_METHODS = False
 # 未指定策略名时委托带的 投资备注。QMT 会把它显示在 委托 列表的 报单来源 列
 # （issue #154），所以这不是内部字段。设为 "" 可让该列留空，和手动下单一样。
@@ -123,9 +128,9 @@ RPC_BACKGROUND_THREADS = False
 # "*" expands to read-only RPC methods only. Order/cancel/sync methods still go
 # through the queue fallback and require schedule_adjust=True when enabled.
 RPC_LISTENER_METHODS = ("*",)
-# Transport selection: redis or shm.
+# Transport selection: valkey or shm.
 # Backend-specific configuration is forwarded to the factory.
-RPC_TRANSPORT = "redis"
+RPC_TRANSPORT = "valkey"
 RPC_SERIAL_CONFIG = {}
 # None defaults to enabled; explicit True/False overrides it.
 RPC_NATIVE_XTDATA_ENABLED = None
@@ -140,7 +145,7 @@ SCHEDULE_ADJUST_INTERVAL = "500nMilliSecond"
 RPC_DRAIN_BUDGET_SECONDS = None
 # Post-submit/-cancel settle window before the RPC answers without a broker id
 # (#396 follow-up). None = the strategy/handlers default (3.0s) owns it; set
-# order_settle_timeout_seconds in the redis block to override. Forwarded only
+# order_settle_timeout_seconds in the valkey block to override. Forwarded only
 # when named, so the default keeps living in one place.
 RPC_ORDER_SETTLE_TIMEOUT_SECONDS = None
 # Heavy reads (downloads, financial data, market-token get_full_tick, tick
@@ -173,7 +178,7 @@ DOWNLOAD_JOBS_ENABLED = False
 DOWNLOAD_JOB_CHUNK_SIZE = 10
 DOWNLOAD_JOB_MAX_WALL_SECONDS = 0.5
 DOWNLOAD_JOB_TTL_SECONDS = 3600
-# Push order_callback/deal_callback details to Redis so clients get real-time
+# Push order_callback/deal_callback details to Valkey so clients get real-time
 # on_stock_order/on_stock_trade callbacks (MiniQMT style) instead of polling.
 EXEC_EVENTS_ENABLED = True
 # Dump the raw order_callback/deal_callback object fields to the QMT output panel
@@ -190,13 +195,16 @@ EXEC_EVENTS_HOLD_PRESYSID_SECONDS = 0.8
 try:
     # Keep optional account-type config backward compatible: an old local
     # config without BIGQMT_ACCOUNT_TYPE must not discard the account ID or
-    # Redis settings that are present in that same module.
-    from bigqmt_signal_trader_local_config import BIGQMT_ACCOUNT_ID, BIGQMT_REDIS_CONFIG
+    # Valkey settings that are present in that same module.
+    import bigqmt_signal_trader_qmt_config as _local_config
+
+    BIGQMT_ACCOUNT_ID = getattr(_local_config, "BIGQMT_ACCOUNT_ID", "")
+    BIGQMT_CONFIG = local_valkey_config(_local_config)
 except Exception:
     BIGQMT_ACCOUNT_ID = ""
-    BIGQMT_REDIS_CONFIG = {}
+    BIGQMT_CONFIG = {}
 try:
-    from bigqmt_signal_trader_local_config import BIGQMT_ACCOUNT_TYPE
+    from bigqmt_signal_trader_qmt_config import BIGQMT_ACCOUNT_TYPE
 except Exception:
     BIGQMT_ACCOUNT_TYPE = ""
 
@@ -207,7 +215,7 @@ ACCOUNT_ID = str(BIGQMT_ACCOUNT_ID or ACCOUNT_ID or "")
 #
 # Three places look plausible and only one used to work:
 #   - BIGQMT_ACCOUNT_TYPE in the local config          -- worked
-#   - account_type inside BIGQMT_REDIS_CONFIG          -- was ignored
+#   - account_type inside BIGQMT_CONFIG          -- was ignored
 #   - editing ACCOUNT_TYPE in this file                -- silently overwritten
 #     below, because the shipped example config sets BIGQMT_ACCOUNT_TYPE.
 # Both of the others are now honoured, and the resolved value is printed at
@@ -219,8 +227,8 @@ ACCOUNT_ID = str(BIGQMT_ACCOUNT_ID or ACCOUNT_ID or "")
 _ACCOUNT_TYPE_EDITED_HERE = ACCOUNT_TYPE if ACCOUNT_TYPE != "STOCK" else ""
 _account_type_sources = [
     ("BIGQMT_ACCOUNT_TYPE", BIGQMT_ACCOUNT_TYPE),
-    ("BIGQMT_REDIS_CONFIG['account_type']", BIGQMT_REDIS_CONFIG.get("account_type")),
-    ("ACCOUNT_TYPE in bigqmt_signal_trader_redis_rpc_runtime.py",
+    ("BIGQMT_CONFIG['account_type']", BIGQMT_CONFIG.get("account_type")),
+    ("ACCOUNT_TYPE in bigqmt_signal_trader_valkey_rpc_runtime.py",
      _ACCOUNT_TYPE_EDITED_HERE),
 ]
 ACCOUNT_TYPE_SOURCE = "default"
@@ -285,94 +293,98 @@ def _report_account_type():
 
 _report_deployment()
 _report_account_type()
-REDIS_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("redis_enabled", REDIS_ENABLED))
-REDIS_ENABLED_EXPLICIT = "redis_enabled" in BIGQMT_REDIS_CONFIG
+VALKEY_ENABLED = bool(BIGQMT_CONFIG.get("valkey_enabled", VALKEY_ENABLED))
+VALKEY_ENABLED_EXPLICIT = "valkey_enabled" in BIGQMT_CONFIG
 # Keep direct runtime configuration in sync with the selected transport.
-RPC_TRANSPORT = str(BIGQMT_REDIS_CONFIG.get("transport", RPC_TRANSPORT)).lower()
-RPC_SERIAL_CONFIG = dict(BIGQMT_REDIS_CONFIG.get("serial") or {})
-if BIGQMT_REDIS_CONFIG.get("native_xtdata_enabled") is not None:
-    RPC_NATIVE_XTDATA_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("native_xtdata_enabled"))
-REDIS_HOST = BIGQMT_REDIS_CONFIG.get("host", REDIS_HOST)
-REDIS_PORT = int(BIGQMT_REDIS_CONFIG.get("port", REDIS_PORT))
-REDIS_DB = int(BIGQMT_REDIS_CONFIG.get("db", REDIS_DB))
-REDIS_USERNAME = BIGQMT_REDIS_CONFIG.get("username", REDIS_USERNAME)
-REDIS_PASSWORD = BIGQMT_REDIS_CONFIG.get("password", REDIS_PASSWORD)
-RPC_ALLOW_ORDER_METHODS = bool(BIGQMT_REDIS_CONFIG.get("rpc_allow_order_methods", RPC_ALLOW_ORDER_METHODS))
-RPC_DEFAULT_STRATEGY_NAME = BIGQMT_REDIS_CONFIG.get(
+RPC_TRANSPORT = str(BIGQMT_CONFIG.get("transport", RPC_TRANSPORT)).lower()
+RPC_SERIAL_CONFIG = dict(BIGQMT_CONFIG.get("serial") or {})
+if BIGQMT_CONFIG.get("native_xtdata_enabled") is not None:
+    RPC_NATIVE_XTDATA_ENABLED = bool(BIGQMT_CONFIG.get("native_xtdata_enabled"))
+VALKEY_HOST = BIGQMT_CONFIG.get("host", VALKEY_HOST)
+VALKEY_PORT = int(BIGQMT_CONFIG.get("port", VALKEY_PORT))
+VALKEY_DB = int(BIGQMT_CONFIG.get("db", VALKEY_DB))
+VALKEY_USERNAME = BIGQMT_CONFIG.get("username", VALKEY_USERNAME)
+VALKEY_PASSWORD = BIGQMT_CONFIG.get("password", VALKEY_PASSWORD)
+VALKEY_URL = BIGQMT_CONFIG.get("url", VALKEY_URL)
+VALKEY_PROTOCOL = BIGQMT_CONFIG.get("protocol", VALKEY_PROTOCOL)
+RPC_ALLOW_ORDER_METHODS = bool(BIGQMT_CONFIG.get("rpc_allow_order_methods", RPC_ALLOW_ORDER_METHODS))
+RPC_DEFAULT_STRATEGY_NAME = BIGQMT_CONFIG.get(
     "rpc_default_strategy_name", RPC_DEFAULT_STRATEGY_NAME)
 RPC_PROCESS_IN_LISTENER = bool(
-    BIGQMT_REDIS_CONFIG.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER and not RPC_ALLOW_ORDER_METHODS)
+    BIGQMT_CONFIG.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER and not RPC_ALLOW_ORDER_METHODS)
 )
-RPC_BACKGROUND_THREADS = bool(BIGQMT_REDIS_CONFIG.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
-# The strategy side only honors an EXPLICIT rpc_background_threads on non-redis
+RPC_BACKGROUND_THREADS = bool(BIGQMT_CONFIG.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
+# The strategy side only honors an EXPLICIT rpc_background_threads on non-valkey
 # transports (absent = historical default, receiver threads on). Remember
 # whether the local config named it so _apply_config can forward accordingly.
-RPC_BACKGROUND_THREADS_EXPLICIT = "rpc_background_threads" in BIGQMT_REDIS_CONFIG
-RPC_LISTENER_METHODS = tuple(BIGQMT_REDIS_CONFIG.get("rpc_listener_methods", RPC_LISTENER_METHODS))
-QUOTE_PUSH_CONFIG = dict(BIGQMT_REDIS_CONFIG.get("quote_push", QUOTE_PUSH_CONFIG))
-SCHEDULE_ADJUST_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("schedule_adjust", SCHEDULE_ADJUST_ENABLED))
+RPC_BACKGROUND_THREADS_EXPLICIT = "rpc_background_threads" in BIGQMT_CONFIG
+RPC_LISTENER_METHODS = tuple(BIGQMT_CONFIG.get("rpc_listener_methods", RPC_LISTENER_METHODS))
+QUOTE_PUSH_CONFIG = dict(BIGQMT_CONFIG.get("quote_push", QUOTE_PUSH_CONFIG))
+SCHEDULE_ADJUST_ENABLED = bool(BIGQMT_CONFIG.get("schedule_adjust", SCHEDULE_ADJUST_ENABLED))
 if not RPC_BACKGROUND_THREADS:
     SCHEDULE_ADJUST_ENABLED = True
-SCHEDULE_ADJUST_INTERVAL = str(BIGQMT_REDIS_CONFIG.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
-RPC_DRAIN_BUDGET_SECONDS = BIGQMT_REDIS_CONFIG.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
-RPC_ORDER_SETTLE_TIMEOUT_SECONDS = BIGQMT_REDIS_CONFIG.get(
+SCHEDULE_ADJUST_INTERVAL = str(BIGQMT_CONFIG.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
+RPC_DRAIN_BUDGET_SECONDS = BIGQMT_CONFIG.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
+RPC_ORDER_SETTLE_TIMEOUT_SECONDS = BIGQMT_CONFIG.get(
     "order_settle_timeout_seconds", RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
-RPC_HEAVY_OFFLOAD = bool(BIGQMT_REDIS_CONFIG.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))
-RPC_HEAVY_CODES_THRESHOLD = int(BIGQMT_REDIS_CONFIG.get("rpc_heavy_codes_threshold", RPC_HEAVY_CODES_THRESHOLD))
-FULL_TICK_CACHE_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("full_tick_cache_enabled", FULL_TICK_CACHE_ENABLED))
+RPC_HEAVY_OFFLOAD = bool(BIGQMT_CONFIG.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))
+RPC_HEAVY_CODES_THRESHOLD = int(BIGQMT_CONFIG.get("rpc_heavy_codes_threshold", RPC_HEAVY_CODES_THRESHOLD))
+FULL_TICK_CACHE_ENABLED = bool(BIGQMT_CONFIG.get("full_tick_cache_enabled", FULL_TICK_CACHE_ENABLED))
 FULL_TICK_DEMAND_TTL_SECONDS = float(
-    BIGQMT_REDIS_CONFIG.get("full_tick_demand_ttl_seconds", FULL_TICK_DEMAND_TTL_SECONDS)
+    BIGQMT_CONFIG.get("full_tick_demand_ttl_seconds", FULL_TICK_DEMAND_TTL_SECONDS)
 )
 FULL_TICK_CACHE_TTL_SECONDS = float(
-    BIGQMT_REDIS_CONFIG.get("full_tick_cache_ttl_seconds", FULL_TICK_CACHE_TTL_SECONDS)
+    BIGQMT_CONFIG.get("full_tick_cache_ttl_seconds", FULL_TICK_CACHE_TTL_SECONDS)
 )
 FULL_TICK_REFRESH_INTERVAL_SECONDS = float(
-    BIGQMT_REDIS_CONFIG.get("full_tick_refresh_interval_seconds", FULL_TICK_REFRESH_INTERVAL_SECONDS)
+    BIGQMT_CONFIG.get("full_tick_refresh_interval_seconds", FULL_TICK_REFRESH_INTERVAL_SECONDS)
 )
 FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS = float(
-    BIGQMT_REDIS_CONFIG.get("full_tick_market_refresh_interval_seconds", FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS)
+    BIGQMT_CONFIG.get("full_tick_market_refresh_interval_seconds", FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS)
 )
 FULL_TICK_REFRESH_MAX_WALL_SECONDS = float(
-    BIGQMT_REDIS_CONFIG.get("full_tick_refresh_max_wall_seconds", FULL_TICK_REFRESH_MAX_WALL_SECONDS)
+    BIGQMT_CONFIG.get("full_tick_refresh_max_wall_seconds", FULL_TICK_REFRESH_MAX_WALL_SECONDS)
 )
-FULL_TICK_MAX_REQUESTS = int(BIGQMT_REDIS_CONFIG.get("full_tick_max_requests", FULL_TICK_MAX_REQUESTS))
-DOWNLOAD_JOBS_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("download_jobs_enabled", DOWNLOAD_JOBS_ENABLED))
-DOWNLOAD_JOB_CHUNK_SIZE = int(BIGQMT_REDIS_CONFIG.get("download_job_chunk_size", DOWNLOAD_JOB_CHUNK_SIZE))
+FULL_TICK_MAX_REQUESTS = int(BIGQMT_CONFIG.get("full_tick_max_requests", FULL_TICK_MAX_REQUESTS))
+DOWNLOAD_JOBS_ENABLED = bool(BIGQMT_CONFIG.get("download_jobs_enabled", DOWNLOAD_JOBS_ENABLED))
+DOWNLOAD_JOB_CHUNK_SIZE = int(BIGQMT_CONFIG.get("download_job_chunk_size", DOWNLOAD_JOB_CHUNK_SIZE))
 DOWNLOAD_JOB_MAX_WALL_SECONDS = float(
-    BIGQMT_REDIS_CONFIG.get("download_job_max_wall_seconds", DOWNLOAD_JOB_MAX_WALL_SECONDS)
+    BIGQMT_CONFIG.get("download_job_max_wall_seconds", DOWNLOAD_JOB_MAX_WALL_SECONDS)
 )
-DOWNLOAD_JOB_TTL_SECONDS = int(BIGQMT_REDIS_CONFIG.get("download_job_ttl_seconds", DOWNLOAD_JOB_TTL_SECONDS))
-EXEC_EVENTS_ENABLED = bool(BIGQMT_REDIS_CONFIG.get("exec_events_enabled", EXEC_EVENTS_ENABLED))
+DOWNLOAD_JOB_TTL_SECONDS = int(BIGQMT_CONFIG.get("download_job_ttl_seconds", DOWNLOAD_JOB_TTL_SECONDS))
+EXEC_EVENTS_ENABLED = bool(BIGQMT_CONFIG.get("exec_events_enabled", EXEC_EVENTS_ENABLED))
 EXEC_EVENTS_DEBUG_RAW_FIELDS = bool(
-    BIGQMT_REDIS_CONFIG.get("exec_events_debug_raw_fields", EXEC_EVENTS_DEBUG_RAW_FIELDS)
+    BIGQMT_CONFIG.get("exec_events_debug_raw_fields", EXEC_EVENTS_DEBUG_RAW_FIELDS)
 )
 # issue #161: sysid-less order events are held this long waiting for their
 # sysid-bearing twin; 0 publishes every event immediately (old behaviour).
 EXEC_EVENTS_HOLD_PRESYSID_SECONDS = float(
-    BIGQMT_REDIS_CONFIG.get("exec_events_hold_presysid_seconds", 0.8)
+    BIGQMT_CONFIG.get("exec_events_hold_presysid_seconds", 0.8)
 )
 
 
-def _redis_block():
-    """The redis settings, or {} when this deployment has no redis (#147).
+def _valkey_block():
+    """The valkey settings, or {} when this deployment has no valkey (#147).
 
     An empty dict is the whole point: every consumer already guards with
-    `if not redis_config: return None`, and those guards were dead because
+    `if not valkey_config: return None`, and those guards were dead because
     this block was emitted unconditionally with module defaults.
 
-    transport=redis overrides the switch -- that deployment cannot run without
-    redis, so honouring redis_enabled=False there would break the RPC bridge
+    transport=valkey overrides the switch -- that deployment cannot run without
+    valkey, so honouring valkey_enabled=False there would break the RPC bridge
     itself rather than the optional extras.
 
     """
-    if RPC_TRANSPORT == "serial" or (not REDIS_ENABLED and RPC_TRANSPORT not in ("redis", "", "default")):
+    if RPC_TRANSPORT == "serial" or (not VALKEY_ENABLED and RPC_TRANSPORT not in ("valkey", "", "default")):
         return {}
     return {
-        "host": REDIS_HOST,
-        "port": REDIS_PORT,
-        "db": REDIS_DB,
-        "username": REDIS_USERNAME,
-        "password": REDIS_PASSWORD,
+        "host": VALKEY_HOST,
+        "port": VALKEY_PORT,
+        "db": VALKEY_DB,
+        "username": VALKEY_USERNAME,
+        "password": VALKEY_PASSWORD,
+        "url": VALKEY_URL,
+        "protocol": VALKEY_PROTOCOL,
         "position_key_template": "bigqmt:positions:{account_id}",
         "position_event_stream_template": "bigqmt:position_events:{account_id}",
     }
@@ -397,7 +409,7 @@ def _apply_config(account_id):
         "heavy_codes_threshold": RPC_HEAVY_CODES_THRESHOLD,
         "process_in_listener": RPC_PROCESS_IN_LISTENER,
         "listener_methods": RPC_LISTENER_METHODS,
-        # Transport selection (default redis). Forwarded from the local
+        # Transport selection (default valkey). Forwarded from the local
         # config for the transport factory.
         "transport": RPC_TRANSPORT,
         # Native xtdata can be explicitly disabled.
@@ -415,7 +427,7 @@ def _apply_config(account_id):
         rpc_block["order_settle_timeout_seconds"] = float(
             RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
     # Forward background_threads ONLY when the local config named it: on
-    # non-redis transports the strategy treats an absent key as "historical
+    # non-valkey transports the strategy treats an absent key as "historical
     # default" (receiver threads on) and an explicit False as the opt-in to
     # the adjust-driven drain (#104).
     if RPC_BACKGROUND_THREADS_EXPLICIT:
@@ -424,11 +436,11 @@ def _apply_config(account_id):
         mode="bigqmt",
         account_id=account_id,
         account_type=ACCOUNT_TYPE,
-        position_sync_type="redis" if RPC_TRANSPORT in ("redis", "", "default") else "",
+        position_sync_type="valkey" if RPC_TRANSPORT in ("valkey", "", "default") else "",
         enable_rpc=True,
         schedule_adjust=SCHEDULE_ADJUST_ENABLED or RPC_TRANSPORT == "serial",
         schedule_adjust_interval=SCHEDULE_ADJUST_INTERVAL,
-        redis=_redis_block(),
+        valkey=_valkey_block(),
         rpc=rpc_block,
         quote_push=QUOTE_PUSH_CONFIG,
         full_tick_cache={
@@ -461,31 +473,33 @@ def configure_runtime_account(account_id):
     _apply_config(account_id)
 
 
-def configure_runtime_redis(redis_config):
-    global REDIS_ENABLED, REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_USERNAME, REDIS_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, REDIS_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
-    global RPC_SERIAL_CONFIG
-    redis_config = dict(redis_config or {})
-    RPC_SERIAL_CONFIG = dict(redis_config.get("serial") or {})
-    RPC_BACKGROUND_THREADS_EXPLICIT = "rpc_background_threads" in redis_config
-    REDIS_ENABLED_EXPLICIT = "redis_enabled" in redis_config
-    if redis_config.get("native_xtdata_enabled") is not None:
-        RPC_NATIVE_XTDATA_ENABLED = bool(redis_config.get("native_xtdata_enabled"))
-    REDIS_ENABLED = bool(redis_config.get("redis_enabled", REDIS_ENABLED))
-    REDIS_HOST = redis_config.get("host", REDIS_HOST)
-    REDIS_PORT = int(redis_config.get("port", REDIS_PORT))
-    REDIS_DB = int(redis_config.get("db", REDIS_DB))
-    REDIS_USERNAME = redis_config.get("username", REDIS_USERNAME)
-    REDIS_PASSWORD = redis_config.get("password", REDIS_PASSWORD)
-    RPC_ALLOW_ORDER_METHODS = bool(redis_config.get("rpc_allow_order_methods", RPC_ALLOW_ORDER_METHODS))
-    RPC_DEFAULT_STRATEGY_NAME = redis_config.get(
+def configure_runtime_valkey(valkey_config):
+    global VALKEY_ENABLED, VALKEY_HOST, VALKEY_PORT, VALKEY_DB, VALKEY_USERNAME, VALKEY_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, VALKEY_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
+    global RPC_SERIAL_CONFIG, VALKEY_URL, VALKEY_PROTOCOL
+    valkey_config = valkey_config or {}
+    RPC_SERIAL_CONFIG = dict(valkey_config.get("serial") or {})
+    RPC_BACKGROUND_THREADS_EXPLICIT = "rpc_background_threads" in valkey_config
+    VALKEY_ENABLED_EXPLICIT = "valkey_enabled" in valkey_config
+    if valkey_config.get("native_xtdata_enabled") is not None:
+        RPC_NATIVE_XTDATA_ENABLED = bool(valkey_config.get("native_xtdata_enabled"))
+    VALKEY_ENABLED = bool(valkey_config.get("valkey_enabled", VALKEY_ENABLED))
+    VALKEY_HOST = valkey_config.get("host", VALKEY_HOST)
+    VALKEY_PORT = int(valkey_config.get("port", VALKEY_PORT))
+    VALKEY_DB = int(valkey_config.get("db", VALKEY_DB))
+    VALKEY_USERNAME = valkey_config.get("username", VALKEY_USERNAME)
+    VALKEY_PASSWORD = valkey_config.get("password", VALKEY_PASSWORD)
+    VALKEY_URL = valkey_config.get("url", VALKEY_URL)
+    VALKEY_PROTOCOL = valkey_config.get("protocol", VALKEY_PROTOCOL)
+    RPC_ALLOW_ORDER_METHODS = bool(valkey_config.get("rpc_allow_order_methods", RPC_ALLOW_ORDER_METHODS))
+    RPC_DEFAULT_STRATEGY_NAME = valkey_config.get(
         "rpc_default_strategy_name", RPC_DEFAULT_STRATEGY_NAME)
     RPC_PROCESS_IN_LISTENER = bool(
-        redis_config.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER and not RPC_ALLOW_ORDER_METHODS)
+        valkey_config.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER and not RPC_ALLOW_ORDER_METHODS)
     )
-    RPC_BACKGROUND_THREADS = bool(redis_config.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
-    RPC_LISTENER_METHODS = tuple(redis_config.get("rpc_listener_methods", RPC_LISTENER_METHODS))
-    RPC_TRANSPORT = str(redis_config.get("transport", RPC_TRANSPORT)).lower()
-    QUOTE_PUSH_CONFIG = dict(redis_config.get("quote_push", QUOTE_PUSH_CONFIG))
+    RPC_BACKGROUND_THREADS = bool(valkey_config.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
+    RPC_LISTENER_METHODS = tuple(valkey_config.get("rpc_listener_methods", RPC_LISTENER_METHODS))
+    RPC_TRANSPORT = str(valkey_config.get("transport", RPC_TRANSPORT)).lower()
+    QUOTE_PUSH_CONFIG = dict(valkey_config.get("quote_push", QUOTE_PUSH_CONFIG))
     # schedule_adjust must stay ON for all transports.
     # run_time("adjust", interval) is what THROTTLES QMT's strategy callback: with
     # it, adjust fires on the configured cadence (e.g. 500ms); WITHOUT it QMT calls
@@ -493,42 +507,42 @@ def configure_runtime_redis(redis_config):
     # background thread (RPC then times out entirely). It also sets the GIL-release
     # rhythm the background transport threads rely on. So keep the original rule:
     # honor an explicit value, default on, and force on when not background-threaded.
-    SCHEDULE_ADJUST_ENABLED = bool(redis_config.get("schedule_adjust", SCHEDULE_ADJUST_ENABLED))
+    SCHEDULE_ADJUST_ENABLED = bool(valkey_config.get("schedule_adjust", SCHEDULE_ADJUST_ENABLED))
     if not RPC_BACKGROUND_THREADS:
         SCHEDULE_ADJUST_ENABLED = True
-    SCHEDULE_ADJUST_INTERVAL = str(redis_config.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
-    RPC_DRAIN_BUDGET_SECONDS = redis_config.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
-    RPC_ORDER_SETTLE_TIMEOUT_SECONDS = redis_config.get(
+    SCHEDULE_ADJUST_INTERVAL = str(valkey_config.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
+    RPC_DRAIN_BUDGET_SECONDS = valkey_config.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
+    RPC_ORDER_SETTLE_TIMEOUT_SECONDS = valkey_config.get(
         "order_settle_timeout_seconds", RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
-    RPC_HEAVY_OFFLOAD = bool(redis_config.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))
-    RPC_HEAVY_CODES_THRESHOLD = int(redis_config.get("rpc_heavy_codes_threshold", RPC_HEAVY_CODES_THRESHOLD))
-    FULL_TICK_CACHE_ENABLED = bool(redis_config.get("full_tick_cache_enabled", FULL_TICK_CACHE_ENABLED))
+    RPC_HEAVY_OFFLOAD = bool(valkey_config.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))
+    RPC_HEAVY_CODES_THRESHOLD = int(valkey_config.get("rpc_heavy_codes_threshold", RPC_HEAVY_CODES_THRESHOLD))
+    FULL_TICK_CACHE_ENABLED = bool(valkey_config.get("full_tick_cache_enabled", FULL_TICK_CACHE_ENABLED))
     FULL_TICK_DEMAND_TTL_SECONDS = float(
-        redis_config.get("full_tick_demand_ttl_seconds", FULL_TICK_DEMAND_TTL_SECONDS)
+        valkey_config.get("full_tick_demand_ttl_seconds", FULL_TICK_DEMAND_TTL_SECONDS)
     )
-    FULL_TICK_CACHE_TTL_SECONDS = float(redis_config.get("full_tick_cache_ttl_seconds", FULL_TICK_CACHE_TTL_SECONDS))
+    FULL_TICK_CACHE_TTL_SECONDS = float(valkey_config.get("full_tick_cache_ttl_seconds", FULL_TICK_CACHE_TTL_SECONDS))
     FULL_TICK_REFRESH_INTERVAL_SECONDS = float(
-        redis_config.get("full_tick_refresh_interval_seconds", FULL_TICK_REFRESH_INTERVAL_SECONDS)
+        valkey_config.get("full_tick_refresh_interval_seconds", FULL_TICK_REFRESH_INTERVAL_SECONDS)
     )
     FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS = float(
-        redis_config.get("full_tick_market_refresh_interval_seconds", FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS)
+        valkey_config.get("full_tick_market_refresh_interval_seconds", FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS)
     )
     FULL_TICK_REFRESH_MAX_WALL_SECONDS = float(
-        redis_config.get("full_tick_refresh_max_wall_seconds", FULL_TICK_REFRESH_MAX_WALL_SECONDS)
+        valkey_config.get("full_tick_refresh_max_wall_seconds", FULL_TICK_REFRESH_MAX_WALL_SECONDS)
     )
-    FULL_TICK_MAX_REQUESTS = int(redis_config.get("full_tick_max_requests", FULL_TICK_MAX_REQUESTS))
-    DOWNLOAD_JOBS_ENABLED = bool(redis_config.get("download_jobs_enabled", DOWNLOAD_JOBS_ENABLED))
-    DOWNLOAD_JOB_CHUNK_SIZE = int(redis_config.get("download_job_chunk_size", DOWNLOAD_JOB_CHUNK_SIZE))
+    FULL_TICK_MAX_REQUESTS = int(valkey_config.get("full_tick_max_requests", FULL_TICK_MAX_REQUESTS))
+    DOWNLOAD_JOBS_ENABLED = bool(valkey_config.get("download_jobs_enabled", DOWNLOAD_JOBS_ENABLED))
+    DOWNLOAD_JOB_CHUNK_SIZE = int(valkey_config.get("download_job_chunk_size", DOWNLOAD_JOB_CHUNK_SIZE))
     DOWNLOAD_JOB_MAX_WALL_SECONDS = float(
-        redis_config.get("download_job_max_wall_seconds", DOWNLOAD_JOB_MAX_WALL_SECONDS)
+        valkey_config.get("download_job_max_wall_seconds", DOWNLOAD_JOB_MAX_WALL_SECONDS)
     )
-    DOWNLOAD_JOB_TTL_SECONDS = int(redis_config.get("download_job_ttl_seconds", DOWNLOAD_JOB_TTL_SECONDS))
-    EXEC_EVENTS_ENABLED = bool(redis_config.get("exec_events_enabled", EXEC_EVENTS_ENABLED))
+    DOWNLOAD_JOB_TTL_SECONDS = int(valkey_config.get("download_job_ttl_seconds", DOWNLOAD_JOB_TTL_SECONDS))
+    EXEC_EVENTS_ENABLED = bool(valkey_config.get("exec_events_enabled", EXEC_EVENTS_ENABLED))
     EXEC_EVENTS_DEBUG_RAW_FIELDS = bool(
-        redis_config.get("exec_events_debug_raw_fields", EXEC_EVENTS_DEBUG_RAW_FIELDS)
+        valkey_config.get("exec_events_debug_raw_fields", EXEC_EVENTS_DEBUG_RAW_FIELDS)
     )
     EXEC_EVENTS_HOLD_PRESYSID_SECONDS = float(
-        redis_config.get("exec_events_hold_presysid_seconds", EXEC_EVENTS_HOLD_PRESYSID_SECONDS)
+        valkey_config.get("exec_events_hold_presysid_seconds", EXEC_EVENTS_HOLD_PRESYSID_SECONDS)
     )
     _apply_config(ACCOUNT_ID)
 

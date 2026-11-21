@@ -42,7 +42,7 @@ class DryRunNeverOrdersTest(unittest.TestCase):
     def setUpClass(cls):
         # qmt.py's import-time path discovery appends the LIVE QMT python dir
         # to sys.path. Left in place, later tests in the same pytest process
-        # then resolve bigqmt_signal_trader_local_config from the live install
+        # then resolve bigqmt_signal_trader_qmt_config from the live install
         # (real account id, real zmq port) and test_runner's strategy init
         # dies on ZMQ_BIND_CONFLICT against the running QMT. Restore both
         # sys.path and any live-config modules when done.

@@ -1,9 +1,9 @@
 # coding: utf-8
-"""Exact native order/remark associations in the existing Redis identity store.
+"""Exact native order/remark associations in the existing Valkey identity store.
 
 Only a source-dated native row teaches an association. Amounts, quantities,
 prices and execution state remain QMT facts and are never reconstructed here.
-Redis loss/expiry or an association not yet observed leaves the remark unknown.
+Valkey loss/expiry or an association not yet observed leaves the remark unknown.
 """
 
 import copy
@@ -14,7 +14,7 @@ import math
 import time
 from urllib.parse import quote
 
-from .redis_safe_value import PREFIX, LUA_ENCODE, LUA_RESEGMENT, decode_json
+from .valkey_safe_value import PREFIX, LUA_ENCODE, LUA_RESEGMENT, decode_json
 
 
 LOGGER = logging.getLogger(__name__)
@@ -27,29 +27,29 @@ _last_warning = -float("inf")
 _OBSERVE_AND_READ = LUA_ENCODE + LUA_RESEGMENT + """
 for i, key in ipairs(KEYS) do
     local observed = ARGV[i + 1]
-    local old = redis.call('GET', key)
+    local old = server.call('GET', key)
     if observed ~= '' then
         if not old then
-            redis.call('SET', key, observed, 'EX', ARGV[1])
+            server.call('SET', key, observed, 'EX', ARGV[1])
         elseif old ~= observed and old ~= '!conflict' then
-            redis.call('SET', key, '!conflict', 'EX', ARGV[1])
+            server.call('SET', key, '!conflict', 'EX', ARGV[1])
         end
     end
 end
 for i, key in ipairs(KEYS) do
-    local old = redis.call('GET', key)
+    local old = server.call('GET', key)
     if old and old ~= '!conflict' then
         local ok, identity = pcall(cjson.decode, old)
         local expected = cjson.decode(ARGV[1 + #KEYS + i])
         if not ok or type(identity) ~= 'table' or #identity ~= 3
                 or identity[1] ~= expected[1] or identity[2] ~= expected[2] then
-            redis.call('SET', key, '!conflict', 'EX', ARGV[1])
+            server.call('SET', key, '!conflict', 'EX', ARGV[1])
         end
     end
 end
 local result = {}
 for i, key in ipairs(KEYS) do
-    local raw = redis.call('GET', key)
+    local raw = server.call('GET', key)
     if raw and raw ~= '!conflict' then
         result[i] = safe_resegment(safe_encode(raw, ARGV[2 + 2 * #KEYS]), ARGV[2 + 2 * #KEYS])
     elseif raw == '!conflict' then
@@ -75,7 +75,9 @@ def bounded_identity_client(client):
     if client is None:
         return None
     try:
-        import redis
+        from valkey import ConnectionPool
+        from valkey.backoff import NoBackoff
+        from valkey.retry import Retry
 
         pool = client.connection_pool
         kwargs = dict(pool.connection_kwargs)
@@ -83,24 +85,12 @@ def bounded_identity_client(client):
             value = kwargs.get(key)
             kwargs[key] = min(float(value), TIMEOUT_SECONDS) if value else TIMEOUT_SECONDS
         kwargs["retry_on_timeout"] = False
-        try:
-            from redis.backoff import NoBackoff
-            from redis.retry import Retry
-        except ImportError:
-            # QMT Python 3.6 embeds redis 3.5.3; it has no Retry API and only
-            # retries socket timeouts when retry_on_timeout is explicitly set.
-            kwargs.pop("retry", None)
-            kwargs.pop("retry_on_error", None)
-            if issubclass(pool.connection_class, redis.UnixDomainSocketConnection):
-                # redis 3.5 uses socket_timeout for Unix socket connect as well.
-                kwargs.pop("socket_connect_timeout", None)
-        else:
-            kwargs["retry"] = Retry(NoBackoff(), 0)
-            kwargs["retry_on_error"] = []
-        return redis.Redis(connection_pool=redis.ConnectionPool(
+        kwargs["retry"] = Retry(NoBackoff(), 0)
+        kwargs["retry_on_error"] = []
+        return type(client)(connection_pool=ConnectionPool(
             connection_class=pool.connection_class, max_connections=4, **kwargs))
     except Exception as exc:
-        _warn("Order remark recovery disabled: bounded Redis client unavailable", exc)
+        _warn("Order remark recovery disabled: bounded Valkey client unavailable", exc)
         return None
 
 
@@ -155,7 +145,7 @@ def recover_order_remarks(client, account_id, account_type, rows, ttl_seconds):
 
     Nonempty native values always win. Native rows are not modified, so a
     recovered value cannot become an observation on a reused gateway object.
-    Any Redis failure keeps the whole batch native, including its blanks.
+    Any Valkey failure keeps the whole batch native, including its blanks.
     """
     rows = list(rows or [])
     if client is None or not rows:
@@ -168,7 +158,7 @@ def recover_order_remarks(client, account_id, account_type, rows, ttl_seconds):
     if not wanted:
         return rows
     try:
-        # Encode inside Redis, before QMT checks the EVAL response. Keeping
+        # Encode inside Valkey, before QMT checks the EVAL response. Keeping
         # stored JSON unchanged also covers legacy bindings without migration,
         # TTL renewal or a read/modify/write race with native observations.
         values = client.eval(_OBSERVE_AND_READ, len(wanted),

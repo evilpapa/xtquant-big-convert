@@ -16,11 +16,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import bigqmt_signal_trader_strategy as strategy
-from bigqmt_signal_trader import serial_redis_bridge
+from bigqmt_signal_trader import serial_valkey_bridge
 from bigqmt_signal_trader.exec_events import order_channel, publish_exec_event
 from bigqmt_signal_trader.quote_push_channel import decode_push_payload
-from bigqmt_signal_trader.redis_rpc import call_redis_rpc, encode_rpc_request_payload
-from bigqmt_signal_trader.serial_redis_bridge import SerialRedisBridge
+from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc, encode_rpc_request_payload
+from bigqmt_signal_trader.serial_valkey_bridge import SerialValkeyBridge
 from bigqmt_signal_trader.transports import serial_transport
 from bigqmt_signal_trader.transports.factory import build_transport, transport_supports_drain
 
@@ -58,7 +58,7 @@ class Port:
         self.closed = True
 
 
-class MemoryRedis:
+class MemoryValkey:
     def __init__(self):
         self.lists = defaultdict(deque)
         self.keys = {}
@@ -148,14 +148,14 @@ def test_framing_checks_integrity_and_recovers_after_oversized_or_partial_lines(
 
 def test_bridge_waits_for_qmt_and_refuses_stale_or_legacy_orders(duplex):
     qmt, windows = duplex
-    redis = MemoryRedis()
-    bridge = SerialRedisBridge(redis, windows, ACCOUNT)
-    redis.rpush(REQUEST_QUEUE, request("old-order", "order_stock", time.time() - 10))
-    redis.rpush(REQUEST_QUEUE, encode_rpc_request_payload({
+    valkey = MemoryValkey()
+    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    valkey.rpush(REQUEST_QUEUE, request("old-order", "order_stock", time.time() - 10))
+    valkey.rpush(REQUEST_QUEUE, encode_rpc_request_payload({
         "request_id": "legacy-order", "method": "order_stock", "account_id": ACCOUNT,
     }))
     assert not bridge.step()
-    assert len(redis.lists[REQUEST_QUEUE]) == 2
+    assert len(valkey.lists[REQUEST_QUEUE]) == 2
     assert qmt.in_waiting == 0
 
     wire = serial_transport.SerialFrames(qmt)
@@ -164,15 +164,15 @@ def test_bridge_waits_for_qmt_and_refuses_stale_or_legacy_orders(duplex):
         wire.write_step()
     bridge.step()
     bridge.step()
-    assert "NOT dispatched" in json.loads(redis.get(REPLY_PREFIX + "old-order"))["error"]
-    assert "timestamp" in json.loads(redis.get(REPLY_PREFIX + "legacy-order"))["error"]
+    assert "NOT dispatched" in json.loads(valkey.get(REPLY_PREFIX + "old-order"))["error"]
+    assert "timestamp" in json.loads(valkey.get(REPLY_PREFIX + "legacy-order"))["error"]
     assert qmt.in_waiting == 0
 
 
 def test_serial_session_change_never_replays_an_unanswered_order(duplex):
     qmt, windows = duplex
-    redis = MemoryRedis()
-    bridge = SerialRedisBridge(redis, windows, ACCOUNT)
+    valkey = MemoryValkey()
+    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
     wire = serial_transport.SerialFrames(qmt)
 
     def hello(session):
@@ -181,14 +181,14 @@ def test_serial_session_change_never_replays_an_unanswered_order(duplex):
             wire.write_step()
 
     hello("before")
-    redis.rpush(REQUEST_QUEUE, request("uncertain", "order_stock"))
+    valkey.rpush(REQUEST_QUEUE, request("uncertain", "order_stock"))
     pump_until(bridge.step, lambda: "uncertain" in bridge._inflight and not bridge.wire.writing)
     assert wire.read_frames(1)[0]["session"] == "before"
 
     hello("after")
-    redis.rpush(REQUEST_QUEUE, request("outcome", "get_request_outcome", params={"request_id": "uncertain"}))
-    pump_until(bridge.step, lambda: redis.get(REPLY_PREFIX + "outcome") is not None)
-    assert "query orders and trades" in json.loads(redis.get(REPLY_PREFIX + "outcome"))["error"]
+    valkey.rpush(REQUEST_QUEUE, request("outcome", "get_request_outcome", params={"request_id": "uncertain"}))
+    pump_until(bridge.step, lambda: valkey.get(REPLY_PREFIX + "outcome") is not None)
+    assert "query orders and trades" in json.loads(valkey.get(REPLY_PREFIX + "outcome"))["error"]
     assert wire.read_frames(1) == []
 
 
@@ -202,40 +202,40 @@ def test_quote_backpressure_does_not_raise_into_qmt_or_displace_order_events():
     assert transport._next_outbound()["topic"] == "exec:order"
 
 
-def test_runtime_forwards_the_serial_port_without_a_redis_connection(monkeypatch):
-    import bigqmt_signal_trader_redis_rpc_runtime as runtime
+def test_runtime_forwards_the_serial_port_without_a_valkey_connection(monkeypatch):
+    import bigqmt_signal_trader_valkey_rpc_runtime as runtime
 
     config = {}
     monkeypatch.setattr(runtime, "configure", lambda **settings: config.update(settings))
     monkeypatch.setattr(runtime, "set_account_id", lambda account_id: None)
     monkeypatch.setattr(runtime, "RPC_TRANSPORT", "serial")
     monkeypatch.setattr(runtime, "RPC_SERIAL_CONFIG", {"port": "COM20", "baudrate": 115200})
-    monkeypatch.setattr(runtime, "REDIS_ENABLED", True)
+    monkeypatch.setattr(runtime, "VALKEY_ENABLED", True)
     monkeypatch.setattr(runtime, "SCHEDULE_ADJUST_ENABLED", False)
     runtime._apply_config(ACCOUNT)
     assert config["rpc"]["serial"] == {"port": "COM20", "baudrate": 115200}
-    assert config["redis"] == {}
+    assert config["valkey"] == {}
     assert config["schedule_adjust"] is True
 
 
 @pytest.mark.parametrize("allow_order_methods", [False, True])
-def test_existing_redis_client_round_trip_and_execution_gate(
+def test_existing_valkey_client_round_trip_and_execution_gate(
         duplex, monkeypatch, tmp_path, allow_order_methods):
     qmt, windows = duplex
-    redis = MemoryRedis()
-    bridge = SerialRedisBridge(redis, windows, ACCOUNT)
+    valkey = MemoryValkey()
+    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
     monkeypatch.setattr(serial_transport, "open_serial", lambda port, baudrate: qmt)
     monkeypatch.setattr(importlib, "reload", lambda module: module)
     monkeypatch.setattr(strategy, "_quote_subscription_service", None)
     monkeypatch.setattr(strategy, "_exec_events", None)
-    monkeypatch.setattr(strategy, "_exec_event_redis_client", object())
+    monkeypatch.setattr(strategy, "_exec_event_valkey_client", object())
     seen = []
 
     def submit(order):
         seen.append((threading.current_thread(), order.remark))
         return SimpleNamespace(order_sys_id="simulated")
 
-    config = {"account_id": ACCOUNT, "redis": {"host": "must-not-connect"}, "rpc": {
+    config = {"account_id": ACCOUNT, "valkey": {"host": "must-not-connect"}, "rpc": {
         "enabled": True, "transport": "serial", "allow_order_methods": allow_order_methods,
         "order_identity_dir": str(tmp_path), "background_threads": True,
         "native_xtdata_enabled": True, "heavy_offload": False,
@@ -243,7 +243,7 @@ def test_existing_redis_client_round_trip_and_execution_gate(
     context = SimpleNamespace()
     gateway = SimpleNamespace(submit=submit)
     service = strategy._build_rpc_service(context, SimpleNamespace(order_gateway=gateway), config)
-    assert service.redis is None and service.listen_redis is None
+    assert service.valkey is None and service.listen_valkey is None
     assert not service.background_threads and not service.handlers.market_data.native_xtdata_enabled
     assert transport_supports_drain("serial")
     assert build_transport("serial", {"serial": {"port": "COM100"}}).port == "COM100"
@@ -253,21 +253,21 @@ def test_existing_redis_client_round_trip_and_execution_gate(
         service.drain_request_queue()
         service.drain_pending()
 
-    redis.pump = pump
+    valkey.pump = pump
     service.start()
     try:
-        ping = call_redis_rpc(redis, ACCOUNT, "ping", request_id="ping-1")
+        ping = call_valkey_rpc(valkey, ACCOUNT, "ping", request_id="ping-1")
         assert ping["data"]["pong"] is True
-        assert redis.ttls[REPLY_PREFIX + "ping-1"] == 60
-        assert redis.published[REPLY_PREFIX + "ping-1"]
+        assert valkey.ttls[REPLY_PREFIX + "ping-1"] == 60
+        assert valkey.published[REPLY_PREFIX + "ping-1"]
 
         params = {"stock_code": "000001.SZ", "action": "BUY", "volume": 100,
                   "remark": "simulated", "wait_settlement": False}
-        response = call_redis_rpc(redis, ACCOUNT, "order_stock", params, request_id="order-1")
+        response = call_valkey_rpc(valkey, ACCOUNT, "order_stock", params, request_id="order-1")
         assert response["ok"] == allow_order_methods
         if allow_order_methods:
             assert response["data"]["order_sys_id"] == "simulated"
-            assert call_redis_rpc(redis, ACCOUNT, "order_stock", params,
+            assert call_valkey_rpc(valkey, ACCOUNT, "order_stock", params,
                                   request_id="order-1")["ok"] is True
             pump_until(pump, lambda: service._duplicate_order_requests == 1)
             assert seen == [(threading.current_thread(), "simulated")]
@@ -281,21 +281,21 @@ def test_existing_redis_client_round_trip_and_execution_gate(
             "quote-test", {"000001.SZ": {"lastPrice": 10}})
         exec_channel = order_channel(ACCOUNT)
         quote_channel = "bigqmt:quote_push:" + ACCOUNT + ":quote-test"
-        pump_until(pump, lambda: redis.published[exec_channel] and redis.published[quote_channel])
-        assert json.loads(redis.published[exec_channel][0]) == event
-        assert decode_push_payload(redis.published[quote_channel][0])["data"]["000001.SZ"]["lastPrice"] == 10
+        pump_until(pump, lambda: valkey.published[exec_channel] and valkey.published[quote_channel])
+        assert json.loads(valkey.published[exec_channel][0]) == event
+        assert decode_push_payload(valkey.published[quote_channel][0])["data"]["000001.SZ"]["lastPrice"] == 10
     finally:
         service.stop()
     assert qmt.closed
 
 
 def test_bridge_log_helpers_hide_credentials_and_follow_causes():
-    assert serial_redis_bridge._redis_endpoint(
-        "redis://user:secret@10.0.0.1:6380/9") == "10.0.0.1:6380/9"
-    assert serial_redis_bridge._redis_endpoint("redis://h") == "h:6379/0"
-    assert serial_redis_bridge._redis_endpoint("not a url") == "the configured Redis URL"
-    assert serial_redis_bridge._redis_endpoint(
-        "redis://h:bad/1") == "the configured Redis URL"
+    assert serial_valkey_bridge._valkey_endpoint(
+        "valkey://user:secret@10.0.0.1:6380/9") == "10.0.0.1:6380/9"
+    assert serial_valkey_bridge._valkey_endpoint("valkey://h") == "h:6379/0"
+    assert serial_valkey_bridge._valkey_endpoint("not a url") == "the configured Valkey URL"
+    assert serial_valkey_bridge._valkey_endpoint(
+        "valkey://h:bad/1") == "the configured Valkey URL"
 
     try:
         try:
@@ -303,25 +303,27 @@ def test_bridge_log_helpers_hide_credentials_and_follow_causes():
         except ValueError as exc:
             raise TimeoutError("outer") from exc
     except TimeoutError as exc:
-        text = serial_redis_bridge._describe(exc)
+        text = serial_valkey_bridge._describe(exc)
     assert "TimeoutError: outer" in text
     assert "ValueError: inner" in text
 
 
 def test_bridge_warns_and_stops_without_an_account(monkeypatch, caplog):
     monkeypatch.setenv("BIGQMT_ACCOUNT_ID", "  ")
-    monkeypatch.setitem(sys.modules, "redis", None)
+    monkeypatch.setitem(sys.modules, "valkey", None)
 
     with caplog.at_level(logging.WARNING):
-        assert serial_redis_bridge.main([]) == 2
+        assert serial_valkey_bridge.main([]) == 2
 
     assert "BIGQMT_ACCOUNT_ID" in caplog.text
 
 
-def test_bridge_startup_names_the_side_that_failed(monkeypatch, caplog):
-    class FakeRedis:
+@pytest.mark.parametrize("scheme", ["valkey", "redis"])
+def test_bridge_startup_names_the_side_that_failed(monkeypatch, caplog, scheme):
+    class FakeValkey:
         @classmethod
         def from_url(cls, url, **kwargs):
+            assert url == "valkey://user:secret@127.0.0.1:6399/5"
             return cls()
 
         def ping(self):
@@ -330,24 +332,24 @@ def test_bridge_startup_names_the_side_that_failed(monkeypatch, caplog):
         def close(self):
             pass
 
-    package = types.ModuleType("redis")
-    package.Redis = FakeRedis
-    backoff = types.ModuleType("redis.backoff")
+    package = types.ModuleType("valkey")
+    package.Valkey = FakeValkey
+    backoff = types.ModuleType("valkey.backoff")
     backoff.NoBackoff = lambda: None
-    retry = types.ModuleType("redis.retry")
+    retry = types.ModuleType("valkey.retry")
     retry.Retry = lambda *args, **kwargs: None
     package.backoff = backoff
     package.retry = retry
-    monkeypatch.setitem(sys.modules, "redis", package)
-    monkeypatch.setitem(sys.modules, "redis.backoff", backoff)
-    monkeypatch.setitem(sys.modules, "redis.retry", retry)
+    monkeypatch.setitem(sys.modules, "valkey", package)
+    monkeypatch.setitem(sys.modules, "valkey.backoff", backoff)
+    monkeypatch.setitem(sys.modules, "valkey.retry", retry)
     monkeypatch.setenv("BIGQMT_ACCOUNT_ID", " acct ")
 
     with caplog.at_level(logging.ERROR):
-        code = serial_redis_bridge.main([
-            "--redis-url", "redis://user:secret@127.0.0.1:6399/5",
+        code = serial_valkey_bridge.main([
+            "--valkey-url", scheme + "://user:secret@127.0.0.1:6399/5",
         ])
 
     assert code == 1
-    assert "Cannot reach Redis at 127.0.0.1:6399/5" in caplog.text
+    assert "Cannot reach Valkey at 127.0.0.1:6399/5" in caplog.text
     assert "secret" not in caplog.text

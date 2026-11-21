@@ -2,8 +2,8 @@
 """An adjust-thread LPOP that times out must not be retried on the next tick.
 
 With ``rpc_background_threads: False`` (the default since 0.3.51) the
-strategy's adjust callback polls the Redis request list with one LPOP per
-tick. When the Redis host is down -- not refusing, down -- that LPOP holds
+strategy's adjust callback polls the Valkey request list with one LPOP per
+tick. When the Valkey host is down -- not refusing, down -- that LPOP holds
 the thread for the whole socket_connect_timeout (1.5s) and the next tick
 does it again. Live, 2026-09-17 12:53 to 16:25 (192.168.8.13 unreachable):
 
@@ -12,7 +12,7 @@ does it again. Live, 2026-09-17 12:53 to 16:25 (192.168.8.13 unreachable):
     adjust cadence: ticks=7 avg=1.509s min=1.502s max=1.521s over 11s
 
 for 1212 consecutive ten-second windows. The strategy's own tick_app ran
-at 1.5s instead of 100ms for three and a half hours, over a Redis it was
+at 1.5s instead of 100ms for three and a half hours, over a Valkey it was
 not even using at the time.
 
 After a timeout the drain now pauses -- 5s, doubling to a 30s cap while
@@ -27,27 +27,27 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-import bigqmt_signal_trader.transports.redis_transport as module  # noqa: E402
-from bigqmt_signal_trader.transports.redis_transport import RedisTransport  # noqa: E402
+import bigqmt_signal_trader.transports.valkey_transport as module  # noqa: E402
+from bigqmt_signal_trader.transports.valkey_transport import ValkeyTransport  # noqa: E402
 
 
-class _RedisTimeoutError(Exception):
-    """Looks like redis.exceptions.TimeoutError to _is_redis_timeout."""
+class _ValkeyTimeoutError(Exception):
+    """Looks like valkey.exceptions.TimeoutError to _is_valkey_timeout."""
 
 
-_RedisTimeoutError.__module__ = "redis.exceptions"
-_RedisTimeoutError.__name__ = "TimeoutError"
+_ValkeyTimeoutError.__module__ = "valkey.exceptions"
+_ValkeyTimeoutError.__name__ = "TimeoutError"
 
 
-class _RedisConnectionError(Exception):
+class _ValkeyConnectionError(Exception):
     """A refused connect: instant, not a stall -- must keep raising."""
 
 
-_RedisConnectionError.__module__ = "redis.exceptions"
-_RedisConnectionError.__name__ = "ConnectionError"
+_ValkeyConnectionError.__module__ = "valkey.exceptions"
+_ValkeyConnectionError.__name__ = "ConnectionError"
 
 
-class _ListenRedis(object):
+class _ListenValkey(object):
     def __init__(self):
         self.lpop_calls = 0
         self.outcomes = []  # per call: "timeout" | "refused" | None | payload
@@ -56,9 +56,9 @@ class _ListenRedis(object):
         self.lpop_calls += 1
         outcome = self.outcomes.pop(0) if self.outcomes else None
         if outcome == "timeout":
-            raise _RedisTimeoutError("Timeout connecting to server")
+            raise _ValkeyTimeoutError("Timeout connecting to server")
         if outcome == "refused":
-            raise _RedisConnectionError("Error 10061 connecting")
+            raise _ValkeyConnectionError("Error 10061 connecting")
         return outcome
 
 
@@ -80,8 +80,8 @@ class DrainLpopBackoffTest(unittest.TestCase):
         module.time = types.SimpleNamespace(
             monotonic=self.clock.monotonic, time=self._time.time,
             sleep=self._time.sleep, perf_counter=self._time.perf_counter)
-        self.listen = _ListenRedis()
-        self.transport = RedisTransport(self.listen, account_id="acct")
+        self.listen = _ListenValkey()
+        self.transport = ValkeyTransport(self.listen, account_id="acct")
         self.delivered = []
         self.transport.on_raw_payload = lambda raw, source: self.delivered.append((raw, source))
 
@@ -92,7 +92,7 @@ class DrainLpopBackoffTest(unittest.TestCase):
         self.listen.outcomes = ["timeout"]
         self.assertEqual(self.transport.drain_request_queue(max_items=20), 0)
         self.assertEqual(self.listen.lpop_calls, 1)
-        # The next ticks do not touch Redis at all.
+        # The next ticks do not touch Valkey at all.
         for _ in range(10):
             self.clock.advance(0.1)
             self.assertEqual(self.transport.drain_request_queue(max_items=20), 0)
@@ -122,7 +122,7 @@ class DrainLpopBackoffTest(unittest.TestCase):
         self.transport.drain_request_queue(max_items=20)
         self.assertEqual(self.transport._drain_backoff_seconds, 10.0)
         self.clock.advance(10.01)
-        self.listen.outcomes = [None]  # Redis is back, queue empty
+        self.listen.outcomes = [None]  # Valkey is back, queue empty
         self.transport.drain_request_queue(max_items=20)
         self.assertEqual(self.transport._drain_timeouts, 0)
         self.assertEqual(self.transport._drain_backoff_seconds, 0.0)
@@ -135,7 +135,7 @@ class DrainLpopBackoffTest(unittest.TestCase):
         # Refused is instant; it is not the stall this guards, and hiding
         # it would hide a misconfigured host. adjust's phase guard logs it.
         self.listen.outcomes = ["refused"]
-        with self.assertRaises(_RedisConnectionError):
+        with self.assertRaises(_ValkeyConnectionError):
             self.transport.drain_request_queue(max_items=20)
         self.assertEqual(self.transport._drain_backoff_until, 0.0)
         self.listen.outcomes = [None]

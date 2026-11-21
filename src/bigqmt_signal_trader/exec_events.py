@@ -1,9 +1,9 @@
-"""Real-time order/trade (execution) event push over Redis.
+"""Real-time order/trade (execution) event push over Valkey.
 
 Big QMT fires ``order_callback(ContextInfo, orderInfo)`` and
 ``deal_callback(ContextInfo, dealInfo)`` inside the strategy process. We normalize
 the QMT order/deal object (ThinkTrader ``m_*`` fields) into a plain dict and
-publish it to a Redis channel, so clients receive ``on_stock_order`` /
+publish it to a Valkey channel, so clients receive ``on_stock_order`` /
 ``on_stock_trade`` callbacks in real time (MiniQMT style) instead of polling.
 
 Channels (also used as capped streams for short replay, xadd + publish):
@@ -18,7 +18,7 @@ import json
 import time
 
 from .order_remarks import recover_order_remarks, bounded_identity_client
-from .redis_safe_value import (
+from .valkey_safe_value import (
     PREFIX as _ORDER_IDENTITY_PREFIX,
     LUA_ENCODE, LUA_RESEGMENT,
     encode_json as _encode_order_identity,
@@ -457,7 +457,7 @@ def normalize_order_event(order, account_id=""):
         # order this bridge sent names itself here -- no identity store, no
         # remark matching, and it still works for one submitted before this
         # process started (issue #174). The publisher enriches from the journal
-        # / redis only when this comes back empty.
+        # / valkey only when this comes back empty.
         "strategy_name": _strategy_name_of(order),
         "instrument_name": str(
             _attr(order, ["m_strInstrumentName", "instrument_name"], "") or ""),
@@ -487,12 +487,12 @@ ORDER_IDENTITY_TTL_SECONDS = 7 * 86400
 _last_identity_warning = -float("inf")
 
 # An old JSON value can be rejected before Python receives it. Migrate that
-# one key inside Redis, returning only the safe representation. SETRANGE
+# one key inside Valkey, returning only the safe representation. SETRANGE
 # preserves its exact expiry (including no expiry); the encoded value is
 # always longer, so no old suffix survives. Do not re-serialize with cjson:
 # preserving the original bytes also preserves timestamp precision.
 _MIGRATE_ORDER_IDENTITY = LUA_ENCODE + """
-local raw = redis.call('GET', KEYS[1])
+local raw = server.call('GET', KEYS[1])
 if not raw then return false end
 local prefix = ARGV[3]
 if string.sub(raw, 1, #prefix) == prefix then return raw end
@@ -503,7 +503,7 @@ if not ok or type(identity) ~= 'table'
     return false
 end
 local encoded = safe_encode(raw, prefix)
-redis.call('SETRANGE', KEYS[1], 0, encoded)
+server.call('SETRANGE', KEYS[1], 0, encoded)
 return encoded
 """
 
@@ -516,10 +516,10 @@ _READ_ORDER_IDENTITIES = LUA_RESEGMENT + """
 local result = {}
 local prefix = ARGV[1]
 for i, key in ipairs(KEYS) do
-    local raw = redis.pcall('GET', key)
+    local raw = server.pcall('GET', key)
     if type(raw) == 'table' and raw.err then
         if string.sub(raw.err, 1, 9) ~= 'WRONGTYPE' then
-            return redis.error_reply(raw.err)
+            return server.error_reply(raw.err)
         end
         result[i] = 0
     elseif type(raw) ~= 'string' then
@@ -554,17 +554,17 @@ def _warn_order_identity(exc):
               % (exc.__class__.__name__, exc))
 
 
-def _read_order_identity(redis_client, account_id, user_order_id):
+def _read_order_identity(valkey_client, account_id, user_order_id):
     key = order_identity_key(account_id, user_order_id)
     try:
-        raw = redis_client.get(key)
+        raw = valkey_client.get(key)
     except Exception as exc:
         if "Sensitive Data Detected, Forbidden!" not in str(exc):
             raise
-        migrate = getattr(redis_client, "eval", None)
+        migrate = getattr(valkey_client, "eval", None)
         if not callable(migrate):
             raise RuntimeError(
-                "QMT blocked a legacy order identity and Redis EVAL is unavailable; "
+                "QMT blocked a legacy order identity and Valkey EVAL is unavailable; "
                 "the existing record was preserved (#393)")
         raw = migrate(_MIGRATE_ORDER_IDENTITY, 1, key,
                       str(account_id or ""), str(user_order_id or ""),
@@ -572,7 +572,7 @@ def _read_order_identity(redis_client, account_id, user_order_id):
     return _decode_order_identity(raw)
 
 
-def remember_order_identity(redis_client, account_id, user_order_id, strategy_name="", stock_code="", ttl_seconds=ORDER_IDENTITY_TTL_SECONDS):
+def remember_order_identity(valkey_client, account_id, user_order_id, strategy_name="", stock_code="", ttl_seconds=ORDER_IDENTITY_TTL_SECONDS):
     """Record who submitted an order, keyed by the remark it rides out as.
 
     The first NAMED record wins (#393): a remark reused across submits
@@ -588,7 +588,7 @@ def remember_order_identity(redis_client, account_id, user_order_id, strategy_na
     next-day re-read used to come back renamed under the bridge process.
     """
     user_order_id = str(user_order_id or "").strip()
-    if not user_order_id or redis_client is None:
+    if not user_order_id or valkey_client is None:
         return None
     payload = {
         "account_id": str(account_id or ""),
@@ -601,18 +601,12 @@ def remember_order_identity(redis_client, account_id, user_order_id, strategy_na
     ttl = int(ttl_seconds or ORDER_IDENTITY_TTL_SECONDS)
     key = order_identity_key(account_id, user_order_id)
     try:
-        try:
-            created = redis_client.set(key, blob, ex=ttl, nx=True)
-        except TypeError:
-            # Old redis-py without ex/nx kwargs on set().
-            created = redis_client.setnx(key, blob)
-            if created:
-                redis_client.expire(key, ttl)
+        created = valkey_client.set(key, blob, ex=ttl, nx=True)
         if created:
             return payload
         # The key exists: this remark was used before.
         existing_name = ""
-        existing = _read_order_identity(redis_client, account_id, user_order_id)
+        existing = _read_order_identity(valkey_client, account_id, user_order_id)
         if existing is None:
             # An unreadable/mismatched old value is not evidence of an unnamed
             # submit. Preserve it rather than silently changing ownership.
@@ -630,14 +624,14 @@ def remember_order_identity(redis_client, account_id, user_order_id, strategy_na
         if not new_name:
             return None
         # The existing record is unnamed; this named submit knows better.
-        redis_client.setex(key, ttl, blob)
+        valkey_client.setex(key, ttl, blob)
         return payload
     except Exception as exc:
         _warn_order_identity(exc)
     return payload
 
 
-def order_identity_map(redis_client, account_id, user_order_ids, limit=500):
+def order_identity_map(valkey_client, account_id, user_order_ids, limit=500):
     """user_order_id -> remembered identity, for a whole result set at once.
 
     Neither ORDER nor DEAL rows have m_strStrategyName (verified by listing
@@ -669,19 +663,19 @@ def order_identity_map(redis_client, account_id, user_order_ids, limit=500):
             wanted.append(text)
         if len(wanted) >= limit:
             break
-    if not wanted or redis_client is None:
+    if not wanted or valkey_client is None:
         return {}
 
     keys = [order_identity_key(account_id, text) for text in wanted]
     raws = None
-    read = getattr(redis_client, "eval", None)
+    read = getattr(valkey_client, "eval", None)
     if callable(read):
         try:
             raws = read(_READ_ORDER_IDENTITIES, len(keys),
                         *(keys + [_ORDER_IDENTITY_PREFIX]))
         except Exception:
             pass
-    mget = getattr(redis_client, "mget", None)
+    mget = getattr(valkey_client, "mget", None)
     if raws is None and mget is not None:
         try:
             raws = mget(keys)
@@ -691,7 +685,7 @@ def order_identity_map(redis_client, account_id, user_order_ids, limit=500):
         found = {}
         for text in wanted:
             try:
-                identity = _read_order_identity(redis_client, account_id, text)
+                identity = _read_order_identity(valkey_client, account_id, text)
                 if identity is not None:
                     found[text] = identity
             except Exception as exc:
@@ -706,14 +700,14 @@ def order_identity_map(redis_client, account_id, user_order_ids, limit=500):
     return found
 
 
-def enrich_order_identity(redis_client, account_id, event):
-    if redis_client is None or not isinstance(event, dict):
+def enrich_order_identity(valkey_client, account_id, event):
+    if valkey_client is None or not isinstance(event, dict):
         return event
     user_order_id = str(event.get("user_order_id") or event.get("remark") or "").strip()
     if not user_order_id:
         return event
     try:
-        identity = _read_order_identity(redis_client, account_id, user_order_id)
+        identity = _read_order_identity(valkey_client, account_id, user_order_id)
     except Exception as exc:
         _warn_order_identity(exc)
         return event
@@ -721,7 +715,7 @@ def enrich_order_identity(redis_client, account_id, event):
         return event
     if identity.get("strategy_name"):
         # The row's strategy-name field carries the QMT-side strategy's
-        # registered name (the bridge process, e.g. BIGQMT_REDIS_DRYRUN), not
+        # registered name (the bridge process, e.g. BIGQMT_VALKEY_DRYRUN), not
         # the strategy_name the caller passed at order time (#216: an order
         # placed with strategy_name='DaBanStrategy' reported back
         # '大QMT桥接器'). The identity was written at submit time from the
@@ -782,7 +776,7 @@ def normalize_trade_event(trade, account_id=""):
 
 
 # Push-channel topics, used when exec events travel over the quote push channel
-# instead of Redis pub/sub. They mirror the Redis channel names minus the
+# instead of Valkey pub/sub. They mirror the Valkey channel names minus the
 # account (a zmq PUB socket is already per-account).
 EXEC_TOPICS = {
     EVENT_ORDER: "exec:order",
@@ -799,13 +793,13 @@ def exec_topic(event_type):
 def publish_exec_event(sink, account_id, event):
     """Publish one exec event through whichever sink the deployment has.
 
-    ``sink`` is either a Redis client or a QuotePushChannel. Redis stays on the
+    ``sink`` is either a Valkey client or a QuotePushChannel. Valkey stays on the
     original per-account channels (streams + pub/sub, so short replay keeps
     working); a push channel gets one topic per event type.
 
-    Exec events used to be Redis-only, which meant a zmq deployment silently
+    Exec events used to be Valkey-only, which meant a zmq deployment silently
     received no order/trade callbacks at all (issue #76) -- the publish path
-    just returned when no Redis client could be built.
+    just returned when no Valkey client could be built.
     """
     event_type = str((event or {}).get("event_type") or EVENT_ORDER)
     if hasattr(sink, "publish") and not hasattr(sink, "xadd"):
@@ -821,40 +815,40 @@ def publish_exec_event(sink, account_id, event):
     return publish_order_event(sink, account_id, event)
 
 
-def _publish(redis_client, channel, event, maxlen=2000):
-    from .adapters.redis_common import (
+def _publish(valkey_client, channel, event, maxlen=2000):
+    from .adapters.valkey_common import (
         note_stream_failure, streams_dead, touch_stream_ttl,
     )
 
     raw = json.dumps(event, ensure_ascii=False, default=str)
     if not streams_dead():
         try:
-            redis_client.xadd(channel, {"payload": raw}, maxlen=maxlen, approximate=True)
+            valkey_client.xadd(channel, {"payload": raw}, maxlen=maxlen, approximate=True)
             # maxlen 只挡单键膨胀，挡不住键永远不消失：换个账号、停用一个部署，
             # 键就一直留着。续期一次，停写的流自然过期（#213）。
-            touch_stream_ttl(redis_client, channel)
+            touch_stream_ttl(valkey_client, channel)
         except Exception as exc:
-            # redis < 5.0 has no streams: log once, then skip xadd for good.
+            # If XADD is unavailable, log once and keep the pub/sub path.
             # Anything else stays silent and retried, as before (issue #163).
             note_stream_failure(exc)
-    redis_client.publish(channel, raw)
+    valkey_client.publish(channel, raw)
     return event
 
 
-def publish_order_event(redis_client, account_id, event):
-    return _publish(redis_client, order_channel(account_id), event)
+def publish_order_event(valkey_client, account_id, event):
+    return _publish(valkey_client, order_channel(account_id), event)
 
 
-def publish_trade_event(redis_client, account_id, event):
-    return _publish(redis_client, trade_channel(account_id), event)
+def publish_trade_event(valkey_client, account_id, event):
+    return _publish(valkey_client, trade_channel(account_id), event)
 
 
-def publish_order_error_event(redis_client, account_id, event):
-    return _publish(redis_client, order_error_channel(account_id), event)
+def publish_order_error_event(valkey_client, account_id, event):
+    return _publish(valkey_client, order_error_channel(account_id), event)
 
 
-def publish_cancel_error_event(redis_client, account_id, event):
-    return _publish(redis_client, cancel_error_channel(account_id), event)
+def publish_cancel_error_event(valkey_client, account_id, event):
+    return _publish(valkey_client, cancel_error_channel(account_id), event)
 
 
 def normalize_order_error_event(order_error, account_id=""):

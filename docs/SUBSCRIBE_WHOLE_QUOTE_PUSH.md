@@ -15,9 +15,9 @@
 
 ### 1.2 当前实现（client 端假订阅，server 端空转）
 
-- **client**（`xtquant_compat.py:781`）：`subscribe_whole_quote` 只是 `publish_event("subscribe_whole_quote", ...)` 到 redis stream（`bigqmt:quote_events:{account_id}`），然后**同步调一次 `get_full_tick` 触发一次 callback** 就返回 `seq`。之后**再无任何推送**。`callback` 不被持有，纯一次性。
+- **client**（`xtquant_compat.py:781`）：`subscribe_whole_quote` 只是 `publish_event("subscribe_whole_quote", ...)` 到 valkey stream（`bigqmt:quote_events:{account_id}`），然后**同步调一次 `get_full_tick` 触发一次 callback** 就返回 `seq`。之后**再无任何推送**。`callback` 不被持有，纯一次性。
 - **server**：**全仓库没有任何代码消费 `quote_events` stream**，也没有任何代码调用大 QMT 的 `ContextInfo.subscribe_whole_quote` / `xtdata.subscribe_whole_quote`。事件发出去石沉大海。
-- `unsubscribe_quote(seq)` 同样只发事件 + 删 redis 订阅记录，无实际效果。
+- `unsubscribe_quote(seq)` 同样只发事件 + 删 valkey 订阅记录，无实际效果。
 
 **结论：miniqmt 的「注册 → 持续推送 → 回调」语义当前完全没有实现。**
 
@@ -26,8 +26,8 @@
 
 ### 1.4 可复用的资产
 
-- `full_tick_cache`：server 周期 `ContextInfo.get_full_tick` 拉快照写 redis，client 读缓存。**是轮询拉取，不是推送**，但有现成的 demand/TTL 机制（本方案不采用它做数据面，仅作对比参考）。
-- `BigQmtRpcHandlers`（`redis_rpc.py:333`）：server 端白名单 dispatch，`market_data` 适配器持有 `ContextInfo` —— server 端订阅管理器复用此路径访问大 QMT 行情接口。
+- `full_tick_cache`：server 周期 `ContextInfo.get_full_tick` 拉快照写 valkey，client 读缓存。**是轮询拉取，不是推送**，但有现成的 demand/TTL 机制（本方案不采用它做数据面，仅作对比参考）。
+- `BigQmtRpcHandlers`（`valkey_rpc.py:333`）：server 端白名单 dispatch，`market_data` 适配器持有 `ContextInfo` —— server 端订阅管理器复用此路径访问大 QMT 行情接口。
 - 参考实现：`quant-qmt-proxy` 的 `SubscriptionManager` 已验证 `xtdata.subscribe_whole_quote(["SH","SZ"], callback)` 推送模式 + 心跳超时（默认 60s）在本环境可行。
 
 ---
@@ -199,7 +199,7 @@ client 端（`bigqmt_signal_trader_client_config.py` / 环境变量）：
 
 **阶段 2 — server RPC handler 接线**
 - 红：`subscribe_whole_quote` / `unsubscribe_whole_quote` / `quote_keepalive` 三个方法经 `BigQmtRpcHandlers.handle` 可达、白名单放行、参数校验、幂等重放。
-- 绿：在 `redis_rpc.py` 加 handler 方法 + `allowed_methods`，注入 `QuoteSubscriptionManager`。
+- 绿：在 `valkey_rpc.py` 加 handler 方法 + `allowed_methods`，注入 `QuoteSubscriptionManager`。
 - 回归。
 
 

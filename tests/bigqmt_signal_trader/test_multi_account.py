@@ -74,8 +74,8 @@ class MultiAccountRpcServiceManagerTest(unittest.TestCase):
     def _service(self, account_id="ACCT1"):
         svc = mock.MagicMock()
         svc.account_id = account_id
-        svc.redis = "redis_obj"
-        svc.listen_redis = "listen_redis_obj"
+        svc.valkey = "valkey_obj"
+        svc.listen_valkey = "listen_valkey_obj"
         svc.drain_request_queue.return_value = 5
         svc.drain_pending.return_value = 3
         return svc
@@ -104,8 +104,8 @@ class MultiAccountRpcServiceManagerTest(unittest.TestCase):
         s1 = self._service()
         mgr = MultiAccountRpcServiceManager([s1], handlers="h")
         self.assertEqual(mgr.account_id, "ACCT1")
-        self.assertEqual(mgr.redis, "redis_obj")
-        self.assertEqual(mgr.listen_redis, "listen_redis_obj")
+        self.assertEqual(mgr.valkey, "valkey_obj")
+        self.assertEqual(mgr.listen_valkey, "listen_valkey_obj")
 
     def test_getattr_delegates_to_primary(self):
         s1 = self._service()
@@ -125,7 +125,7 @@ class BuildMultiAccountServiceTest(unittest.TestCase):
 
     def test_empty_map_falls_back_to_single(self):
         """No MAP → build_single_fn called, result returned as-is."""
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
         single = mock.MagicMock()
         result = build_multi_account_rpc_service(None, None, {}, single)
@@ -134,10 +134,10 @@ class BuildMultiAccountServiceTest(unittest.TestCase):
 
     def test_single_entry_map_falls_back_to_single(self):
         """MAP with 1 entry → still single service."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"ACCT1": "STOCK"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             single = mock.MagicMock()
             result = build_multi_account_rpc_service(None, None, {}, single)
@@ -146,20 +146,20 @@ class BuildMultiAccountServiceTest(unittest.TestCase):
 
     def test_two_entries_builds_secondary(self):
         """MAP with 2 entries → MultiAccountRpcServiceManager with 2 services."""
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"ACCT1": "STOCK", "ACCT2": "FUTURE"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
 
             primary = mock.MagicMock()
             primary.account_id = "ACCT1"
-            primary.redis = "redis"
-            primary.listen_redis = "listen_redis"
+            primary.valkey = "valkey"
+            primary.listen_valkey = "listen_valkey"
 
             single = mock.MagicMock(return_value=primary)
 
-            # Mock _build_secondary to avoid needing real Redis
+            # Mock _build_secondary to avoid needing real Valkey
             with mock.patch(
                 "bigqmt_signal_trader.multi_account._build_secondary"
             ) as mock_secondary:
@@ -175,7 +175,7 @@ class BuildMultiAccountServiceTest(unittest.TestCase):
 
     def test_build_single_returns_none_propagates(self):
         """build_single_fn returns None → None."""
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
         result = build_multi_account_rpc_service(
             None, None, {}, lambda *a, **kw: None)
@@ -192,10 +192,10 @@ class CancelPerRequestTest(unittest.TestCase):
     def test_cancel_with_account_id(self):
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
-        fake_cfg = types.ModuleType("bigqmt_signal_trader_local_config")
+        fake_cfg = types.ModuleType("bigqmt_signal_trader_qmt_config")
         fake_cfg.BIGQMT_ACCOUNT_TYPE_MAP = {"FUTURE_ACCT": "FUTURE"}
         with mock.patch.dict("sys.modules",
-                             {"bigqmt_signal_trader_local_config": fake_cfg}):
+                             {"bigqmt_signal_trader_qmt_config": fake_cfg}):
             reload_map()
             gw = BigQmtOrderGateway(context_info=None, account_type="STOCK")
 
@@ -217,7 +217,7 @@ class CancelPerRequestTest(unittest.TestCase):
     def test_cancel_without_account_id_uses_default(self):
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
-        sys.modules.pop("bigqmt_signal_trader_local_config", None)
+        sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
         gw = BigQmtOrderGateway(context_info=None, account_type="STOCK")
 
@@ -244,7 +244,7 @@ class CancelHandlerIntegrationTest(unittest.TestCase):
     """_handle_cancel_order passes account_id to gateway.cancel()."""
 
     def test_cancel_handler_passes_account_id(self):
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
         from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
 
         # Patch cancel to capture account_id

@@ -20,7 +20,7 @@ from bigqmt_signal_trader.download_jobs import (
 )
 
 
-class FakeRedis:
+class FakeValkey:
     def __init__(self):
         self.kv = {}
         self.lists = {}
@@ -81,7 +81,7 @@ class FakeMarketData:
 
 class DownloadJobsTest(unittest.TestCase):
     def test_submit_queues_pending_job(self):
-        r = FakeRedis()
+        r = FakeValkey()
         job = submit_download_job(r, "acct", ["600000.SH", "000001.SZ"], "1d", chunk_size=1)
 
         self.assertEqual(job["state"], "pending")
@@ -90,7 +90,7 @@ class DownloadJobsTest(unittest.TestCase):
         self.assertEqual(read_download_status(r, "acct", job["job_id"])["state"], "pending")
 
     def test_pump_completes_and_chunks_the_symbol_list(self):
-        r = FakeRedis()
+        r = FakeValkey()
         md = FakeMarketData()
         submit_download_job(r, "acct", ["a", "b", "c", "d", "e"], "1d", chunk_size=2)
 
@@ -104,7 +104,7 @@ class DownloadJobsTest(unittest.TestCase):
         self.assertIsNone(r.get(current_key("acct")))
 
     def test_pump_spreads_across_ticks_under_wall_budget(self):
-        r = FakeRedis()
+        r = FakeValkey()
         md = FakeMarketData(sleep=0.02)
         submit_download_job(r, "acct", ["a", "b", "c"], "1d", chunk_size=1)
 
@@ -119,7 +119,7 @@ class DownloadJobsTest(unittest.TestCase):
         self.assertEqual(md.data_calls if md.data_calls else md.data2_calls, [["a"], ["b"], ["c"]])
 
     def test_pump_marks_failed_and_clears_current(self):
-        r = FakeRedis()
+        r = FakeValkey()
         md = FakeMarketData(fail_on="b")
         job = submit_download_job(
             r, "acct", ["a", "b", "c"], "1d", method="download_history_data", chunk_size=1
@@ -135,10 +135,10 @@ class DownloadJobsTest(unittest.TestCase):
         self.assertIsNone(r.get(current_key("acct")))
 
     def test_pump_with_no_job_returns_none(self):
-        self.assertIsNone(pump_download_jobs(FakeRedis(), FakeMarketData(), "acct"))
+        self.assertIsNone(pump_download_jobs(FakeValkey(), FakeMarketData(), "acct"))
 
     def test_wait_returns_terminal_status(self):
-        r = FakeRedis()
+        r = FakeValkey()
         job = submit_download_job(r, "acct", ["a"], "1d", chunk_size=1)
         status = read_download_status(r, "acct", job["job_id"])
         status["state"] = "done"
@@ -154,7 +154,7 @@ class DownloadJobsTest(unittest.TestCase):
 
         from bigqmt_signal_trader.download_jobs import _dec
 
-        # The QMT redis compliance filter blocks a response only when it contains a
+        # The QMT valkey compliance filter blocks a response only when it contains a
         # stock-code pattern (which requires digits). Encoded tokens are all letters.
         stock_re = re.compile(
             "(^|[^\\d])+([36]0[\\d]{4}|00(000[1-9]|[1-9][\\d]{3}|[\\d][1-9][\\d]{2}|[\\d]{2}[1-9][\\d]))([^\\d]|$)+"
@@ -168,8 +168,8 @@ class DownloadJobsTest(unittest.TestCase):
         self.assertIsNone(_dec(None))
         self.assertIsNone(_dec(""))
 
-        # what actually lands in Redis on submit must also be digit-free
-        r = FakeRedis()
+        # what actually lands in Valkey on submit must also be digit-free
+        r = FakeValkey()
         job = submit_download_job(r, "acct", ["600000.SH"], "1d", chunk_size=1)
         stored_blob = r.kv[job_key("acct", job["job_id"])]
         queued = r.lists[queue_key("acct")][0]

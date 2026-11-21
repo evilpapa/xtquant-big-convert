@@ -122,16 +122,16 @@ class FactoryTest(unittest.TestCase):
         with self.assertRaises(TransportError):
             shm.send_request(_build_request(), 1.0)
 
-    def test_redis_factory_with_injected_clients(self):
+    def test_valkey_factory_with_injected_clients(self):
         sentinel_listen = object()
         sentinel_resp = object()
         t = build_transport(
-            "redis",
-            {"redis_client": sentinel_listen, "response_redis_client": sentinel_resp},
+            "valkey",
+            {"valkey_client": sentinel_listen, "response_valkey_client": sentinel_resp},
             account_id="acct",
         )
-        self.assertIs(t.listen_redis, sentinel_listen)
-        self.assertIs(t.redis, sentinel_resp)
+        self.assertIs(t.listen_valkey, sentinel_listen)
+        self.assertIs(t.valkey, sentinel_resp)
         self.assertEqual(t.account_id, "acct")
 
 
@@ -158,45 +158,45 @@ class MysqlTransportTest(unittest.TestCase):
             except Exception:
                 pass
 
-class RedisAdjustDrainTest(unittest.TestCase):
-    def test_redis_adjust_lpop_skipped_when_brpop_thread_alive(self):
+class ValkeyAdjustDrainTest(unittest.TestCase):
+    def test_valkey_adjust_lpop_skipped_when_brpop_thread_alive(self):
         """Background BRPOP owns the list; adjust LPOP must not steal it."""
-        from bigqmt_signal_trader.transports.redis_transport import RedisTransport
+        from bigqmt_signal_trader.transports.valkey_transport import ValkeyTransport
 
         class _AliveThread(object):
             def is_alive(self):
                 return True
 
-        class _FailRedis(object):
+        class _FailValkey(object):
             def lpop(self, key):
                 raise AssertionError("adjust LPOP should not run while BRPOP owns %s" % key)
 
-        transport = RedisTransport.__new__(RedisTransport)
+        transport = ValkeyTransport.__new__(ValkeyTransport)
         transport.print_prefix = "[test]"
         transport.account_id = "acct"
         transport.request_queue_template = "bigqmt:rpc:queue:{account_id}"
-        transport.listen_redis = _FailRedis()
+        transport.listen_valkey = _FailValkey()
         transport.on_raw_payload = None
         transport._queue_thread = _AliveThread()
         self.assertEqual(0, transport.drain_request_queue(max_items=20))
 
-    def test_redis_adjust_lpop_runs_when_brpop_thread_dead(self):
+    def test_valkey_adjust_lpop_runs_when_brpop_thread_dead(self):
         """If the BRPOP thread is gone, LPOP remains the adjust fallback."""
-        from bigqmt_signal_trader.transports.redis_transport import RedisTransport
+        from bigqmt_signal_trader.transports.valkey_transport import ValkeyTransport
 
         class _DeadThread(object):
             def is_alive(self):
                 return False
 
-        class _EmptyRedis(object):
+        class _EmptyValkey(object):
             def lpop(self, key):
                 return None
 
-        transport = RedisTransport.__new__(RedisTransport)
+        transport = ValkeyTransport.__new__(ValkeyTransport)
         transport.print_prefix = "[test]"
         transport.account_id = "acct"
         transport.request_queue_template = "bigqmt:rpc:queue:{account_id}"
-        transport.listen_redis = _EmptyRedis()
+        transport.listen_valkey = _EmptyValkey()
         transport.on_raw_payload = None
         transport._queue_thread = _DeadThread()
         self.assertEqual(0, transport.drain_request_queue(max_items=20))
@@ -206,14 +206,14 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class RedisPipelineErrorSlimTest(unittest.TestCase):
+class ValkeyPipelineErrorSlimTest(unittest.TestCase):
     """A failed response pipeline must not raise with the payload embedded.
 
-    redis-py renders a failed batch with its command arguments, and the
+    valkey-py renders a failed batch with its command arguments, and the
     argument is the response JSON itself. An OOM refusal on a large K-line
     reply measured 5 MB of str(exc); a handful of such lines wrote a 542 MB
     log file and degraded the bridge until it stopped serving. See
-    _slim_pipeline_error in redis_transport.
+    _slim_pipeline_error in valkey_transport.
     """
 
     class _FailingClient(object):
@@ -236,8 +236,8 @@ class RedisPipelineErrorSlimTest(unittest.TestCase):
             return _Pipe()
 
     def _transport(self, error):
-        from bigqmt_signal_trader.transports.redis_transport import RedisTransport
-        return RedisTransport(self._FailingClient(error), account_id="acct")
+        from bigqmt_signal_trader.transports.valkey_transport import ValkeyTransport
+        return ValkeyTransport(self._FailingClient(error), account_id="acct")
 
     def test_pipeline_error_payload_is_slimmed(self):
         big = RuntimeError(

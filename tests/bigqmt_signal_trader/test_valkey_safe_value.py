@@ -16,18 +16,18 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 import pytest
 
 import test_order_identity_safe_storage as vendor
-from bigqmt_signal_trader.redis_safe_value import PREFIX, LUA_ENCODE, LUA_RESEGMENT, decode_json, encode_json
-from test_order_identity_redis_integration import real_redis, _isolated_redis
+from bigqmt_signal_trader.valkey_safe_value import PREFIX, LUA_ENCODE, LUA_RESEGMENT, decode_json, encode_json
+from test_order_identity_valkey_integration import real_valkey, _isolated_valkey
 
 
 @pytest.mark.parametrize("as_bytes", [False, True])
 @pytest.mark.parametrize("value", [None, "", "x" * 14, "x" * 15, "x" * 16,
                                    ["600036.SH", "SELL", "中文_123456" * 500]])
-def test_large_encoded_response_bounds_runs_and_never_checks_operations(real_redis, monkeypatch, value, as_bytes):
+def test_large_encoded_response_bounds_runs_and_never_checks_operations(real_valkey, monkeypatch, value, as_bytes):
     stored = encode_json(value)
     assert not re.search(r"\d", stored)
     raw = json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")
-    token = real_redis.eval(LUA_ENCODE + LUA_RESEGMENT +
+    token = real_valkey.eval(LUA_ENCODE + LUA_RESEGMENT +
                             "return safe_resegment(safe_encode(ARGV[1], ARGV[2]), ARGV[2])",
                             0, raw, PREFIX).decode("ascii")
     assert len(re.findall(r"(?<=\D)0(?=\D)", token)) == token.count("0") > 0

@@ -52,8 +52,8 @@ class FakeClient(object):
             return dict(self._market_answer)
         raise self._direct_error
 
-    def _redis(self):
-        raise AssertionError("redis not expected here")
+    def _valkey(self):
+        raise AssertionError("valkey not expected here")
 
 
 def _xtdata(client):

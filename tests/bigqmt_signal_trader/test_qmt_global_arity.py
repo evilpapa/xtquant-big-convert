@@ -31,7 +31,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-RPC_SOURCE = os.path.join(ROOT, "src", "bigqmt_signal_trader", "redis_rpc.py")
+RPC_SOURCE = os.path.join(ROOT, "src", "bigqmt_signal_trader", "valkey_rpc.py")
 
 # QMT 全局函数 -> (最少参数, 最多参数)。None 表示不限。
 # 出处：docs/BIGQMT_INNER_PYTHON_API_REFERENCE.md，条目号见注释。
@@ -86,7 +86,7 @@ class QmtGlobalArityTest(unittest.TestCase):
                 continue
             low, high = bounds
             if not (low <= count <= high):
-                wrong.append("redis_rpc.py:%d %s 传了 %d 个参数，官方签名要 %s"
+                wrong.append("valkey_rpc.py:%d %s 传了 %d 个参数，官方签名要 %s"
                              % (line, name, count,
                                 "%d" % low if low == high else "%d-%d" % (low, high)))
         self.assertEqual(wrong, [], "\n".join([""] + wrong))
@@ -105,7 +105,7 @@ class QmtGlobalArityTest(unittest.TestCase):
         """探测自己也踩过这个坑（#201）—— 它调的是同一批函数。"""
         from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
         from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
         class _Ctx(object):
             def get_full_tick(self, codes):
@@ -143,7 +143,7 @@ class OrderIdQueryArgumentsTest(unittest.TestCase):
     def _handlers(self, qmt_api):
         from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
         from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
         class _Ctx(object):
             def get_full_tick(self, codes):
@@ -225,7 +225,7 @@ class ReturnShapeTest(unittest.TestCase):
     def _handlers(self, qmt_api):
         from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
         from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-        from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 
         class _Ctx(object):
             def get_full_tick(self, codes):

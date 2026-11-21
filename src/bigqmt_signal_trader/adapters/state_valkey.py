@@ -1,19 +1,19 @@
-"""Redis signal state store."""
+"""Valkey signal state store."""
 
 import datetime as _dt
 
 
-class RedisStateStore:
+class ValkeyStateStore:
     def __init__(
         self,
-        redis_client,
+        valkey_client,
         account_id="default",
         claim_key_template="bigqmt:signal_claim:{account_id}:{signal_id}",
         status_key_template="bigqmt:signal_status:{account_id}:{signal_id}",
         claim_ttl_seconds=3600,
         status_ttl_seconds=86400,
     ):
-        self.redis = redis_client
+        self.valkey = valkey_client
         self.account_id = account_id
         self.claim_key_template = claim_key_template
         self.status_key_template = status_key_template
@@ -42,15 +42,15 @@ class RedisStateStore:
             "updated_at": self._now_text(),
         }
         fields.update({k: "" if v is None else str(v) for k, v in mapping.items()})
-        self.redis.hset(key, mapping=fields)
+        self.valkey.hset(key, mapping=fields)
         if self.status_ttl_seconds > 0:
-            self.redis.expire(key, self.status_ttl_seconds)
+            self.valkey.expire(key, self.status_ttl_seconds)
 
     def claim(self, signal, consumer_id):
         account_id = signal.account_id or self.account_id
         self._accounts_by_signal_id[signal.signal_id] = account_id
         key = self._claim_key(account_id, signal.signal_id)
-        ok = self.redis.set(key, consumer_id, nx=True, ex=self.claim_ttl_seconds)
+        ok = self.valkey.set(key, consumer_id, nx=True, ex=self.claim_ttl_seconds)
         if ok:
             self._write_status(
                 account_id,

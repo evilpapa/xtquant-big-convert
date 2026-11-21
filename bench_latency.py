@@ -1,5 +1,5 @@
 # coding: utf-8
-"""BigQMT Redis RPC latency benchmark.
+"""BigQMT Valkey RPC latency benchmark.
 
 Measures end-to-end latency for ping (no QMT API call) and get_full_tick
 (real ContextInfo call) to separate transport cost from API cost.
@@ -8,11 +8,11 @@ import os
 import statistics
 import time
 
-import redis
-from bigqmt_signal_trader.redis_rpc import call_redis_rpc
+from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
+from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
 
 
-def _load_redis_config():
+def _load_valkey_config():
     """Pull connection details from the local client config or env vars.
 
     Never hardcode secrets in the repo.
@@ -20,30 +20,14 @@ def _load_redis_config():
     try:
         from bigqmt_signal_trader.xtquant_compat import load_client_config
 
-        cfg = load_client_config()
-        rc = dict(cfg.get("redis_config") or {})
-        rc.setdefault("host", os.environ.get("BIGQMT_REDIS_HOST", "127.0.0.1"))
-        rc.setdefault("port", int(os.environ.get("BIGQMT_REDIS_PORT", "6379")))
-        rc.setdefault("db", int(os.environ.get("BIGQMT_REDIS_DB", "5")))
-        return {
-            "host": rc.get("host"),
-            "port": int(rc.get("port")),
-            "db": int(rc.get("db")),
-            "username": rc.get("username") or None,
-            "password": rc.get("password") or None,
-            "socket_timeout": 8,
-        }
+        config = load_client_config().get("valkey_config") or {}
     except Exception:
-        return {
-            "host": os.environ.get("BIGQMT_REDIS_HOST", "127.0.0.1"),
-            "port": int(os.environ.get("BIGQMT_REDIS_PORT", "6379")),
-            "db": int(os.environ.get("BIGQMT_REDIS_DB", "5")),
-            "socket_timeout": 8,
-        }
+        config = {}
+    return dict(config, socket_timeout=8)
 
 
 ACCOUNT = os.environ.get("BIGQMT_ACCOUNT_ID", "")
-REDIS = _load_redis_config()
+VALKEY = _load_valkey_config()
 
 
 def bench(r, method, params, n=20, timeout=6):
@@ -52,7 +36,7 @@ def bench(r, method, params, n=20, timeout=6):
     for i in range(n):
         t0 = time.time()
         try:
-            resp = call_redis_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
+            resp = call_valkey_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
             dt = (time.time() - t0) * 1000
             if resp.get("ok"):
                 lats.append(dt)
@@ -87,10 +71,10 @@ def bench(r, method, params, n=20, timeout=6):
 
 
 def main():
-    r = redis.Redis(**REDIS)
+    r = build_valkey_client(VALKEY)
     # warmup
     try:
-        call_redis_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
+        call_valkey_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
         print("warmup ping ok\n")
     except Exception as e:
         print("warmup FAILED: %s\n" % e)

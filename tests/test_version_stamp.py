@@ -81,7 +81,7 @@ class StartupReportingTest(unittest.TestCase):
     """The runtime has to actually print it, or none of the above helps."""
 
     def _runtime_source(self):
-        path = os.path.join(ROOT, "src", "bigqmt_signal_trader_redis_rpc_runtime.py")
+        path = os.path.join(ROOT, "src", "bigqmt_signal_trader_valkey_rpc_runtime.py")
         with io.open(path, encoding="utf-8") as handle:
             return handle.read()
 
@@ -132,8 +132,8 @@ class SandboxVisibilityTest(unittest.TestCase):
     def test_callers_import_the_submodule_not_the_package(self):
         """Importing it off the root package works in an ordinary install and
         fails inside QMT -- the environment nobody tests by default."""
-        for relative in ("bigqmt_signal_trader_redis_rpc_runtime.py",
-                         "bigqmt_signal_trader/redis_rpc.py"):
+        for relative in ("bigqmt_signal_trader_valkey_rpc_runtime.py",
+                         "bigqmt_signal_trader/valkey_rpc.py"):
             path = os.path.join(ROOT, "src", relative)
             with io.open(path, encoding="utf-8") as handle:
                 source = handle.read()

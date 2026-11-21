@@ -18,15 +18,15 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.redis_rpc import (  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
     BigQmtRpcHandlers,
-    RedisPubSubRpcService,
+    ValkeyPubSubRpcService,
 )
 
-from test_redis_rpc import (  # noqa: E402  -- the established fakes
+from test_valkey_rpc import (  # noqa: E402  -- the established fakes
     FakeMarketData,
     FakePositionProvider,
-    FakeRedis,
+    FakeValkey,
 )
 
 
@@ -60,12 +60,12 @@ def _service(market_data, **kwargs):
         account_id="acct", market_data=market_data,
         position_provider=FakePositionProvider(), order_gateway=None,
         allow_order_methods=False)
-    return RedisPubSubRpcService(FakeRedis(), handlers, account_id="acct", **kwargs)
+    return ValkeyPubSubRpcService(FakeValkey(), handlers, account_id="acct", **kwargs)
 
 
 class SlowRequestLogTest(unittest.TestCase):
     def setUp(self):
-        import bigqmt_signal_trader.redis_rpc as module
+        import bigqmt_signal_trader.valkey_rpc as module
         self.module = module
         self.clock = _Clock()
         self._perf_counter = module.time.perf_counter
@@ -116,7 +116,7 @@ class SlowRequestLogTest(unittest.TestCase):
     # request, with the queue sizes it was working through.
 
     def _park(self, service, shadow=False):
-        from bigqmt_signal_trader.redis_rpc import OrderSettlement
+        from bigqmt_signal_trader.valkey_rpc import OrderSettlement
 
         class _Req(object):
             account_id = "acct"
@@ -177,7 +177,7 @@ class SlowResponseSegmentsTest(unittest.TestCase):
     """
 
     def setUp(self):
-        import bigqmt_signal_trader.redis_rpc as module
+        import bigqmt_signal_trader.valkey_rpc as module
         self.module = module
         self.clock = _Clock()
         self._perf_counter = module.time.perf_counter

@@ -7,7 +7,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.quote_push_channel import RedisQuotePushChannel
+from bigqmt_signal_trader.quote_push_channel import ValkeyQuotePushChannel
 from bigqmt_signal_trader.quote_subscription_manager import (
     QuoteSourceAdapter,
     QuoteSubscriptionManager,
@@ -144,9 +144,9 @@ class OnPushWiringTest(unittest.TestCase):
         self.assertEqual(len(source.subscriptions), 0)
 
 
-class OnPushToRedisChannelTest(unittest.TestCase):
+class OnPushToValkeyChannelTest(unittest.TestCase):
     def test_manager_wired_to_real_channel_publishes(self):
-        class FakeRedis:
+        class FakeValkey:
             def __init__(self):
                 self.messages = {}
 
@@ -154,8 +154,8 @@ class OnPushToRedisChannelTest(unittest.TestCase):
                 self.messages.setdefault(channel, []).append(value)
                 return 1
 
-        redis_client = FakeRedis()
-        channel = RedisQuotePushChannel(redis_client, account_id="acct")
+        valkey_client = FakeValkey()
+        channel = ValkeyQuotePushChannel(valkey_client, account_id="acct")
         channel.start_publisher()
 
         source = FakeQuoteSource()
@@ -164,7 +164,7 @@ class OnPushToRedisChannelTest(unittest.TestCase):
         handle = next(iter(source.subscriptions))
         source.fire(handle, {"000001.SZ": {"lastPrice": 10.5}})
 
-        self.assertIn("bigqmt:quote_push:acct:SH", redis_client.messages)
+        self.assertIn("bigqmt:quote_push:acct:SH", valkey_client.messages)
         channel.stop()
 
 

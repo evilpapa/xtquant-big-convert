@@ -2,11 +2,11 @@
 
 The :class:`~bigqmt_signal_trader.transports.base.RpcTransport` interface owns
 the wire: how a request dict travels from the client to the QMT server and how
-the response dict travels back. ``redis`` is the reference implementation; the
+the response dict travels back. ``valkey`` is the reference implementation; the
 same business layer (handlers / ``process_request`` / ``to_jsonable``) runs
 unchanged over any transport.
 
-Select a transport with ``rpc.transport`` in the config (default ``"redis"``).
+Select a transport with ``rpc.transport`` in the config (default ``"valkey"``).
 See :mod:`~bigqmt_signal_trader.transports.factory`.
 """
 

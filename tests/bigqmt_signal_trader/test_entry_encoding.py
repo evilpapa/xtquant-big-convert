@@ -36,7 +36,7 @@ class EntryEncodingTest(unittest.TestCase):
 
     def test_legacy_entry_supports_qmt_without_standard_importlib(self):
         """裁剪过的 QMT Python 缺少 importlib 时仍可加载 Bridge。"""
-        path = os.path.join(SRC, "BIGQMT_REDIS_DRYRUN.py")
+        path = os.path.join(SRC, "BIGQMT_VALKEY_DRYRUN.py")
         with open(path, "r", encoding="gbk") as source_file:
             source = source_file.read()
         self.assertIn('types.ModuleType("importlib")', source)

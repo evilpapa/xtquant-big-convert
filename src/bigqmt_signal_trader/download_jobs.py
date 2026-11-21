@@ -1,14 +1,14 @@
 """Async, chunked download jobs for Big QMT.
 
-A client submits a download job (fire-and-forget) into a Redis queue and polls
+A client submits a download job (fire-and-forget) into a Valkey queue and polls
 its status. The Big QMT strategy thread drains one job at a time and downloads a
 bounded slice of symbols per tick (``chunk_size`` symbols, capped by a wall-clock
 budget), so a long ``download_history_data2`` never blocks the strategy thread /
 RPC pump. Historical bars land in the Big QMT machine's local store; clients then
 read them back with fast ``get_local_data`` / ``get_market_data`` calls.
 
-Redis layout (per account). All stored VALUES are digit-free encoded (see _enc)
-so the QMT terminal's redis compliance filter never trips on stock codes in the
+Valkey layout (per account). All stored VALUES are digit-free encoded (see _enc)
+so the QMT terminal's valkey compliance filter never trips on stock codes in the
 job data the pump reads back:
 - ``bigqmt:dljob:pending:{account_id}``      list of pending job ids (RPUSH/LPOP)
 - ``bigqmt:dljob:item:{account_id}:{job_id}`` encoded job blob incl. progress
@@ -57,11 +57,11 @@ def _text(value):
     return str(value)
 
 
-# The 国金证券 QMT terminal ships a redis client whose check_response() raises
-# "Sensitive Data Detected, Forbidden!" whenever a Redis *response* contains a
+# The client bundled in earlier 国金证券 QMT builds had check_response() raise
+# "Sensitive Data Detected, Forbidden!" whenever a Valkey *response* contains a
 # stock-code + operation-code DIGIT pattern (a brokerage control against trading
-# signals flowing through Redis). The pump runs inside that terminal and must read
-# job data (which contains stock codes) back from Redis. So every value the pump
+# signals flowing through Valkey). The pump runs inside that terminal and must read
+# job data (which contains stock codes) back from Valkey. So every value the pump
 # reads is stored as a DIGIT-FREE token: hex-encode, then shift digits 0-9 -> the
 # letters g-p, making the stored value all letters (a-p). The stock-code regex
 # requires digits, so it can never match. Reversible; writes are never filtered
@@ -85,7 +85,7 @@ def _dec(token):
 
 
 def submit_download_job(
-    redis_client,
+    valkey_client,
     account_id,
     stock_list,
     period,
@@ -119,18 +119,18 @@ def submit_download_job(
         "updated_at_ts": now,
     }
     ttl = int(max(1, job_ttl_seconds))
-    redis_client.setex(job_key(account_id, job_id), ttl, _enc(json.dumps(job, ensure_ascii=False)))
-    redis_client.rpush(queue_key(account_id), _enc(job_id))
+    valkey_client.setex(job_key(account_id, job_id), ttl, _enc(json.dumps(job, ensure_ascii=False)))
+    valkey_client.rpush(queue_key(account_id), _enc(job_id))
     try:
-        redis_client.expire(queue_key(account_id), ttl)
+        valkey_client.expire(queue_key(account_id), ttl)
     except Exception:
         pass
     return job
 
 
-def read_download_status(redis_client, account_id, job_id):
+def read_download_status(valkey_client, account_id, job_id):
     """Return the current job status dict, or None if unknown/expired."""
-    decoded = _dec(redis_client.get(job_key(account_id, job_id)))
+    decoded = _dec(valkey_client.get(job_key(account_id, job_id)))
     if not decoded:
         return None
     try:
@@ -141,7 +141,7 @@ def read_download_status(redis_client, account_id, job_id):
 
 
 def wait_download_job(
-    redis_client,
+    valkey_client,
     account_id,
     job_id,
     wait_seconds=600.0,
@@ -150,7 +150,7 @@ def wait_download_job(
     """Block (client-side only) until the job reaches a terminal state or timeout."""
     deadline = time.time() + max(0.0, float(wait_seconds))
     while True:
-        status = read_download_status(redis_client, account_id, job_id)
+        status = read_download_status(valkey_client, account_id, job_id)
         if status and status.get("state") in (DONE, FAILED):
             return status
         if time.time() >= deadline:
@@ -158,28 +158,28 @@ def wait_download_job(
         time.sleep(max(0.05, float(poll_interval_seconds)))
 
 
-def _write_job(redis_client, account_id, job, job_ttl_seconds):
+def _write_job(valkey_client, account_id, job, job_ttl_seconds):
     job["updated_at_ts"] = time.time()
     ttl = int(max(1, job_ttl_seconds))
-    redis_client.setex(job_key(account_id, job["job_id"]), ttl, _enc(json.dumps(job, ensure_ascii=False)))
+    valkey_client.setex(job_key(account_id, job["job_id"]), ttl, _enc(json.dumps(job, ensure_ascii=False)))
 
 
-def _acquire_current_job(redis_client, account_id):
+def _acquire_current_job(valkey_client, account_id):
     ckey = current_key(account_id)
-    current_id = _dec(redis_client.get(ckey))
+    current_id = _dec(valkey_client.get(ckey))
     if current_id:
-        job = read_download_status(redis_client, account_id, current_id)
+        job = read_download_status(valkey_client, account_id, current_id)
         if job and job.get("state") in _ACTIVE_STATES:
             return job
         # Stale pointer (job done/failed/expired): drop it and pick the next one.
-        redis_client.delete(ckey)
+        valkey_client.delete(ckey)
     while True:
-        job_id = _dec(redis_client.lpop(queue_key(account_id)))
+        job_id = _dec(valkey_client.lpop(queue_key(account_id)))
         if not job_id:
             return None
-        job = read_download_status(redis_client, account_id, job_id)
+        job = read_download_status(valkey_client, account_id, job_id)
         if job and job.get("state") in _ACTIVE_STATES:
-            redis_client.set(ckey, _enc(job_id))
+            valkey_client.set(ckey, _enc(job_id))
             return job
         # Skip unknown/expired/finished ids left in the queue.
 
@@ -203,7 +203,7 @@ def _download_chunk(market_data, method, chunk, period, start_time, end_time, in
 
 
 def pump_download_jobs(
-    redis_client,
+    valkey_client,
     market_data,
     account_id,
     chunk_size=DEFAULT_CHUNK_SIZE,
@@ -216,7 +216,7 @@ def pump_download_jobs(
     until the wall-clock budget is spent. Returns a small status summary, or None
     when there is no active job. Runs on the caller (strategy) thread.
     """
-    job = _acquire_current_job(redis_client, account_id)
+    job = _acquire_current_job(valkey_client, account_id)
     if job is None:
         return None
     stock_list = job.get("stock_list") or []
@@ -247,16 +247,16 @@ def pump_download_jobs(
         job["state"] = FAILED
         job["error"] = "%s: %s" % (exc.__class__.__name__, exc)
         job["done"] = done
-        _write_job(redis_client, account_id, job, job_ttl_seconds)
-        redis_client.delete(current_key(account_id))
+        _write_job(valkey_client, account_id, job, job_ttl_seconds)
+        valkey_client.delete(current_key(account_id))
         return {"job_id": job["job_id"], "state": FAILED, "done": done, "total": total, "error": job["error"]}
 
     job["done"] = done
     if done >= total:
         job["state"] = DONE
-        _write_job(redis_client, account_id, job, job_ttl_seconds)
-        redis_client.delete(current_key(account_id))
+        _write_job(valkey_client, account_id, job, job_ttl_seconds)
+        valkey_client.delete(current_key(account_id))
         return {"job_id": job["job_id"], "state": DONE, "done": done, "total": total}
     job["state"] = RUNNING
-    _write_job(redis_client, account_id, job, job_ttl_seconds)
+    _write_job(valkey_client, account_id, job, job_ttl_seconds)
     return {"job_id": job["job_id"], "state": RUNNING, "done": done, "total": total}

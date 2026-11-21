@@ -388,9 +388,9 @@ def _monotonic():
 
 def build_quote_subscription_service(
     context_info,
-    transport_name="redis",
+    transport_name="valkey",
     account_id="",
-    redis_client=None,
+    valkey_client=None,
     enabled=True,
     heartbeat_timeout_seconds=30.0,
     time_func=None,
@@ -409,22 +409,22 @@ def build_quote_subscription_service(
     if not enabled:
         return None
     from .quote_push_channel import (
-        NullQuotePushChannel, RedisQuotePushChannel,
+        NullQuotePushChannel, ValkeyQuotePushChannel,
     )
 
     source = ContextInfoQuoteSource(context_info)
-    transport_name = str(transport_name or "redis").lower()
+    transport_name = str(transport_name or "valkey").lower()
     served = _served_account_ids(account_id, account_ids)
     if push_channel is not None:
         channel = push_channel
         push_endpoint = ""
-    elif redis_client is None:
-        # Redis 被关掉的部署使用静默空通道，而不是
-        # RedisQuotePushChannel(None) 每条事件一行 AttributeError。
+    elif valkey_client is None:
+        # Valkey 被关掉的部署使用静默空通道，而不是
+        # ValkeyQuotePushChannel(None) 每条事件一行 AttributeError。
         channel = NullQuotePushChannel()
         push_endpoint = ""
     else:
-        channel = RedisQuotePushChannel(redis_client, account_id=account_id, account_ids=served)
+        channel = ValkeyQuotePushChannel(valkey_client, account_id=account_id, account_ids=served)
         push_endpoint = ""
     manager = QuoteSubscriptionManager(
         source,

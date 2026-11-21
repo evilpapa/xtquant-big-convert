@@ -12,7 +12,7 @@ half-finished edit -- straight into the live terminal.
 
 Two things this deliberately does not do:
 
-* **Config files are never written.** ``bigqmt_signal_trader_local_config.py``
+* **Config files are never written.** ``bigqmt_signal_trader_qmt_config.py``
   and ``bigqmt_signal_trader_client_config.py`` hold the account id and
   credentials. Their ``.example.py`` counterparts are documentation and do get
   synced.
@@ -31,7 +31,7 @@ import time
 
 # Real config files: account id and credentials live here.
 NEVER_OVERWRITE = (
-    "bigqmt_signal_trader_local_config.py",
+    "bigqmt_signal_trader_qmt_config.py",
     "bigqmt_signal_trader_client_config.py",
 )
 

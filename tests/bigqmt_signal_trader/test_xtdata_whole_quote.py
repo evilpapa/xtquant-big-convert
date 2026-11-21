@@ -45,7 +45,7 @@ class FakeClient:
         self.account_id = "acct"
         self.local_cache_config = {}
         self.full_tick_cache_config = {}
-        self.transport_name = "redis"
+        self.transport_name = "valkey"
         self.calls = []
 
     def call(self, method, params=None, **kwargs):
@@ -54,8 +54,8 @@ class FakeClient:
             return {c: {"lastPrice": 1.0} for c in (params or {}).get("codes") or []}
         return {}
 
-    def _redis(self):
-        raise AssertionError("redis not expected in this test")
+    def _valkey(self):
+        raise AssertionError("valkey not expected in this test")
 
 
 class XtDataWholeQuoteDelegationTest(unittest.TestCase):

@@ -32,9 +32,9 @@ from bigqmt_signal_trader.adapters.order_bigqmt import (  # noqa: E402
     SIDELESS_DEFAULT_ACTION,
     is_sideless_order_type,
 )
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers  # noqa: E402
 
-from test_redis_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
+from test_valkey_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
 
 
 class _Passorder(object):

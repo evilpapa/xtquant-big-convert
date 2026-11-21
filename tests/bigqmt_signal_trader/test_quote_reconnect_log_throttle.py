@@ -1,10 +1,10 @@
 # coding: utf-8
-"""Redis 断开时行情接收器每秒重连，但不能每秒刷一行日志（#256 的跟进）。
+"""Valkey 断开时行情接收器每秒重连，但不能每秒刷一行日志（#256 的跟进）。
 
 #257 让接收器自己负责重连，这是对的 —— 在那之前连接一断行情就永久停掉，而
 keepalive 和补订阅还在成功，外部看着一切健康。
 
-但它每次失败都打一行，重试间隔又是固定 1 秒：Redis 掉一个周末就是 17 万行。
+但它每次失败都打一行，重试间隔又是固定 1 秒：Valkey 掉一个周末就是 17 万行。
 这个仓库为日志量吃过亏 —— #139 把同一行写了 16 次，#144 因为轮转永远失败导致
 日志无上限增长。zmq 的 ROUTER 重建为同样的理由做了退避（#240）。
 
@@ -23,12 +23,12 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.quote_push_channel import RedisQuotePushChannel  # noqa: E402
+from bigqmt_signal_trader.quote_push_channel import ValkeyQuotePushChannel  # noqa: E402
 
 
 class _DeadPubsub(object):
     def subscribe(self, *channels):
-        raise ConnectionError("redis unreachable")
+        raise ConnectionError("valkey unreachable")
 
     def get_message(self, **kwargs):
         return None
@@ -37,7 +37,7 @@ class _DeadPubsub(object):
         pass
 
 
-class _DeadRedis(object):
+class _DeadValkey(object):
     def __init__(self):
         self.connections = 0
 
@@ -48,26 +48,26 @@ class _DeadRedis(object):
 
 class ReconnectLogThrottleTest(unittest.TestCase):
     def _run_outage(self, seconds):
-        redis = _DeadRedis()
-        channel = RedisQuotePushChannel(redis, account_id="t")
+        valkey = _DeadValkey()
+        channel = ValkeyQuotePushChannel(valkey, account_id="t")
         buffer = _io.StringIO()
         with contextlib.redirect_stdout(buffer):
             channel.start_subscriber(["x"], lambda topic, data: None)
             time.sleep(seconds)
             channel.stop()
         lines = [l for l in buffer.getvalue().splitlines() if "reconnecting" in l]
-        return redis, lines
+        return valkey, lines
 
     def test_it_keeps_retrying_every_second(self):
         """退避的是日志，不是重连 —— 行情要尽快回来。"""
-        redis, _ = self._run_outage(4.5)
-        self.assertGreaterEqual(redis.connections, 4,
-                                "重连变慢了：4.5 秒只试了 %d 次" % redis.connections)
+        valkey, _ = self._run_outage(4.5)
+        self.assertGreaterEqual(valkey.connections, 4,
+                                "重连变慢了：4.5 秒只试了 %d 次" % valkey.connections)
 
     def test_it_does_not_print_once_per_attempt(self):
-        redis, lines = self._run_outage(4.5)
-        self.assertLess(len(lines), redis.connections,
-                        "每次重连都打了一行：%d 次尝试 %d 行" % (redis.connections, len(lines)))
+        valkey, lines = self._run_outage(4.5)
+        self.assertLess(len(lines), valkey.connections,
+                        "每次重连都打了一行：%d 次尝试 %d 行" % (valkey.connections, len(lines)))
 
     def test_the_first_failure_is_still_reported(self):
         """节流不能把第一次失败也吞掉 —— 那就没人知道断了。"""

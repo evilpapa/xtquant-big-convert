@@ -2,7 +2,7 @@
 import unittest
 
 from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 from bigqmt_signal_trader.xtquant_compat import BigQmtXtData
 
 

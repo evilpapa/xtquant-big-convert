@@ -71,7 +71,7 @@ class MultiAccountRpcServiceManager:
     """Manages primary + secondary RPC services for multi-account deployment.
 
     Delegates start/stop/drain to all services.  Exposes the primary service's
-    attributes (``redis``, ``listen_redis``, ``account_id``, etc.) so that the
+    attributes (``valkey``, ``listen_valkey``, ``account_id``, etc.) so that the
     strategy module can treat a single-service or multi-service deployment
     identically.
     """
@@ -81,8 +81,8 @@ class MultiAccountRpcServiceManager:
         self.handlers = handlers
         self._primary = services[0]
         self.account_id = services[0].account_id
-        self.redis = services[0].redis
-        self.listen_redis = services[0].listen_redis
+        self.valkey = services[0].valkey
+        self.listen_valkey = services[0].listen_valkey
         # QMT calls order_callback / deal_callback for the bound (primary)
         # account only; the secondaries' events come from polling (#320).
         self.exec_poller = exec_poller
@@ -100,26 +100,26 @@ class MultiAccountRpcServiceManager:
                 s.stop()
             except Exception:
                 pass
-            # Close secondary's transport listen_redis so zombie brpop/pubsub
+            # Close secondary's transport listen_valkey so zombie brpop/pubsub
             # threads exit immediately instead of surviving the join timeout
             # and competing for requests after reload.  The primary's
-            # listen_redis is shared with the service-level attribute and
+            # listen_valkey is shared with the service-level attribute and
             # must NOT be closed here — it is managed by the primary's own
             # stop() lifecycle.
             if s is not self._primary:
                 transport = getattr(s, "_transport", None)
                 if transport is not None:
-                    lr = getattr(transport, "listen_redis", None)
+                    lr = getattr(transport, "listen_valkey", None)
                     if lr is not None:
                         try:
                             lr.close()
                         except Exception:
                             pass
-                # Also close the service-level listen_redis if it is a
+                # Also close the service-level listen_valkey if it is a
                 # separate connection (not shared with primary).
-                slr = getattr(s, "listen_redis", None)
+                slr = getattr(s, "listen_valkey", None)
                 if slr is not None and slr is not getattr(
-                    self._primary, "listen_redis", None
+                    self._primary, "listen_valkey", None
                 ):
                     try:
                         slr.close()
@@ -156,7 +156,7 @@ class MultiAccountRpcServiceManager:
 
 
 def build_multi_account_rpc_service(context_info, app, config, build_single_fn):
-    """Build one ``RedisPubSubRpcService`` per account in the type map.
+    """Build one ``ValkeyPubSubRpcService`` per account in the type map.
 
     Falls back to the single-service builder (``build_single_fn``) when the
     map is empty or has only one entry — zero behavior change for
@@ -171,7 +171,7 @@ def build_multi_account_rpc_service(context_info, app, config, build_single_fn):
 
     Returns
     -------
-    RedisPubSubRpcService or MultiAccountRpcServiceManager or None
+    ValkeyPubSubRpcService or MultiAccountRpcServiceManager or None
     """
     from .account_type_map import get_account_type_map
 
@@ -223,7 +223,7 @@ def _push_sink_from_handlers(handlers):
 
 
 def _build_secondary_exec_poller(context_info, primary, secondary_accounts, config):
-    """The #320 poller, or None when exec events are off / no redis sink /
+    """The #320 poller, or None when exec events are off / no valkey sink /
     the gateway cannot read native rows / the interval is 0."""
     exec_config = dict(config.get("exec_events") or {})
     enabled = exec_config.get("enabled", True)
@@ -240,10 +240,10 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
         return None
     gateway = getattr(primary.handlers, "order_gateway", None)
     query_rows = getattr(gateway, "query_native_rows", None)
-    sink = getattr(primary, "redis", None)
-    identity_redis = sink
+    sink = getattr(primary, "valkey", None)
+    identity_valkey = sink
     if sink is None:
-        # Without redis, exec events can go out on the quote push
+        # Without valkey, exec events can go out on the quote push
         # channel (exec:* topics, #76); the manager holds that channel's
         # publish, so wrap it as a push sink.
         sink = _push_sink_from_handlers(primary.handlers)
@@ -253,7 +253,7 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
         return None
     from .secondary_exec_poll import SecondaryExecPoller, build_row_publisher
 
-    publish = build_row_publisher(sink, context_info=context_info, identity_redis=identity_redis)
+    publish = build_row_publisher(sink, context_info=context_info, identity_valkey=identity_valkey)
     poller = SecondaryExecPoller(
         secondary_accounts, query_rows, publish, interval_seconds=interval,
         log=lambda text: logger.warning("multi_account: %s", text))
@@ -263,42 +263,42 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
 
 
 def _build_secondary(primary, account_id, config):
-    """Build a secondary ``RedisPubSubRpcService`` sharing the primary's handlers.
+    """Build a secondary ``ValkeyPubSubRpcService`` sharing the primary's handlers.
 
-    The secondary gets its own Redis connection (so ``stop()`` on the secondary
+    The secondary gets its own Valkey connection (so ``stop()`` on the secondary
     doesn't kill the primary's listener) and a ``SecondaryHandlersProxy`` that
     injects the secondary's account_id into every request.
     """
     rpc_config = dict((config.get("rpc") or {}))
-    transport_name = str(rpc_config.get("transport") or "redis").lower()
-    if transport_name not in ("redis", "", "default"):
+    transport_name = str(rpc_config.get("transport") or "valkey").lower()
+    if transport_name not in ("valkey", "", "default"):
         logger.warning("multi_account: secondary %s*** unavailable for transport %r", account_id[:3], transport_name)
         return None
     try:
-        from .redis_rpc import RedisPubSubRpcService
-        from .transports.redis_transport import RedisTransport
-        from .adapters import redis_common
+        from .valkey_rpc import ValkeyPubSubRpcService
+        from .transports.valkey_transport import ValkeyTransport
+        from .adapters import valkey_common
     except ImportError:
         logger.warning("multi_account: secondary build failed (import error)")
         return None
 
-    # Build an independent Redis client for the secondary service.
+    # Build an independent Valkey client for the secondary service.
     # Shares the same host/port/db/password as primary, but is a separate
     # connection so closing it during stop() won't affect the primary.
     try:
-        redis_config = dict(config.get("redis") or {})
-        redis_config.update(dict(rpc_config.get("redis") or {}))
-        if redis_config.get("socket_timeout") in (None, ""):
-            redis_config["socket_timeout"] = 10
-        secondary_listen_redis = redis_common.build_redis_client(redis_config)
+        valkey_config = dict(config.get("valkey") or {})
+        valkey_config.update(dict(rpc_config.get("valkey") or {}))
+        if valkey_config.get("socket_timeout") in (None, ""):
+            valkey_config["socket_timeout"] = 10
+        secondary_listen_valkey = valkey_common.build_valkey_client(valkey_config)
     except Exception:
         # Fallback: share primary's connection (suboptimal but functional)
-        secondary_listen_redis = primary.listen_redis
+        secondary_listen_valkey = primary.listen_valkey
 
-    transport = RedisTransport(
-        redis_client=secondary_listen_redis,
+    transport = ValkeyTransport(
+        valkey_client=secondary_listen_valkey,
         account_id=account_id,
-        response_redis_client=primary.redis,
+        response_valkey_client=primary.valkey,
         request_channel_template=rpc_config.get(
             "request_channel_template", "bigqmt:rpc:req:{account_id}"),
         request_queue_template=rpc_config.get(
@@ -316,9 +316,9 @@ def _build_secondary(primary, account_id, config):
         print_prefix="[bigqmt_rpc_2nd]",
     )
 
-    return RedisPubSubRpcService(
-        redis_client=secondary_listen_redis,
-        response_redis_client=primary.redis,
+    return ValkeyPubSubRpcService(
+        valkey_client=secondary_listen_valkey,
+        response_valkey_client=primary.valkey,
         handlers=SecondaryHandlersProxy(primary.handlers, account_id),
         account_id=account_id,
         request_channel_template=rpc_config.get(

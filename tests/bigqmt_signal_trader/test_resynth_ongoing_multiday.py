@@ -188,7 +188,7 @@ class TriggerGatesTest(unittest.TestCase):
         xt.get_market_data_ex = None
 
         def raising(**kwargs):
-            raise RuntimeError("redis down")
+            raise RuntimeError("valkey down")
 
         xt.get_market_data_ex = raising
         data = {"000001.SZ": _weekly_frame(6763, 11.0, 10.2, 10.9, 10.8, 7000.0)}

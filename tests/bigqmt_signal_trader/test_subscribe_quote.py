@@ -58,7 +58,7 @@ class FakeClient(object):
         self.account_id = "acct"
         self.local_cache_config = {}
         self.full_tick_cache_config = {"bar_poll_interval_seconds": 0.02}
-        self.transport_name = "redis"
+        self.transport_name = "valkey"
         self.calls = []
         self._bars = bars if bars is not None else [[{"time": 1, "close": 1.0}]]
         self._index = 0
@@ -79,8 +79,8 @@ class FakeClient(object):
     def publish_event(self, event_type, payload, **kwargs):
         pass
 
-    def _redis(self):
-        raise AssertionError("redis must not be needed here")
+    def _valkey(self):
+        raise AssertionError("valkey must not be needed here")
 
 
 def _xtdata(client=None, session=None):

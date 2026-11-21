@@ -28,19 +28,19 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.redis_rpc import (  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
     HEAVY_READ_METHODS,
     LISTENER_DEFERRED_METHODS,
     ORDER_METHODS,
     READ_METHODS,
     BigQmtRpcHandlers,
-    RedisPubSubRpcService,
+    ValkeyPubSubRpcService,
 )
 
-from test_redis_rpc import (  # noqa: E402  -- the established fakes
+from test_valkey_rpc import (  # noqa: E402  -- the established fakes
     FakeMarketData,
     FakePositionProvider,
-    FakeRedis,
+    FakeValkey,
 )
 
 
@@ -64,7 +64,7 @@ class _ThreadNamingMarketData(FakeMarketData):
 
 
 def _service(market_data=None, **kwargs):
-    redis_client = FakeRedis()
+    valkey_client = FakeValkey()
     handlers = BigQmtRpcHandlers(
         account_id="acct", market_data=market_data or _ThreadNamingMarketData(),
         position_provider=FakePositionProvider(), order_gateway=None,
@@ -72,8 +72,8 @@ def _service(market_data=None, **kwargs):
     options = dict(process_in_listener=True, listener_methods=("*",),
                    background_threads=False)
     options.update(kwargs)
-    service = RedisPubSubRpcService(redis_client, handlers, account_id="acct", **options)
-    return redis_client, service
+    service = ValkeyPubSubRpcService(valkey_client, handlers, account_id="acct", **options)
+    return valkey_client, service
 
 
 def _request(method, params=None, request_id="r1", **extra):
@@ -160,7 +160,7 @@ class HeavyClassificationTest(unittest.TestCase):
 
 class HeavyWorkerFlowTest(unittest.TestCase):
     def setUp(self):
-        self.redis, self.service = _service()
+        self.valkey, self.service = _service()
         self.market_data = self.service.handlers.market_data
         self.service.start()
         self.assertIsNotNone(self.service._heavy_thread)
@@ -176,12 +176,12 @@ class HeavyWorkerFlowTest(unittest.TestCase):
         # Not answered inline, and not answered by the worker either: the
         # reply waits for the adjust thread.
         self.assertTrue(_wait(lambda: self.service._heavy_replies.qsize() == 1))
-        self.assertNotIn("resp:h1", self.redis.kv)
+        self.assertNotIn("resp:h1", self.valkey.kv)
         self.assertEqual(self.market_data.threads["get_financial_data"], "bigqmt-rpc-heavy")
         # The next adjust tick sends it.
         self.service.drain_pending()
-        self.assertIn("resp:h1", self.redis.kv)
-        response = json.loads(self.redis.kv["resp:h1"])
+        self.assertIn("resp:h1", self.valkey.kv)
+        response = json.loads(self.valkey.kv["resp:h1"])
         self.assertTrue(response["ok"], response)
         self.assertEqual(response["data"], {"financial": True})
         self.assertEqual(self.service._heavy_replies.qsize(), 0)
@@ -190,7 +190,7 @@ class HeavyWorkerFlowTest(unittest.TestCase):
         request = _request("get_full_tick", {"codes": ["600000.SH"]}, request_id="l1")
         self.service.enqueue_payload(request)
         # Synchronous: answered before enqueue_payload returned, on this thread.
-        self.assertIn("resp:l1", self.redis.kv)
+        self.assertIn("resp:l1", self.valkey.kv)
         self.assertEqual(self.market_data.threads["get_ticks"], threading.current_thread().name)
         self.assertEqual(self.service.heavy_queue_depth(), 0)
 
@@ -200,7 +200,7 @@ class HeavyWorkerFlowTest(unittest.TestCase):
         self.assertTrue(_wait(lambda: self.service._heavy_replies.qsize() == 1))
         self.assertEqual(self.market_data.threads["get_ticks"], "bigqmt-rpc-heavy")
         self.service.drain_pending()
-        self.assertIn("resp:t1", self.redis.kv)
+        self.assertIn("resp:t1", self.valkey.kv)
 
     def test_expired_heavy_request_is_refused_on_the_worker_and_still_replied(self):
         request = _request("get_financial_data", {"stock_list": ["600000.SH"]},
@@ -210,7 +210,7 @@ class HeavyWorkerFlowTest(unittest.TestCase):
         self.assertTrue(_wait(lambda: self.service._heavy_replies.qsize() == 1))
         self.assertNotIn("get_financial_data", self.market_data.threads)  # never dispatched
         self.service.drain_pending()
-        response = json.loads(self.redis.kv["resp:e1"])
+        response = json.loads(self.valkey.kv["resp:e1"])
         self.assertFalse(response["ok"])
         self.assertIn("RequestExpired", response["error"])
 
@@ -221,7 +221,7 @@ class HeavyWorkerFlowTest(unittest.TestCase):
         self.assertEqual(self.service.heavy_queue_depth(), 0)
         self.assertEqual(self.service.pending.qsize(), 1)
         self.service.drain_pending()
-        self.assertIn("resp:p1", self.redis.kv)
+        self.assertIn("resp:p1", self.valkey.kv)
 
     def test_stop_joins_the_worker(self):
         thread = self.service._heavy_thread
@@ -232,13 +232,13 @@ class HeavyWorkerFlowTest(unittest.TestCase):
 
 class HeavyWorkerOffTest(unittest.TestCase):
     def test_heavy_offload_false_keeps_everything_inline(self):
-        redis_client, service = _service(heavy_offload=False)
+        valkey_client, service = _service(heavy_offload=False)
         service.start()
         try:
             self.assertIsNone(service._heavy_thread)
             request = _request("get_financial_data", {"stock_list": ["600000.SH"]}, request_id="i1")
             service.enqueue_payload(request)
-            self.assertIn("resp:i1", redis_client.kv)
+            self.assertIn("resp:i1", valkey_client.kv)
             self.assertEqual(service.handlers.market_data.threads["get_financial_data"],
                              threading.current_thread().name)
         finally:

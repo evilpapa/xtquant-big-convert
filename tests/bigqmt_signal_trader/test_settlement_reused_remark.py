@@ -37,14 +37,14 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.models import OrderSnapshot  # noqa: E402
 from bigqmt_signal_trader.order_watch import OrderWatchTable  # noqa: E402
-from bigqmt_signal_trader.redis_rpc import (  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
     BigQmtRpcHandlers,
     OrderSettlement,
     _rows_for_this_submit,
 )
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway  # noqa: E402
 
-from test_redis_rpc import (  # noqa: E402  -- the established fakes
+from test_valkey_rpc import (  # noqa: E402  -- the established fakes
     FakeMarketData,
     FakePositionProvider,
 )

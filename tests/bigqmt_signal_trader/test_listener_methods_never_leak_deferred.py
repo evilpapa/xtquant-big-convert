@@ -22,16 +22,16 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.redis_rpc import (  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
     LISTENER_DEFERRED_METHODS,
     READ_METHODS,
-    RedisPubSubRpcService,
+    ValkeyPubSubRpcService,
 )
 
 
 class ListenerExpansionTest(unittest.TestCase):
     def _service(self):
-        service = RedisPubSubRpcService.__new__(RedisPubSubRpcService)
+        service = ValkeyPubSubRpcService.__new__(ValkeyPubSubRpcService)
         service.handlers = None
         return service
 

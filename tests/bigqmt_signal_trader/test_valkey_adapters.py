@@ -8,13 +8,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapter_factory import build_app
-from bigqmt_signal_trader.adapters.position_sync_redis import RedisPositionSyncSink
-from bigqmt_signal_trader.adapters.signal_redis import RedisStreamSignalSource, push_trade_signal
-from bigqmt_signal_trader.adapters.state_redis import RedisStateStore
+from bigqmt_signal_trader.adapters.position_sync_valkey import ValkeyPositionSyncSink
+from bigqmt_signal_trader.adapters.signal_valkey import ValkeyStreamSignalSource, push_trade_signal
+from bigqmt_signal_trader.adapters.state_valkey import ValkeyStateStore
 from bigqmt_signal_trader.models import AccountSnapshot, AssetSnapshot, PositionSnapshot
 
 
-class FakeRedis:
+class FakeValkey:
     def __init__(self):
         self.streams = {}
         self.groups = set()
@@ -72,7 +72,7 @@ class FakeRedis:
 
 def _payload(**kwargs):
     payload = {
-        "signal_id": "sig-redis-001",
+        "signal_id": "sig-valkey-001",
         "account_id": "acct",
         "action": "BUY",
         "stock_code": "600000",
@@ -86,25 +86,25 @@ def _payload(**kwargs):
     return payload
 
 
-class RedisAdaptersTest(unittest.TestCase):
+class ValkeyAdaptersTest(unittest.TestCase):
     def test_stream_source_reads_json_payload_and_acks(self):
-        r = FakeRedis()
+        r = FakeValkey()
         stream_key = "bigqmt:signals:acct"
         r.xadd(stream_key, {"payload": json.dumps(_payload())})
-        source = RedisStreamSignalSource(r, consumer_name="c1")
+        source = ValkeyStreamSignalSource(r, consumer_name="c1")
 
         signals = source.fetch("acct", 10)
         source.ack(signals[0])
 
-        self.assertEqual(signals[0].signal_id, "sig-redis-001")
+        self.assertEqual(signals[0].signal_id, "sig-valkey-001")
         self.assertFalse(signals[0].force)
         self.assertEqual(r.acked, [(stream_key, "bigqmt-signal-trader", "1-0")])
 
     def test_stream_source_reads_flat_payload_with_bytes_keys(self):
-        r = FakeRedis()
+        r = FakeValkey()
         fields = {key.encode("utf-8"): str(value).encode("utf-8") for key, value in _payload().items()}
         r.streams["bigqmt:signals:acct"] = [("9-0", fields)]
-        source = RedisStreamSignalSource(r)
+        source = ValkeyStreamSignalSource(r)
 
         signals = source.fetch("acct", 10)
 
@@ -112,23 +112,23 @@ class RedisAdaptersTest(unittest.TestCase):
         self.assertEqual(signals[0].amount, 300)
 
     def test_state_store_claim_is_idempotent_and_writes_status(self):
-        r = FakeRedis()
-        source = RedisStreamSignalSource(r)
+        r = FakeValkey()
+        source = ValkeyStreamSignalSource(r)
         r.xadd("bigqmt:signals:acct", {"payload": json.dumps(_payload())})
         signal = source.fetch("acct", 1)[0]
-        store = RedisStateStore(r, account_id="acct")
+        store = ValkeyStateStore(r, account_id="acct")
 
         self.assertTrue(store.claim(signal, "consumer-a"))
         self.assertFalse(store.claim(signal, "consumer-b"))
         store.mark_finished(signal.signal_id, "SKIPPED", "test")
 
-        status_key = "bigqmt:signal_status:acct:sig-redis-001"
+        status_key = "bigqmt:signal_status:acct:sig-valkey-001"
         self.assertEqual(r.hashes[status_key]["status"], "SKIPPED")
         self.assertEqual(r.hashes[status_key]["message"], "test")
 
     def test_position_sync_sink_writes_snapshot_and_event(self):
-        r = FakeRedis()
-        sink = RedisPositionSyncSink(r)
+        r = FakeValkey()
+        sink = ValkeyPositionSyncSink(r)
         snapshot = AccountSnapshot(
             account_id="acct",
             asset=AssetSnapshot(account_id="acct", cash=100.0, total_asset=1000.0),
@@ -151,88 +151,82 @@ class RedisAdaptersTest(unittest.TestCase):
         self.assertIn("bigqmt:position_events:acct", r.streams)
 
     def test_push_trade_signal_uses_account_stream(self):
-        r = FakeRedis()
+        r = FakeValkey()
 
         stream_id = push_trade_signal(r, _payload())
 
         self.assertEqual(stream_id, "1-0")
         self.assertIn("bigqmt:signals:acct", r.streams)
 
-    def test_factory_wires_redis_adapters_without_real_redis(self):
-        r = FakeRedis()
+    def test_factory_wires_valkey_adapters_without_real_valkey(self):
+        r = FakeValkey()
         app = build_app(
             config={
                 "account_id": "acct",
-                "signal_source_type": "redis",
-                "state_store_type": "redis",
-                "position_sync_type": "redis",
-                "redis_client": r,
+                "signal_source_type": "valkey",
+                "state_store_type": "valkey",
+                "position_sync_type": "valkey",
+                "valkey_client": r,
             }
         )
 
-        self.assertIsInstance(app.signal_source, RedisStreamSignalSource)
-        self.assertIsInstance(app.state_store, RedisStateStore)
-        self.assertIsInstance(app.position_sync_sink, RedisPositionSyncSink)
+        self.assertIsInstance(app.signal_source, ValkeyStreamSignalSource)
+        self.assertIsInstance(app.state_store, ValkeyStateStore)
+        self.assertIsInstance(app.position_sync_sink, ValkeyPositionSyncSink)
 
 
-class RedisProtocolCompatTest(unittest.TestCase):
-    """Issue #71：QMT 自带 redis-py 3.5.3 的 Redis.__init__ 没有 protocol 参数，
-    硬传直接 TypeError。按版本能力条件透传。"""
-
-    def _fake_redis_module(self, with_protocol):
-        import types
-
-        captured = {}
-
-        if with_protocol:
-            class FakeRedis:
-                def __init__(self, host=None, port=None, db=None, username=None,
-                             password=None, protocol=None, **kwargs):
-                    captured.update(kwargs)
-                    captured["protocol"] = protocol
-        else:
-            class FakeRedis:  # 模拟 redis-py 3.5.3：没有 protocol 参数
-                def __init__(self, host=None, port=None, db=None, username=None,
-                             password=None, **kwargs):
-                    captured.update(kwargs)
-
-        module = types.ModuleType("redis")
-        module.Redis = FakeRedis
-        return module, captured
+class ValkeyConnectionTest(unittest.TestCase):
 
     def test_protocol_passed_when_supported(self):
-        import sys
         from unittest import mock
 
-        from bigqmt_signal_trader.adapters import redis_common
+        from bigqmt_signal_trader.adapters import valkey_common
 
-        module, captured = self._fake_redis_module(with_protocol=True)
-        with mock.patch.dict(sys.modules, {"redis": module}):
-            redis_common.build_redis_client({"host": "h", "port": 6379, "protocol": 3})
-        self.assertEqual(captured.get("protocol"), 3)
+        try:
+            import valkey
+        except ImportError:
+            self.skipTest("valkey-py unavailable")
+        with mock.patch.object(valkey, "Valkey") as client:
+            valkey_common.build_valkey_client({"host": "h", "port": 6379, "protocol": 3})
+        self.assertEqual(client.call_args.kwargs["protocol"], 3)
 
-    def test_protocol_skipped_when_unsupported(self):
-        import sys
-        from unittest import mock
+    def test_both_tcp_url_schemes_build_valkey_clients(self):
+        from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
 
-        from bigqmt_signal_trader.adapters import redis_common
-
-        module, captured = self._fake_redis_module(with_protocol=False)
-        with mock.patch.dict(sys.modules, {"redis": module}):
-            redis_common.build_redis_client({"host": "h", "port": 6379})
-        self.assertNotIn("protocol", captured)
+        try:
+            import valkey
+        except ImportError:
+            self.skipTest("valkey package unavailable")
+        for scheme in ("valkey", "redis"):
+            with self.subTest(scheme=scheme):
+                client = build_valkey_client({
+                    "url": scheme + "://user:p%40ss@localhost:6399/7",
+                })
+                self.assertIsInstance(client, valkey.Valkey)
+                kwargs = client.connection_pool.connection_kwargs
+                self.assertEqual(kwargs["host"], "localhost")
+                self.assertEqual(kwargs["port"], 6399)
+                self.assertEqual(kwargs["db"], 7)
+                self.assertEqual(kwargs["username"], "user")
+                self.assertEqual(kwargs["password"], "p@ss")
 
     def test_protocol_default_is_resp2(self):
-        # 显式不传时默认 2（Redis 5.0 只支持 RESP2，redis-py 8.x 默认 RESP3）
-        import sys
         from unittest import mock
 
-        from bigqmt_signal_trader.adapters import redis_common
+        from bigqmt_signal_trader.adapters import valkey_common
 
-        module, captured = self._fake_redis_module(with_protocol=True)
-        with mock.patch.dict(sys.modules, {"redis": module}):
-            redis_common.build_redis_client({"host": "h", "port": 6379})
-        self.assertEqual(captured.get("protocol"), 2)
+        try:
+            import valkey
+        except ImportError:
+            self.skipTest("valkey-py unavailable")
+        with mock.patch.object(valkey, "Valkey") as client:
+            valkey_common.build_valkey_client({"host": "h", "port": 6379})
+        self.assertEqual(client.call_args.kwargs["protocol"], 2)
+        retry = client.call_args.kwargs["retry"]
+        command = mock.Mock(side_effect=valkey.TimeoutError)
+        with self.assertRaises(valkey.TimeoutError):
+            retry.call_with_retry(command, lambda error: None)
+        command.assert_called_once()
 
 
 if __name__ == "__main__":

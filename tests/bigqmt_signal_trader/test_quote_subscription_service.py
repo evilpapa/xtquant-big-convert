@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.quote_push_channel import (
     NullQuotePushChannel,
-    RedisQuotePushChannel,
+    ValkeyQuotePushChannel,
 )
 from bigqmt_signal_trader.quote_subscription_manager import (
     QuoteSubscriptionManager,
@@ -28,7 +28,7 @@ class FakeContextInfo:
         return 0
 
 
-class FakeRedis:
+class FakeValkey:
     def publish(self, channel, value):
         return 1
 
@@ -39,29 +39,29 @@ class FakeRedis:
 class BuildQuoteSubscriptionServiceTest(unittest.TestCase):
     def test_disabled_returns_none(self):
         result = build_quote_subscription_service(
-            FakeContextInfo(), transport_name="redis", account_id="acct",
-            redis_client=FakeRedis(), enabled=False,
+            FakeContextInfo(), transport_name="valkey", account_id="acct",
+            valkey_client=FakeValkey(), enabled=False,
         )
         self.assertIsNone(result)
 
-    def test_redis_transport_builds_redis_channel(self):
+    def test_valkey_transport_builds_valkey_channel(self):
         service = build_quote_subscription_service(
-            FakeContextInfo(), transport_name="redis", account_id="acct",
-            redis_client=FakeRedis(), enabled=True,
+            FakeContextInfo(), transport_name="valkey", account_id="acct",
+            valkey_client=FakeValkey(), enabled=True,
         )
         manager, channel = service
         self.assertIsInstance(manager, QuoteSubscriptionManager)
-        self.assertIsInstance(channel, RedisQuotePushChannel)
+        self.assertIsInstance(channel, ValkeyQuotePushChannel)
 
 
     pass
 
-    def test_no_redis_shm_gets_the_null_channel(self):
-        """（redis 被关的部署）没有推送线：空通道静默 noop，而不是
-        RedisQuotePushChannel(None) 每条事件一行 AttributeError。"""
+    def test_no_valkey_shm_gets_the_null_channel(self):
+        """（valkey 被关的部署）没有推送线：空通道静默 noop，而不是
+        ValkeyQuotePushChannel(None) 每条事件一行 AttributeError。"""
         service = build_quote_subscription_service(
             FakeContextInfo(), transport_name="shm", account_id="acct",
-            redis_client=None, enabled=True,
+            valkey_client=None, enabled=True,
         )
         manager, channel = service
         self.assertIsInstance(channel, NullQuotePushChannel)
@@ -71,8 +71,8 @@ class BuildQuoteSubscriptionServiceTest(unittest.TestCase):
 
     def test_manager_on_push_publisher_is_channel_publish(self):
         service = build_quote_subscription_service(
-            FakeContextInfo(), transport_name="redis", account_id="acct",
-            redis_client=FakeRedis(), enabled=True,
+            FakeContextInfo(), transport_name="valkey", account_id="acct",
+            valkey_client=FakeValkey(), enabled=True,
         )
         manager, channel = service
         # The assembled manager must publish through the assembled channel.
@@ -80,8 +80,8 @@ class BuildQuoteSubscriptionServiceTest(unittest.TestCase):
 
     def test_heartbeat_timeout_configurable(self):
         service = build_quote_subscription_service(
-            FakeContextInfo(), transport_name="redis", account_id="acct",
-            redis_client=FakeRedis(), enabled=True, heartbeat_timeout_seconds=30.0,
+            FakeContextInfo(), transport_name="valkey", account_id="acct",
+            valkey_client=FakeValkey(), enabled=True, heartbeat_timeout_seconds=30.0,
         )
         manager, _channel = service
         self.assertEqual(manager._heartbeat_timeout, 30.0)

@@ -1,4 +1,4 @@
-"""Run outside QMT: forward the established Redis RPC protocol over serial."""
+"""Run outside QMT: forward the established Valkey RPC protocol over serial."""
 
 import argparse
 import logging
@@ -9,10 +9,11 @@ import time
 from collections import OrderedDict
 from urllib.parse import urlsplit
 
+from .adapters.valkey_common import normalize_valkey_url
 from .exec_events import EXEC_TOPICS, publish_exec_event
-from .quote_push_channel import RedisQuotePushChannel
-from .redis_rpc import METHOD_ALIASES, ORDER_METHODS
-from .transports.redis_transport import RedisTransport, _loads
+from .quote_push_channel import ValkeyQuotePushChannel
+from .valkey_rpc import METHOD_ALIASES, ORDER_METHODS
+from .transports.valkey_transport import ValkeyTransport, _loads
 from .transports.serial_transport import (
     DEFAULT_BAUDRATE, DEFAULT_MAX_FRAME_BYTES, SerialFrames, open_serial,
 )
@@ -23,15 +24,15 @@ _REQUEST_ID = re.compile(r"[a-zA-Z0-9_.:-]{1,128}\Z")
 _MAX_INFLIGHT = 16
 
 
-def _redis_endpoint(url):
+def _valkey_endpoint(url):
     """host:port/db without credentials, safe to log."""
     try:
         parts = urlsplit(url)
         port = parts.port or 6379
     except ValueError:
-        return "the configured Redis URL"
+        return "the configured Valkey URL"
     if not parts.hostname:
-        return "the configured Redis URL"
+        return "the configured Valkey URL"
     db = (parts.path or "/0").strip("/") or "0"
     return "%s:%s/%s" % (parts.hostname, port, db)
 
@@ -51,15 +52,15 @@ def _describe(exc):
     return " <- ".join(parts)
 
 
-class SerialRedisBridge:
-    def __init__(self, redis_client, port, account_id, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
-        self.redis = redis_client
+class SerialValkeyBridge:
+    def __init__(self, valkey_client, port, account_id, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
+        self.valkey = valkey_client
         self.account_id = str(account_id or "").strip()
         if not self.account_id or len(self.account_id) > 128:
             raise ValueError("a valid account_id is required")
         self.wire = SerialFrames(port, max_frame_bytes)
-        self.replies = RedisTransport(redis_client, account_id=self.account_id)
-        self.quotes = RedisQuotePushChannel(redis_client, account_id=self.account_id)
+        self.replies = ValkeyTransport(valkey_client, account_id=self.account_id)
+        self.quotes = ValkeyQuotePushChannel(valkey_client, account_id=self.account_id)
         self._inflight = {}
         self._uncertain_writes = OrderedDict()
         self._session = None
@@ -100,7 +101,7 @@ class SerialRedisBridge:
             if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
                 raise ValueError("invalid request_id")
         except (ValueError, TypeError, RecursionError) as exc:
-            _log.warning("Dropped malformed Redis RPC request (%s)", type(exc).__name__)
+            _log.warning("Dropped malformed Valkey RPC request (%s)", type(exc).__name__)
             return
         if request_id in self._inflight:
             return
@@ -139,11 +140,11 @@ class SerialRedisBridge:
             return
         valid_timestamp = math.isfinite(sent_at) and 0 < sent_at <= now + 1
         if canonical in ORDER_METHODS and not valid_timestamp:
-            self._refuse(route, method, "Serial order requires a fresh Redis RPC client timestamp; check client version and clock")
+            self._refuse(route, method, "Serial order requires a fresh Valkey RPC client timestamp; check client version and clock")
             return
         submitted_at = min(now, sent_at) if valid_timestamp else now
         if submitted_at + timeout <= now:
-            self._refuse(route, method, "RequestExpired: queued in Redis past the client timeout; NOT dispatched")
+            self._refuse(route, method, "RequestExpired: queued in Valkey past the client timeout; NOT dispatched")
             return
         serial_request = {
             "schema_version": request.get("schema_version", 1),
@@ -191,7 +192,7 @@ class SerialRedisBridge:
                 event_type = data.get("event_type")
                 if (isinstance(event_type, str) and EXEC_TOPICS.get(event_type) == topic
                         and str(data.get("account_id") or "") == self.account_id):
-                    publish_exec_event(self.redis, self.account_id, data)
+                    publish_exec_event(self.valkey, self.account_id, data)
             else:
                 self.quotes.publish(topic, data)
 
@@ -211,17 +212,17 @@ class SerialRedisBridge:
                 if message and message.get("type") == "message":
                     raw = message.get("data")
             if raw is None:
-                raw = self.redis.lpop(self.replies.request_queue)
+                raw = self.valkey.lpop(self.replies.request_queue)
             if raw is not None:
                 self._forward_request(raw)
         sent = self.wire.write_step()
         return bool(frames or raw is not None or sent)
 
-    def run(self, redis_pubsub=False):
+    def run(self, valkey_pubsub=False):
         pubsub = None
         try:
-            if redis_pubsub:
-                pubsub = self.redis.pubsub(ignore_subscribe_messages=True)
+            if valkey_pubsub:
+                pubsub = self.valkey.pubsub(ignore_subscribe_messages=True)
                 pubsub.subscribe(self.replies.request_channel)
             while True:
                 if not self.step(pubsub):
@@ -237,8 +238,9 @@ def main(argv=None):
     parser.add_argument("--port", default="COM11")
     parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
     parser.add_argument("--max-frame-bytes", type=int, default=DEFAULT_MAX_FRAME_BYTES)
-    parser.add_argument("--redis-url", default=os.environ.get("BIGQMT_SERIAL_REDIS_URL", "redis://127.0.0.1:6379/5"))
-    parser.add_argument("--redis-pubsub", action="store_true")
+    parser.add_argument("--valkey-url",
+                        default=os.environ.get("BIGQMT_SERIAL_VALKEY_URL", "valkey://127.0.0.1:6379/5"))
+    parser.add_argument("--valkey-pubsub", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args.account_id = (args.account_id or "").strip() or os.environ.get("BIGQMT_ACCOUNT_ID", "").strip()
@@ -246,28 +248,32 @@ def main(argv=None):
         _log.warning("No account configured; set BIGQMT_ACCOUNT_ID or pass --account-id.")
         return 2
     try:
-        from redis import Redis
-        from redis.backoff import NoBackoff
-        from redis.retry import Retry
+        from valkey import Valkey
+        from valkey.backoff import NoBackoff
+        from valkey.retry import Retry
     except ImportError:
-        parser.exit(1, "Install xtquant-big-convert[redis,serial] in the bridge environment.\n")
+        parser.exit(1, "Install xtquant-big-convert[valkey,serial] in the bridge environment.\n")
 
     client = port = None
-    endpoint = _redis_endpoint(args.redis_url)
+    endpoint = _valkey_endpoint(args.valkey_url)
+    try:
+        url = normalize_valkey_url(args.valkey_url)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     def describe(exc):
-        # Never echo credentials that may sit inside the Redis URL.
-        return _describe(exc).replace(args.redis_url, endpoint)
+        # Never echo credentials that may sit inside the Valkey URL.
+        return _describe(exc).replace(args.valkey_url, endpoint).replace(url, endpoint)
 
     try:
-        client = Redis.from_url(args.redis_url, socket_timeout=2, socket_connect_timeout=2,
+        client = Valkey.from_url(url, socket_timeout=2, socket_connect_timeout=2,
                                 retry=Retry(NoBackoff(), 0))
         try:
             client.ping()
         except Exception as exc:
             _log.error(
-                "Cannot reach Redis at %s (%s). The bridge polls that Redis for RPC requests; "
-                "point --redis-url or BIGQMT_SERIAL_REDIS_URL at the same Redis and db as the "
+                "Cannot reach Valkey at %s (%s). The bridge polls that Valkey for RPC requests; "
+                "point --valkey-url or BIGQMT_SERIAL_VALKEY_URL at the same Valkey and db as the "
                 "QMT strategy.", endpoint, describe(exc))
             return 1
         try:
@@ -278,17 +284,17 @@ def main(argv=None):
                 "name, and that no other process (QMT or another bridge) holds it.",
                 args.port, args.baudrate, describe(exc))
             return 1
-        bridge = SerialRedisBridge(client, port, args.account_id, args.max_frame_bytes)
-        _log.info("Redis serial bridge listening on %s at %s baud, redis %s, account %s",
+        bridge = SerialValkeyBridge(client, port, args.account_id, args.max_frame_bytes)
+        _log.info("Valkey serial bridge listening on %s at %s baud, valkey %s, account %s",
                   args.port, args.baudrate, endpoint, args.account_id)
-        bridge.run(redis_pubsub=args.redis_pubsub)
+        bridge.run(valkey_pubsub=args.valkey_pubsub)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
         module = type(exc).__module__ or ""
-        if module.startswith("redis"):
-            hint = (" The Redis connection at %s failed while running; restart the bridge "
-                    "once Redis is reachable, then restart the QMT strategy too." % endpoint)
+        if module.startswith("valkey"):
+            hint = (" The Valkey connection at %s failed while running; restart the bridge "
+                    "once Valkey is reachable, then restart the QMT strategy too." % endpoint)
         elif module.startswith("serial"):
             hint = (" Serial port %s failed while running; close the bridge and QMT, check the "
                     "com0com pair, then restart both." % args.port)

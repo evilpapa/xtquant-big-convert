@@ -18,23 +18,23 @@
 - QMT `python` 目录导入测试通过。
 - 模拟 `init/adjust/sync_positions` 回调通过。
 - 模拟 `mode="bigqmt"` + fake `passorder` 参数测试通过。
-- Redis Stream 信号源、Redis 状态写回、Redis 持仓同步已实现。
-- 本机 Redis `127.0.0.1:6379 db=5` dry-run 集成测试通过。
+- Valkey Stream 信号源、Valkey 状态写回、Valkey 持仓同步已实现。
+- 迁移前在本机 Redis `127.0.0.1:6379 db=5` 验证过 dry-run 集成。
 
 还没有完成：
 
 - 没有在 QMT 页面里通过“模型交易”做真实实盘委托验证。
-- 没有把 miniQMT 的真实买卖指令切成只写 Redis 信号。
+- 没有把 miniQMT 的真实买卖指令切成只写 Valkey 信号。
 - 没有在真实账号上启用大 QMT `passorder` 实盘执行。
 
-所以今天开盘可以先验证“大 QMT 是否能持续加载和触发回调”，以及 Redis dry-run 链路是否能消费测试信号并写回状态。如果要真的由大 QMT 替代 miniQMT 下单，必须先完成 miniQMT 只写信号、单账户灰度和实盘风控确认。
+所以今天开盘可以先验证“大 QMT 是否能持续加载和触发回调”，以及 Valkey dry-run 链路是否能消费测试信号并写回状态。如果要真的由大 QMT 替代 miniQMT 下单，必须先完成 miniQMT 只写信号、单账户灰度和实盘风控确认。
 
 ## 1.1 当前 QMT 页面检查结果
 
 2026-07-01 08:00 左右检查大 QMT“模型交易”页面：
 
 - 页面里当前运行/展示的策略名称是“网格策略”。
-- 没有看到 `bigqmt_signal_trader` 或 `bigqmt_signal_trader_redis_dryrun`。
+- 没有看到 `bigqmt_signal_trader` 或 `bigqmt_signal_trader_valkey_dryrun`。
 - “策略日志”页没有 `[bigqmt_signal_trader] init ok` 或 `[bigqmt_signal_trader] adjust ok`。
 
 结论：当前这个文件还没有真正挂到大 QMT 模型交易里运行。
@@ -100,8 +100,8 @@ Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_dryrun.py' `
   -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_dryrun.py' `
   -Force
 
-Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_redis_dryrun.py' `
-  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_redis_dryrun.py' `
+Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_valkey_dryrun.py' `
+  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_valkey_dryrun.py' `
   -Force
 ```
 
@@ -177,37 +177,37 @@ configure(mode="dryrun", account_id=ACCOUNT_ID or "dryrun")
 - 检查是否真的导入了 `bigqmt_signal_trader_strategy.py`。
 - 检查 QMT 输出窗或 `XtClient_Formula_YYYYMMDD.log` 是否有 traceback。
 
-## 4.3 Redis dry-run 入口
+## 4.3 Valkey dry-run 入口
 
 已经新增安全观察入口：
 
 ```text
-<QMT_PYTHON_DIR>\bigqmt_signal_trader_redis_dryrun.py
+<QMT_PYTHON_DIR>\bigqmt_signal_trader_valkey_dryrun.py
 ```
 
 默认配置：
 
 ```text
 ACCOUNT_ID = bigqmt_probe
-Redis = 127.0.0.1:6379 db=5
+Valkey = 127.0.0.1:6379 db=5
 Stream = bigqmt:signals:bigqmt_probe
 Status = bigqmt:signal_status:bigqmt_probe:{signal_id}
 Position = bigqmt:positions:bigqmt_probe
 OrderGateway = DryRunOrderGateway
 ```
 
-如果 QMT 的 `python` 目录存在本地私有配置文件，则 Redis 连接会被覆盖：
+如果 QMT 的 `python` 目录存在本地私有配置文件，则 Valkey 连接会被覆盖：
 
 ```text
-<QMT_PYTHON_DIR>\bigqmt_signal_trader_local_config.py
+<QMT_PYTHON_DIR>\bigqmt_signal_trader_qmt_config.py
 ```
 
 格式：
 
 ```python
 # coding: utf-8
-BIGQMT_REDIS_CONFIG = {
-    "host": "YOUR_REDIS_HOST",
+BIGQMT_CONFIG = {
+    "host": "YOUR_VALKEY_HOST",
     "port": 6379,
     "db": 5,
     "username": "",
@@ -215,21 +215,21 @@ BIGQMT_REDIS_CONFIG = {
 }
 ```
 
-这个文件含 Redis 密码，只放 QMT 本地目录，不提交到源码仓库，也不要贴进文档。
+这个文件含 Valkey 密码，只放 QMT 本地目录，不提交到源码仓库，也不要贴进文档。
 
-这个入口只用于开盘观察 Redis 链路，不会真实下单，也不会消费真实账号流。不要把 `ACCOUNT_ID` 改成真实资金账号，除非你明确知道 dry-run 会 ack 掉该账号的 Redis 信号。
+这个入口只用于开盘观察 Valkey 链路，不会真实下单，也不会消费真实账号流。不要把 `ACCOUNT_ID` 改成真实资金账号，除非你明确知道 dry-run 会 ack 掉该账号的 Valkey 信号。
 
 写入一条测试信号：
 
 ```powershell
 cd <REPO_ROOT>
-python -B -c "import sys,datetime,json,redis; sys.path.insert(0,'src'); from bigqmt_signal_trader.adapters.signal_redis import push_trade_signal; r=redis.Redis(host='127.0.0.1',port=6379,db=5); push_trade_signal(r, {'signal_id':'probe-001','account_id':'bigqmt_probe','action':'BUY','stock_code':'600000.SH','amount':100,'price_type':'FIX_PRICE','price':10.0,'created_at':'2026-07-01 09:31:00','expire_at':'2026-07-01 23:59:00','schema_version':1})"
+python -B -c "import sys,datetime,json,valkey; sys.path.insert(0,'src'); from bigqmt_signal_trader.adapters.signal_valkey import push_trade_signal; r=valkey.Valkey(host='127.0.0.1',port=6379,db=5); push_trade_signal(r, {'signal_id':'probe-001','account_id':'bigqmt_probe','action':'BUY','stock_code':'600000.SH','amount':100,'price_type':'FIX_PRICE','price':10.0,'created_at':'2026-07-01 09:31:00','expire_at':'2026-07-01 23:59:00','schema_version':1})"
 ```
 
 运行后检查状态：
 
 ```powershell
-python -B -c "import redis; r=redis.Redis(host='127.0.0.1',port=6379,db=5,decode_responses=True); print(r.hgetall('bigqmt:signal_status:bigqmt_probe:probe-001'))"
+python -B -c "import valkey; r=valkey.Valkey(host='127.0.0.1',port=6379,db=5,decode_responses=True); print(r.hgetall('bigqmt:signal_status:bigqmt_probe:probe-001'))"
 ```
 
 期望状态里出现：
@@ -263,7 +263,7 @@ user_order_id = dryrun:bq:...
 - 日志里是否没有 `Traceback`、`ModuleNotFoundError`、`run script failed`。
 - 委托页面不应该出现真实委托，因为当前是 dry-run 且空信号源。
 
-如果要验证 Redis dry-run 链路，则选择 `bigqmt_signal_trader_redis_dryrun.py`，并向 `bigqmt:signals:bigqmt_probe` 写入测试信号。它只会写 Redis 状态，不会真实委托。
+如果要验证 Valkey dry-run 链路，则选择 `bigqmt_signal_trader_valkey_dryrun.py`，并向 `bigqmt:signals:bigqmt_probe` 写入测试信号。它只会写 Valkey 状态，不会真实委托。
 
 ### 5.2 真实大 QMT adapter 连通模式
 
@@ -279,7 +279,7 @@ configure(mode="bigqmt", account_id=ACCOUNT_ID or "dryrun")
 
 只有满足下面全部条件，才能考虑切到实盘交易：
 
-- 已在 Redis db5 上验证 Redis Stream 信号源、`StateStore.claim()`、状态回写都正常。
+- 迁移前在 Redis db5 验证了 Stream 信号源、`StateStore.claim()` 和状态回写。
 - 已用模拟信号验证 `passorder` 参数、持仓查询、撤单查询全部正常。
 - 已确认历史 bar 不会触发下单。
 - 已确认 miniQMT 不再对同一账户重复真实下单，避免双系统抢单。
@@ -297,7 +297,7 @@ configure(mode="bigqmt", account_id=ACCOUNT_ID or "dryrun")
 - 确认文件已部署到 `<QMT_PYTHON_DIR>`。
 - 在策略编辑器里编译成功。
 - 确认“启动本地 python”未勾选。
-- 在模型交易页面用“模拟信号”启动 `bigqmt_signal_trader_dryrun.py` 或 `bigqmt_signal_trader_redis_dryrun.py`。
+- 在模型交易页面用“模拟信号”启动 `bigqmt_signal_trader_dryrun.py` 或 `bigqmt_signal_trader_valkey_dryrun.py`。
 
 ### 9:30 到 9:35
 
@@ -305,7 +305,7 @@ configure(mode="bigqmt", account_id=ACCOUNT_ID or "dryrun")
 - 看 `XtClient_Formula_20260701.log` 是否有 traceback。
 - 看策略是否持续运行，没有自动结束。
 - 看委托页面确认没有真实委托。
-- 如果跑 Redis dry-run，向 `bigqmt:signals:bigqmt_probe` 写一条测试信号，确认状态 key 变成 `DRY_RUN`。
+- 如果跑 Valkey dry-run，向 `bigqmt:signals:bigqmt_probe` 写一条测试信号，确认状态 key 变成 `DRY_RUN`。
 
 ### 9:35 后
 
@@ -348,7 +348,7 @@ passorder
 
 - 当前包不是 `qmt_jq_trade` 的目标持仓同步脚本。
 - 当前包的设计是“外部系统产出逐笔交易信号，大 QMT 只执行”。
-- Redis db5 链路已经具备，但当前安全入口默认使用 `bigqmt_probe` 测试账号流。
+- Valkey db5 链路已经具备，但当前安全入口默认使用 `bigqmt_probe` 测试账号流。
 - 编辑器里点“运行”不是实盘验证。
 - 真正实盘必须走模型交易页面，并且要显式接入信号源、幂等状态和账户切换流程。
 

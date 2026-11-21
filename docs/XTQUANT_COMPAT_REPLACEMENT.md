@@ -12,7 +12,7 @@ from xtquant.xttype import StockAccount
 from xtquant import xtdata, xtconstant
 ```
 
-替换为“大 QMT 策略进程 + Redis RPC”的远程调用，同时尽量保持业务代码继续使用：
+替换为“大 QMT 策略进程 + Valkey RPC”的远程调用，同时尽量保持业务代码继续使用：
 
 ```python
 xt_trader.query_stock_positions(acc)
@@ -57,15 +57,15 @@ from xtquant.xttype import StockAccount
 from xtquant import xtdata, xtconstant
 ```
 
-会命中本仓库提供的 `src/xtquant/` shim。这样主业务代码基本不用改，只需要在本地私有配置文件里设置 Redis 和账号：
+会命中本仓库提供的 `src/xtquant/` shim。这样主业务代码基本不用改，只需要在本地私有配置文件里设置 Valkey 和账号：
 
 ```python
 # D:\gjzqqmt\xtquant_big_convert\src\bigqmt_signal_trader_client_config.py
 BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
 BIGQMT_RPC_TIMEOUT_SECONDS = 6.0
 
-BIGQMT_REDIS_CONFIG = {
-    "host": "YOUR_REDIS_HOST",
+BIGQMT_CONFIG = {
+    "host": "YOUR_VALKEY_HOST",
     "port": 6379,
     "db": 5,
     "username": "",
@@ -99,7 +99,7 @@ $env:PYTHONPATH = "D:\gjzqqmt\xtquant_big_convert\src;$env:PYTHONPATH"
 
 ## 推荐落地步骤
 
-1. 大 QMT 侧先运行 `BIGQMT_REDIS_DRYRUN` / `bigqmt_signal_trader_redis_rpc_runtime.py`，保持 `rpc_allow_order_methods=False`。
+1. 大 QMT 侧先运行 `BIGQMT_VALKEY_DRYRUN` / `bigqmt_signal_trader_valkey_rpc_runtime.py`，保持 `rpc_allow_order_methods=False`。
 2. 原策略侧用显式导入方式跑查询自检：资产、持仓、单票五档行情、`["SH","SZ"]` 全市场行情。
 3. 查询链路稳定后，把原项目中 `core/trader.py` 的初始化切到兼容层，但仍保持远程下单关闭。
 4. 对比 MiniQMT 与大 QMT 返回的资产、持仓、委托、成交字段，确认业务字段都能读到。
@@ -120,11 +120,11 @@ $env:PYTHONPATH = "D:\gjzqqmt\xtquant_big_convert\src;$env:PYTHONPATH"
 | `query_stock_trades(acc)` | 已兼容 | 返回对象列表，含 `order_type`、`traded_volume`、`traded_price` |
 | `order_stock()` / `order_stock_async()` | 已兼容 | 需要大 QMT 本地配置打开 `rpc_allow_order_methods=True` |
 | `cancel_order_stock_sysid()` | 已兼容 | 需要大 QMT 本地配置打开 `rpc_allow_order_methods=True` |
-| `xtdata.get_full_tick(codes)` | 已兼容 | 默认直接 RPC 调用；支持单票、ETF、`["SH", "SZ"]` 全市场；可选打开 Redis 快照缓存 |
+| `xtdata.get_full_tick(codes)` | 已兼容 | 默认直接 RPC 调用；支持单票、ETF、`["SH", "SZ"]` 全市场；可选打开 Valkey 快照缓存 |
 | `xtdata.get_instrument_detail(code)` | 已兼容 | 映射到大 QMT `get_instrumentdetail()` |
 | `xtdata.get_instrument_type(code)` | 已接入 | 优先调大 QMT；不支持时按代码前缀做基础判断 |
-| `xtdata.subscribe_quote(...)` / `subscribe_whole_quote(...)` | Redis 订阅兼容 | 写入 `bigqmt:quote_subscriptions:{account_id}`，并向 `bigqmt:quote_events:{account_id}` 发事件；callback 会收到一次当前快照/历史数据 |
-| `xtdata.unsubscribe_quote(seq)` | Redis 事件兼容 | 不强依赖大 QMT 反订阅 API，直接删除 Redis 订阅表并推送 `unsubscribe_quote` 事件 |
+| `xtdata.subscribe_quote(...)` / `subscribe_whole_quote(...)` | Valkey 订阅兼容 | 写入 `bigqmt:quote_subscriptions:{account_id}`，并向 `bigqmt:quote_events:{account_id}` 发事件；callback 会收到一次当前快照/历史数据 |
+| `xtdata.unsubscribe_quote(seq)` | Valkey 事件兼容 | 不强依赖大 QMT 反订阅 API，直接删除 Valkey 订阅表并推送 `unsubscribe_quote` 事件 |
 | `xtdata.get_market_data(...)` | 已接入 RPC | 透传到大 QMT `ContextInfo.get_market_data`，返回 DataFrame/字典结构会自动 JSON 化再还原 |
 | `xtdata.get_market_data_ex(...)` | 已接入 RPC | 大 QMT 不支持 `get_market_data_ex` 时回退到 `get_market_data` |
 | `xtdata.get_local_data(...)` | 已接入 RPC | 大 QMT 不支持 `get_local_data` 时回退到 `get_market_data` |
@@ -146,8 +146,8 @@ $env:PYTHONPATH = "D:\gjzqqmt\xtquant_big_convert\src;$env:PYTHONPATH"
 大 QMT 本地配置默认关闭远程下单。要真正替换 MiniQMT 下单，需要在 QMT 本地私有配置中显式开启：
 
 ```python
-BIGQMT_REDIS_CONFIG = {
-    "host": "YOUR_REDIS_HOST",
+BIGQMT_CONFIG = {
+    "host": "YOUR_VALKEY_HOST",
     "port": 6379,
     "db": 5,
     "username": "",
@@ -222,9 +222,9 @@ print(xtdata.get_full_tick(["600000.SH"]))
 
 ## 注意事项
 
-- `subscribe_quote()` / `subscribe_whole_quote()` 当前通过 Redis 记录订阅意图，并给 callback 推一次当前数据；持续行情推送需要独立的 Redis 行情生产者消费 `bigqmt:quote_subscriptions:{account_id}`。
-- `get_full_tick()` 默认直接 RPC 现拉；如果全市场 payload 过大，再在客户端和 QMT 本地配置里打开 Redis 快照缓存。
-- `unsubscribe_quote(seq)` 当前按你的要求直接写 Redis：删除订阅表并推送 `unsubscribe_quote` 事件，不等待大 QMT 确认。
+- `subscribe_quote()` / `subscribe_whole_quote()` 当前通过 Valkey 记录订阅意图，并给 callback 推一次当前数据；持续行情推送需要独立的 Valkey 行情生产者消费 `bigqmt:quote_subscriptions:{account_id}`。
+- `get_full_tick()` 默认直接 RPC 现拉；如果全市场 payload 过大，再在客户端和 QMT 本地配置里打开 Valkey 快照缓存。
+- `unsubscribe_quote(seq)` 当前按你的要求直接写 Valkey：删除订阅表并推送 `unsubscribe_quote` 事件，不等待大 QMT 确认。
 - `get_stock_list_in_sector("沪深A股")` 的本地兜底会通过 `get_full_tick(["SH", "SZ"])` 过滤 A 股，速度取决于大 QMT 全市场快照返回耗时。
 - 历史行情、财务、ETF、期权、模型/因子等接口已经接到 RPC，但实际是否可用取决于大 QMT 策略环境里的 `ContextInfo` 是否暴露同名方法。
 - `query_ipo_data()` / `query_new_purchase_limit()` 当前返回空结果，打新逻辑不能直接视为无损替换。

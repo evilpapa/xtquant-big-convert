@@ -135,7 +135,7 @@ class SerialTransport(RpcTransport):
         self._drops = 0
 
     def send_request(self, request, timeout_seconds):
-        raise TransportError("serial is server-side only; use a Redis client via the bridge")
+        raise TransportError("serial is server-side only; use a Valkey client via the bridge")
 
     def start_receiving(self, on_request, background_threads=False):
         if background_threads:

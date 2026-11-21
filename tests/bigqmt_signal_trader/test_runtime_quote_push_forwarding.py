@@ -9,7 +9,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-import bigqmt_signal_trader_redis_rpc_runtime as runtime
+import bigqmt_signal_trader_valkey_rpc_runtime as runtime
 
 
 class RuntimeQuotePushForwardingTest(unittest.TestCase):

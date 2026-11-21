@@ -2,9 +2,9 @@
 
 Why this exists
 ---------------
-The RPC bridge in :mod:`redis_rpc` routes every read through the QMT *strategy*
-process: client -> redis/zmq -> QMT python thread -> ContextInfo -> back. That
-costs ~13ms (redis) or ~0.7ms-with-500ms-GIL-spikes (zmq), and every read
+The RPC bridge in :mod:`valkey_rpc` routes every read through the QMT *strategy*
+process: client -> valkey/zmq -> QMT python thread -> ContextInfo -> back. That
+costs ~13ms (valkey) or ~0.7ms-with-500ms-GIL-spikes (zmq), and every read
 competes for the QMT main-thread GIL against the strategy itself.
 
 FormulaServer is the C++ quote/reference-data service inside the same QMT

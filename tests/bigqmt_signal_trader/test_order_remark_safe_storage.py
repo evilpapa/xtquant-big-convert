@@ -9,7 +9,7 @@ import pytest
 
 from test_order_identity_safe_storage import DataError, _assert_bounded_response, _check_response
 from test_order_remark_recovery import (
-    NO_RETRY, client, handler, recover, redis_socket, row,
+    NO_RETRY, client, handler, recover, valkey_socket, row,
 )
 
 
@@ -17,7 +17,7 @@ REMARK = "ab12cd34ef56"
 LEGACY = json.dumps(["600036.SH", "SELL", REMARK], separators=(",", ":"))
 
 
-class FilteredRedis(object):
+class FilteredValkey(object):
     def __init__(self, client):
         self.client = client
         self.replies = []
@@ -50,14 +50,14 @@ def test_filter_rejects_original_eval_reply(as_bytes):
 
 @pytest.mark.parametrize("decode_responses", [False, True])
 @pytest.mark.parametrize("query", ["orders", "trades", "execution_snapshot"])
-def test_filtered_eval_recovers_after_fresh_handler(client, redis_socket, decode_responses, query):
-    import redis
+def test_filtered_eval_recovers_after_fresh_handler(client, valkey_socket, decode_responses, query):
+    import valkey
 
-    writer = FilteredRedis(client)
+    writer = FilteredValkey(client)
     recover(writer, [_row()])
-    fresh = redis.Redis(unix_socket_path=redis_socket, decode_responses=decode_responses,
+    fresh = valkey.Valkey(unix_socket_path=valkey_socket, decode_responses=decode_responses,
                         socket_timeout=0.25, **NO_RETRY)
-    reader = FilteredRedis(fresh)
+    reader = FilteredValkey(fresh)
     missing = _row("")
     try:
         handlers = handler(reader, [missing], [missing])
@@ -79,7 +79,7 @@ def test_legacy_json_recovers_without_any_storage_or_expiry_change(client, ttl_m
     key = _key(client)
     client.set(key, LEGACY, px=ttl_ms)
     before = client.pttl(key)
-    filtered = FilteredRedis(client)
+    filtered = FilteredValkey(client)
     rows = [_row("")]
     if native:
         rows.append(_row())
@@ -99,7 +99,7 @@ def test_legacy_json_recovers_without_any_storage_or_expiry_change(client, ttl_m
 def test_filtered_native_callback_records_and_recovers_with_push_disabled(client, monkeypatch, kind):
     import bigqmt_signal_trader_strategy as strategy
 
-    filtered = FilteredRedis(client)
+    filtered = FilteredValkey(client)
     monkeypatch.setattr(strategy, "_rpc_service", SimpleNamespace(handlers=handler(filtered, [], [])))
     monkeypatch.setattr(strategy, "_build_config", lambda: {"exec_events": {"enabled": False}})
     monkeypatch.setattr(strategy, "forward_order_event", lambda _: None)
@@ -119,7 +119,7 @@ def test_filtered_native_callback_records_and_recovers_with_push_disabled(client
 
 
 def test_filtered_batch_handles_conflict_missing_and_unicode_without_false_matches(client):
-    filtered = FilteredRedis(client)
+    filtered = FilteredValkey(client)
     text = "  中文备注_12\\\"\n  "
     recover(filtered, [_row(text), _row(order_sys_id="conflict")])
     batch = [_row(""), _row("", order_sys_id="conflict"),
@@ -134,7 +134,7 @@ def test_expired_legacy_binding_is_not_recreated_by_filtered_read(client):
     recover(client, [_row()])
     key = _key(client)
     client.pexpire(key, 0)
-    assert recover(FilteredRedis(client), [_row("")])[0].user_order_id == ""
+    assert recover(FilteredValkey(client), [_row("")])[0].user_order_id == ""
     assert client.pttl(key) == -2
 
 
@@ -142,7 +142,7 @@ def test_expired_legacy_binding_is_not_recreated_by_filtered_read(client):
 def test_failed_filtered_batch_keeps_every_native_row(client, failure):
     recover(client, [_row(), _row(order_sys_id="second")])
 
-    class Broken(FilteredRedis):
+    class Broken(FilteredValkey):
         def eval(self, *args):
             if failure == "eval":
                 raise RuntimeError("NOPERM EVAL is disabled")
@@ -161,9 +161,9 @@ def test_failed_filtered_batch_keeps_every_native_row(client, failure):
 
 
 @pytest.mark.parametrize("decode_responses", [False, True])
-def test_large_lua_remark_reply_has_bounded_runs_and_preserves_storage(client, redis_socket,
+def test_large_lua_remark_reply_has_bounded_runs_and_preserves_storage(client, valkey_socket,
                                                                     decode_responses):
-    import redis
+    import valkey
 
     # Bound the raw reply before running the expensive guard, including RED on
     # the old codec. A single long remark must be safe as well as many rows.
@@ -172,7 +172,7 @@ def test_large_lua_remark_reply_has_bounded_runs_and_preserves_storage(client, r
     recover(client, native)
     stored = {key: (client.get(key), client.pttl(key)) for key in client.keys("*")}
 
-    class BoundedRedis(FilteredRedis):
+    class BoundedValkey(FilteredValkey):
         def eval(self, *args):
             result = self.client.eval(*args)
             _assert_bounded_response(result)
@@ -182,10 +182,10 @@ def test_large_lua_remark_reply_has_bounded_runs_and_preserves_storage(client, r
             self.replies.append(result)
             return checked
 
-    fresh = redis.Redis(unix_socket_path=redis_socket, decode_responses=decode_responses,
+    fresh = valkey.Valkey(unix_socket_path=valkey_socket, decode_responses=decode_responses,
                         socket_timeout=0.25, **NO_RETRY)
     try:
-        filtered = BoundedRedis(fresh)
+        filtered = BoundedValkey(fresh)
         missing = [_row("", order_sys_id=item.order_sys_id) for item in native]
         result = recover(filtered, missing)
         assert [item.user_order_id for item in result] == [item.user_order_id for item in native]

@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import pandas as pd  # noqa: E402
 
-from bigqmt_signal_trader.redis_rpc import to_jsonable  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import to_jsonable  # noqa: E402
 from bigqmt_signal_trader.xtquant_compat import _restore_jsonable  # noqa: E402
 
 

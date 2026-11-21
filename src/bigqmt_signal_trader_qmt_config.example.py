@@ -3,9 +3,9 @@
 
 Copy this file to the QMT python directory as:
 
-    bigqmt_signal_trader_local_config.py
+    bigqmt_signal_trader_qmt_config.py
 
-Do not commit the real file. It may contain account ids and Redis credentials.
+Do not commit the real file. It may contain account ids and Valkey credentials.
 """
 
 BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
@@ -13,7 +13,7 @@ BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
 # STOCK(股票) / CREDIT(信用两融) / FUTURE(期货) / STOCK_OPTION(股票期权) ...
 # 信用账户务必设为 CREDIT：按 STOCK 查询不会报错，get_trade_detail_data 会返回
 # 一行全 0 的资产，表现为「信用账户资产全是 0」而日志里毫无线索（issue #92）。
-# 也可以写在下面 BIGQMT_REDIS_CONFIG 的 "account_type" 里，两处都认；解析结果
+# 也可以写在下面 BIGQMT_CONFIG 的 "account_type" 里，两处都认；解析结果
 # 会在启动时打印，冲突也会指出来。
 #
 # 同一个账号有几种类型（港股通）就写成列表，第一个是默认：
@@ -24,19 +24,19 @@ BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
 # 的 23/24 对 .HK 代码就是港股通买卖。
 BIGQMT_ACCOUNT_TYPE = "STOCK"
 
-BIGQMT_REDIS_CONFIG = {
-    # 这台机器上有没有 redis 可用。默认 True，仅对非 redis 传输生效。
+BIGQMT_CONFIG = {
+    # 这台机器上有没有 valkey 可用。默认 True，仅对非 valkey 传输生效。
     #
-    # 设 False 时整个 redis 块不再下发给策略，于是委托身份库、异步下载任务、
-    # 全推快照缓存、exec 事件推送都不会去连 redis —— 一次都不试。用在券商 QMT
-    # 的 import 白名单不含 redis 的场景
+    # 设 False 时整个 valkey 块不再下发给策略，于是委托身份库、异步下载任务、
+    # 全推快照缓存、exec 事件推送都不会去连 valkey —— 一次都不试。用在券商 QMT
+    # 的 import 白名单不含 RESP 客户端的场景
     # （issue #145 / #147）。下面的 host/port 有默认值，所以不设这一项时
-    # 「配了 redis」和「什么都没写」是分辨不出来的。
+    # 「配了 valkey」和「什么都没写」是分辨不出来的。
     #
-    # 代价：查询里的 strategy_name 回填失效（那份记录只存在 redis 里，见 #133）；
+    # 代价：查询里的 strategy_name 回填失效（那份记录只存在 valkey 里，见 #133）；
     # 异步下载任务和全推快照缓存不可用（这两个在大 QMT 上本来就默认关闭）。
     # 委托/成交回调不受影响
-    # "redis_enabled": False,
+    # "valkey_enabled": False,
     "host": "127.0.0.1",
     "port": 6379,
     "db": 5,
@@ -58,7 +58,7 @@ BIGQMT_REDIS_CONFIG = {
     # adjust-thread drain) for every transport. The drain costs at most one
     # adjust tick; a background thread costs one tick per GIL acquisition and
     # a round trip has several (#343, live terminal 2026-09-22, ms):
-    #     redis  True ping 407 / positions 197    False ping 102 / positions 103
+    #     valkey  True ping 407 / positions 197    False ping 102 / positions 103
     # True is only for a transport that cannot drain (none of the shipped
     # ones need it).
     "rpc_process_in_listener": True,
@@ -109,7 +109,7 @@ BIGQMT_REDIS_CONFIG = {
     "download_job_chunk_size": 10,
     "download_job_max_wall_seconds": 0.5,
     "download_job_ttl_seconds": 3600,
-    # Push order_callback/deal_callback details to Redis so clients get real-time
+    # Push order_callback/deal_callback details to Valkey so clients get real-time
     # on_stock_order / on_stock_trade callbacks (MiniQMT style) instead of polling.
     "exec_events_enabled": True,
     # Dump the raw order_callback/deal_callback object fields to the QMT output

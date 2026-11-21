@@ -19,12 +19,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.order_watch import OrderWatchTable
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers, RedisPubSubRpcService
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers, ValkeyPubSubRpcService
 
-from test_redis_rpc import (  # noqa: E402
+from test_valkey_rpc import (  # noqa: E402
     FakeMarketData,
     FakePositionProvider,
-    FakeRedis,
+    FakeValkey,
     FalseyCancelGateway,
 )
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
@@ -99,17 +99,17 @@ class TableSemanticsTest(unittest.TestCase):
 
 class _Service(unittest.TestCase):
     def _service(self, gateway, timeout=5.0):
-        redis_client = FakeRedis()
+        valkey_client = FakeValkey()
         handlers = BigQmtRpcHandlers(
             account_id="acct", market_data=FakeMarketData(),
             position_provider=FakePositionProvider(), order_gateway=gateway,
             allow_order_methods=True, order_settle_timeout_seconds=timeout)
-        return redis_client, RedisPubSubRpcService(
-            redis_client, handlers, account_id="acct"), handlers
+        return valkey_client, ValkeyPubSubRpcService(
+            valkey_client, handlers, account_id="acct"), handlers
 
-    def _response(self, redis_client, request_id):
+    def _response(self, valkey_client, request_id):
         key = "bigqmt:rpc:resp:acct:%s" % request_id
-        return json.loads(redis_client.kv[key]) if key in redis_client.kv else None
+        return json.loads(valkey_client.kv[key]) if key in valkey_client.kv else None
 
 
 class SubmitFastPathTest(_Service):
@@ -118,7 +118,7 @@ class SubmitFastPathTest(_Service):
         gateway = CallbackOnSubmitGateway(table, {
             "user_order_id": "ord-1", "order_sys_id": "635076953", "status": "50",
             "stock_code": "601398.SH", "action": "BUY"})
-        redis_client, service, handlers = self._service(gateway)
+        valkey_client, service, handlers = self._service(gateway)
         handlers.order_watch_table = table
 
         service.enqueue_payload({
@@ -128,14 +128,14 @@ class SubmitFastPathTest(_Service):
                        "order_remark": "ord-1"}})
         service.drain_pending()
 
-        response = self._response(redis_client, "ord-1")
+        response = self._response(valkey_client, "ord-1")
         self.assertIsNotNone(response)
         self.assertEqual(response["data"]["order_sys_id"], "635076953")
         self.assertEqual(gateway.queries, 0, "the poll must not run at all")
 
     def test_a_table_miss_falls_back_to_polling(self):
         gateway = CountingGateway()
-        redis_client, service, handlers = self._service(gateway, timeout=0.0)
+        valkey_client, service, handlers = self._service(gateway, timeout=0.0)
         handlers.order_watch_table = OrderWatchTable()  # empty
 
         service.enqueue_payload({
@@ -161,7 +161,7 @@ class CancelFastPathTest(_Service):
         orig_query = gateway.query_orders
         gateway.query_orders = lambda *a: (setattr(gateway, "queries", gateway.queries + 1),
                                            orig_query(*a))[1]
-        redis_client, service, handlers = self._service(gateway)
+        valkey_client, service, handlers = self._service(gateway)
         handlers.order_watch_table = OrderWatchTable()
         handlers.order_watch_table.note({
             "user_order_id": "x", "order_sys_id": "cancel-1", "status": "54"})
@@ -169,25 +169,25 @@ class CancelFastPathTest(_Service):
         self._cancel(service)
         service.drain_pending()
 
-        response = self._response(redis_client, "c-1")
+        response = self._response(valkey_client, "c-1")
         self.assertTrue(response["data"]["success"])
         self.assertEqual(gateway.queries, 0)
 
     def test_cancel_falls_back_when_the_table_does_not_know(self):
         gateway = FalseyCancelGateway(["54"], native_success=True)
-        redis_client, service, handlers = self._service(gateway)
+        valkey_client, service, handlers = self._service(gateway)
         handlers.order_watch_table = OrderWatchTable()  # empty
 
         self._cancel(service)
         service.drain_pending()
 
-        response = self._response(redis_client, "c-1")
+        response = self._response(valkey_client, "c-1")
         self.assertTrue(response["data"]["success"])
         self.assertGreaterEqual(gateway.lookups, 1)
 
     def test_terminal_status_from_the_table_reports_failure(self):
         gateway = FalseyCancelGateway([], native_success=True)
-        redis_client, service, handlers = self._service(gateway)
+        valkey_client, service, handlers = self._service(gateway)
         handlers.order_watch_table = OrderWatchTable()
         handlers.order_watch_table.note({
             "user_order_id": "x", "order_sys_id": "cancel-1", "status": "56"})
@@ -195,7 +195,7 @@ class CancelFastPathTest(_Service):
         self._cancel(service)
         service.drain_pending()
 
-        response = self._response(redis_client, "c-1")
+        response = self._response(valkey_client, "c-1")
         self.assertFalse(response["data"]["success"])
         self.assertIn("reached status 56", response["data"]["message"])
 

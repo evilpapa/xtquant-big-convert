@@ -4,7 +4,7 @@
 #174 was answered with "big QMT does not carry the strategy name on order or
 deal objects" -- 120 attributes on ORDER, 47 on DEAL, `m_strStrategyName` in
 neither -- so the only way back was the identity store the bridge writes at
-submit time (redis, then the in-process journal).
+submit time (valkey, then the in-process journal).
 
 That conclusion came from looking for one name and not finding it. The value
 was sitting in the dump under a different one. @sumo225270's raw_fields for a
@@ -25,7 +25,7 @@ nothing else -- it just never read it back:
   `rpc_default_strategy_name` exists: the string shows up in QMT's 报单来源
   column, so the user gets to choose it.
 
-So the name comes straight off the callback, with no redis, no journal, and no
+So the name comes straight off the callback, with no valkey, no journal, and no
 remark-key matching -- which also covers the case none of those can: an order
 submitted before the current process started.
 

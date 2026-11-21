@@ -18,11 +18,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.models import CancelResult
-from bigqmt_signal_trader.redis_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
 from bigqmt_signal_trader.xtquant_compat import (
     BigQmtXtTrader, RpcServerRepliedError, XtQuantTraderCallback,
 )
-from test_redis_rpc import FakeMarketData, FakePositionProvider
+from test_valkey_rpc import FakeMarketData, FakePositionProvider
 
 
 class _CancelGateway(object):
@@ -168,7 +168,7 @@ class AsyncCancelBatchClientTest(unittest.TestCase):
         resubmitting double-cancels. Report unknown-outcome per item."""
         def behavior(method, params):
             if method == "cancel_order_stock_batch":
-                raise TimeoutError("redis rpc timeout: cancel_order_stock_batch")
+                raise TimeoutError("valkey rpc timeout: cancel_order_stock_batch")
             return {"success": True}
 
         client = _Client(behavior)

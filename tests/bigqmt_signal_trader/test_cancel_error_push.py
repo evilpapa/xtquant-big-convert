@@ -21,12 +21,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.models import CancelResult, OrderRef  # noqa: E402
-from bigqmt_signal_trader.redis_rpc import (  # noqa: E402
+from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
     BigQmtRpcHandlers,
     CancelSettlement,
 )
 
-from test_redis_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
+from test_valkey_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
 
 
 class _Gateway(object):

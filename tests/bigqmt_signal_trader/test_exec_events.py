@@ -125,7 +125,7 @@ class FakeDealBareCodeLive:
     m_dTradeAmount = 906.0
 
 
-class FakeRedis:
+class FakeValkey:
     def __init__(self):
         self.xadds = []
         self.pubs = []
@@ -298,15 +298,15 @@ class ExecEventsServerTest(unittest.TestCase):
             m_strRemark = "涨停价买入1手"
             m_strOptName = "限价买入"
 
-        redis_client = FakeRedis()
-        remember_order_identity(redis_client, "acct", "涨停价买入1手", "rpc_test", "159518")
-        ev = enrich_order_identity(redis_client, "acct", normalize_order_event(CallbackOrder(), "acct"))
+        valkey_client = FakeValkey()
+        remember_order_identity(valkey_client, "acct", "涨停价买入1手", "rpc_test", "159518")
+        ev = enrich_order_identity(valkey_client, "acct", normalize_order_event(CallbackOrder(), "acct"))
 
         self.assertEqual(ev["strategy_name"], "rpc_test")
         self.assertEqual(ev["remark"], "涨停价买入1手")
 
     def test_publish_writes_stream_and_channel(self):
-        r = FakeRedis()
+        r = FakeValkey()
         publish_trade_event(r, "acct", {"event_type": "trade", "trade_id": "T1"})
 
         self.assertEqual(r.pubs[0][0], trade_channel("acct"))
