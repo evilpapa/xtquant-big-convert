@@ -6,13 +6,16 @@ import math
 import os
 import re
 import time
+import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from .adapters.valkey_common import normalize_valkey_url
 from .exec_events import EXEC_TOPICS, publish_exec_event
 from .local_env import local_serial_settings
 from .quote_push_channel import ValkeyQuotePushChannel
+from .serial_bridge_features import DOWNLOAD_METHODS, SerialBridgeFeatures
 from .valkey_rpc import METHOD_ALIASES, ORDER_METHODS
 from .transports.valkey_transport import ValkeyTransport, _loads
 from .transports.serial_transport import (
@@ -23,6 +26,14 @@ from .transports.serial_transport import (
 _log = logging.getLogger(__name__)
 _REQUEST_ID = re.compile(r"[a-zA-Z0-9_.:-]{1,128}\Z")
 _MAX_INFLIGHT = 16
+
+
+@dataclass
+class _InFlight:
+    method: str
+    deadline: float
+    reply: object
+    background: bool = False
 
 
 def _valkey_endpoint(url):
@@ -62,6 +73,7 @@ class SerialValkeyBridge:
         self.wire = SerialFrames(port, max_frame_bytes)
         self.replies = ValkeyTransport(valkey_client, account_id=self.account_id)
         self.quotes = ValkeyQuotePushChannel(valkey_client, account_id=self.account_id)
+        self.features = SerialBridgeFeatures(valkey_client, self.account_id)
         self._inflight = {}
         self._uncertain_writes = OrderedDict()
         self._session = None
@@ -69,23 +81,43 @@ class SerialValkeyBridge:
 
     def _forget_request(self, request_id, record, now):
         self._inflight.pop(request_id, None)
-        if METHOD_ALIASES.get(record[1], record[1]) in ORDER_METHODS:
+        if record.background:
+            record.reply({"ok": False, "error": f"No serial response for {record.method}; outcome unknown"})
+        if METHOD_ALIASES.get(record.method, record.method) in ORDER_METHODS:
             self._uncertain_writes[request_id] = now + 600
             if len(self._uncertain_writes) > 512:
                 self._uncertain_writes.popitem(last=False)
-        _log.warning("未收到 %s 的串口应答，桥接不会重放该请求", record[1])
+        _log.warning("未收到 %s 的串口应答，桥接不会重放该请求", record.method)
 
     def _reply_route(self, request_id, ttl):
         fields = {"account_id": self.account_id, "request_id": request_id}
         return dict(fields, ttl_seconds=ttl,
                     reply_list=self.replies.response_list_template.format(**fields))
 
-    def _refuse(self, route, method, reason):
+    def _reply(self, route, method, data=None, error=None):
         self.replies.send_response(route, {
             "schema_version": 1, "request_id": route["request_id"],
-            "account_id": self.account_id, "method": method, "ok": False,
-            "data": None, "error": reason,
+            "account_id": self.account_id, "method": method, "ok": error is None,
+            "data": data, "error": error or "",
         })
+
+    def _refuse(self, route, method, reason):
+        self._reply(route, method, error=reason)
+
+    def _send_request(self, request, record):
+        self.wire.begin({"type": "request", "request": request, "session": self._session})
+        self._inflight[request["request_id"]] = record
+
+    def _send_background(self, method, params, timeout, reply):
+        request = {
+            "schema_version": 1, "request_id": uuid.uuid4().hex, "account_id": self.account_id,
+            "method": method, "params": params, "timeout_seconds": timeout, "_received_at": time.time(),
+        }
+        record = _InFlight(method, time.monotonic() + timeout, reply, background=True)
+        try:
+            self._send_request(request, record)
+        except (ValueError, TypeError, RecursionError):
+            reply({"ok": False, "error": "Request cannot be encoded within serial frame limit; NOT dispatched"})
 
     def _account_matches(self, params):
         account = params.get("account")
@@ -147,18 +179,27 @@ class SerialValkeyBridge:
         if submitted_at + timeout <= now:
             self._refuse(route, method, "RequestExpired: queued in Valkey past the client timeout; NOT dispatched")
             return
+        if canonical in DOWNLOAD_METHODS:
+            try:
+                self.features.handle_download(
+                    canonical, params, request_id, timeout - (now - submitted_at),
+                    lambda data: self._reply(route, method, data=data),
+                )
+            except (KeyError, ValueError, TypeError, OverflowError) as exc:
+                self._refuse(route, method, str(exc))
+            return
         serial_request = {
             "schema_version": request.get("schema_version", 1),
             "request_id": request_id, "account_id": self.account_id,
             "method": method, "params": params, "timeout_seconds": timeout,
             "_received_at": submitted_at,
         }
+        record = _InFlight(method, time.monotonic() + max(60, timeout + 10),
+                           lambda response: self.replies.send_response(route, response))
         try:
-            self.wire.begin({"type": "request", "request": serial_request, "session": self._session})
+            self._send_request(serial_request, record)
         except (ValueError, TypeError, RecursionError):
             self._refuse(route, method, "Request cannot be encoded within serial frame limit; NOT dispatched")
-            return
-        self._inflight[request_id] = (route, method, time.monotonic() + max(60, timeout + 10))
 
     def _receive_frame(self, frame):
         session = frame.get("session")
@@ -181,9 +222,9 @@ class SerialValkeyBridge:
                 return
             request_id = response.get("request_id")
             record = self._inflight.get(request_id) if isinstance(request_id, str) else None
-            if record is None or response.get("method") != record[1]:
+            if record is None or response.get("method") != record.method:
                 return
-            self.replies.send_response(record[0], response)
+            record.reply(response)
             self._inflight.pop(request_id, None)
         elif frame.get("type") == "event":
             topic, data = frame.get("topic"), frame.get("data")
@@ -203,9 +244,11 @@ class SerialValkeyBridge:
             self._receive_frame(frame)
         now = time.monotonic()
         for request_id, record in list(self._inflight.items()):
-            if record[2] <= now:
+            if record.deadline <= now:
                 self._forget_request(request_id, record, now)
+        self.features.poll_waiters(now)
         raw = None
+        background = False
         if (self._last_hello is not None and now - self._last_hello < 3
                 and not self.wire.writing and len(self._inflight) < _MAX_INFLIGHT):
             if pubsub is not None:
@@ -216,8 +259,10 @@ class SerialValkeyBridge:
                 raw = self.valkey.lpop(self.replies.request_queue)
             if raw is not None:
                 self._forward_request(raw)
+            elif not self._inflight:
+                background = self.features.step(now, self._send_background)
         sent = self.wire.write_step()
-        return bool(frames or raw is not None or sent)
+        return bool(frames or raw is not None or sent or background)
 
     def run(self, valkey_pubsub=False):
         pubsub = None

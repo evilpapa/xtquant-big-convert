@@ -1,7 +1,10 @@
+import builtins
 import importlib
+import io
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -16,13 +19,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import bigqmt_signal_trader_strategy as strategy
-from bigqmt_signal_trader import order_identity_journal, serial_valkey_bridge
+from bigqmt_signal_trader import order_identity_journal, serial_bridge_features, serial_valkey_bridge
+from bigqmt_signal_trader.adapters import market_bigqmt, valkey_common
+from bigqmt_signal_trader.download_jobs import read_download_status
 from bigqmt_signal_trader.exec_events import order_channel, publish_exec_event
+from bigqmt_signal_trader.full_tick_cache import read_full_tick_cache, request_full_tick_cache
 from bigqmt_signal_trader.quote_push_channel import decode_push_payload
 from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc, encode_rpc_request_payload
 from bigqmt_signal_trader.serial_valkey_bridge import SerialValkeyBridge
 from bigqmt_signal_trader.transports import serial_transport
 from bigqmt_signal_trader.transports.factory import build_transport, transport_supports_drain
+from bigqmt_signal_trader.xtquant_compat import BigQmtXtData
 
 
 ACCOUNT = "serial-account"
@@ -61,6 +68,7 @@ class Port:
 class MemoryValkey:
     def __init__(self):
         self.lists = defaultdict(deque)
+        self.hashes = defaultdict(dict)
         self.keys = {}
         self.published = defaultdict(list)
         self.streams = defaultdict(list)
@@ -73,6 +81,25 @@ class MemoryValkey:
 
     def rpush(self, key, value):
         self.lists[key].append(value)
+
+    def lindex(self, key, index):
+        return self.lists[key][index] if self.lists[key] else None
+
+    def lmove(self, source, destination, src, dest):
+        assert (src, dest) == ("LEFT", "RIGHT")
+        value = self.lpop(source)
+        if value is not None:
+            self.rpush(destination, value)
+        return value
+
+    def hset(self, key, name, value):
+        self.hashes[key][name] = value
+
+    def hgetall(self, key):
+        return self.hashes[key].copy()
+
+    def hdel(self, key, name):
+        self.hashes[key].pop(name, None)
 
     def blpop(self, key, timeout):
         end = time.monotonic() + timeout
@@ -102,6 +129,24 @@ class MemoryValkey:
 
     def delete(self, key):
         self.lists.pop(key, None)
+
+    def pipeline(self, transaction=True):
+        calls = []
+
+        class Pipeline:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+            def __getattr__(self, name):
+                return lambda *args: calls.append((name, args))
+
+            def execute(pipe):
+                return [getattr(self, name)(*args) for name, args in calls]
+
+        return Pipeline()
 
 
 def request(request_id, method="ping", sent_at=None, **extra):
@@ -301,6 +346,150 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
     finally:
         service.stop()
     assert qmt.closed
+
+
+def test_serial_bridge_refreshes_cache_and_verifies_downloads_through_qmt(duplex, monkeypatch):
+    qmt, windows = duplex
+    valkey = MemoryValkey()
+    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    monkeypatch.setattr(serial_transport, "open_serial", lambda port, baudrate: qmt)
+    monkeypatch.setattr(importlib, "reload", lambda module: module)
+    monkeypatch.setattr(strategy, "_quote_subscription_service", None)
+    monkeypatch.setattr(strategy, "_exec_events", None)
+    calls = []
+    requested, readable = set(), set()
+    fail_io = lambda *args, **kwargs: pytest.fail("QMT attempted forbidden external I/O")
+    monkeypatch.setattr(valkey_common, "build_valkey_client", fail_io)
+    monkeypatch.setattr(market_bigqmt, "_load_native_xtdata", fail_io)
+
+    def download(codes, period, start, end, callback):
+        calls.append(("download", codes, threading.current_thread()))
+        requested.update(codes)
+        return True
+
+    def local_data(stock_code, **kwargs):
+        calls.append(("read", stock_code, threading.current_thread()))
+        return {code: [{"stime": "20261120150000" if code in readable else "19700101000000", "close": 10}]
+                for code in stock_code}
+
+    def ticks(codes):
+        calls.append(("ticks", codes, threading.current_thread()))
+        return {code: {"lastPrice": 10} for code in codes}
+
+    config = {"account_id": ACCOUNT, "valkey": {"host": "must-not-connect"}, "rpc": {
+        "enabled": True, "transport": "serial", "heavy_offload": False,
+    }, "qmt_api": {"download_history_data2": download},
+        "download_jobs": {"enabled": True}, "full_tick_cache": {"enabled": True}}
+    context = SimpleNamespace(get_full_tick=ticks, get_local_data=local_data, is_last_bar=lambda: False)
+    monkeypatch.setattr(strategy, "_config", config)
+    monkeypatch.setattr(strategy, "_account_id", ACCOUNT)
+
+    def qmt_only(action):
+        with monkeypatch.context() as guard:
+            guard.setattr(builtins, "open", fail_io)
+            guard.setattr(io, "open", fail_io)
+            guard.setattr(os, "mkdir", fail_io)
+            guard.setattr(socket, "socket", fail_io)
+            return action()
+
+    qmt_config = qmt_only(strategy._build_config)
+    assert qmt_config["valkey"] == {}
+    assert not qmt_config["download_jobs"]["enabled"] and not qmt_config["full_tick_cache"]["enabled"]
+    service = qmt_only(lambda: strategy._build_rpc_service(context, None, qmt_config))
+    monkeypatch.setattr(strategy, "_rpc_service", service)
+
+    def pump():
+        bridge.step()
+        qmt_only(lambda: strategy.adjust(context))
+
+    valkey.pump = pump
+    qmt_only(service.start)
+    try:
+        codes = ["000001.SZ"]
+        request_full_tick_cache(valkey, ACCOUNT, codes)
+        request_full_tick_cache(valkey, ACCOUNT, codes)
+        pump_until(pump, lambda: read_full_tick_cache(valkey, ACCOUNT, codes))
+        assert read_full_tick_cache(valkey, ACCOUNT, codes) == {
+            "000001.SZ": {"lastPrice": 10},
+        }
+        assert len([entry for entry in calls if entry[0] == "ticks"]) == 1
+
+        def call(method, params):
+            response = call_valkey_rpc(valkey, ACCOUNT, method, params)
+            assert response["ok"], response
+            return response["data"]
+
+        client = BigQmtXtData(SimpleNamespace(call=call, download_wait_seconds=3,
+                                              download_poll_interval_seconds=0.05))
+        job = call("submit_download_history_data2", {
+            "stock_list": ["000001.SZ", "600000.SH"], "period": "1d",
+            "start_time": "20261120", "end_time": "20261120", "chunk_size": 1,
+        })
+        assert job["state"] == "pending"
+        job_id = job["job_id"]
+        pump_until(pump, lambda: any(entry[0] == "read" for entry in calls))
+        status = client.get_download_status(job_id)
+        assert (status["state"], status["accepted"], status["done"]) == ("running", 1, 0)
+        assert client.wait_download(job_id, timeout=0)["done"] == 0
+
+        readable.update(["000001.SZ", "600000.SH"])
+        waited = call("wait_download", {"job_id": job_id, "wait_seconds": 2,
+                                        "poll_interval_seconds": 0.05})
+        assert (waited["state"], waited["done"]) == ("done", 2)
+        statuses = []
+        finished = client.wait_download(job_id, callback=statuses.append)
+        assert (finished["state"], finished["accepted"], finished["done"]) == ("done", 2, 2)
+        assert statuses[-1] == finished
+        assert requested == readable
+        assert [(name, codes) for name, codes, _ in calls if name == "download"] == [
+            ("download", ["000001.SZ"]), ("download", ["600000.SH"]),
+        ]
+        assert all(thread is threading.current_thread() for _, _, thread in calls)
+
+        monkeypatch.setattr(serial_bridge_features, "_VERIFY_WINDOW", 0.15)
+        missing = client.submit_download_history_data("000001.SZ", "1d", "20261119", "20261119")
+        failed = call("wait_download", {"job_id": missing["job_id"], "wait_seconds": 2,
+                                        "poll_interval_seconds": 0.05})
+        assert (failed["state"], failed["accepted"], failed["done"]) == ("failed", 1, 0)
+        assert "history was not readable" in failed["error"]
+    finally:
+        service.stop()
+
+
+def test_serial_download_reports_lost_submission_and_never_replays_it(duplex):
+    qmt, windows = duplex
+    valkey = MemoryValkey()
+    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    wire = serial_transport.SerialFrames(qmt)
+
+    def hello(session):
+        wire.begin({"type": "hello", "account_id": ACCOUNT, "session": session})
+        while wire.writing:
+            wire.write_step()
+
+    hello("before")
+    raw = request("download", "submit_download_history_data", params={
+        "stock_code": "000001.SZ", "period": "1d",
+    })
+    valkey.rpush(REQUEST_QUEUE, raw)
+    pump_until(bridge.step, lambda: valkey.get(REPLY_PREFIX + "download"))
+    job_id = json.loads(valkey.get(REPLY_PREFIX + "download"))["data"]["job_id"]
+    valkey.rpush(REQUEST_QUEUE, raw)
+    frames = []
+
+    def pump():
+        bridge.step()
+        frames.extend(wire.read_frames(10))
+
+    pump_until(pump, lambda: frames)
+    assert [frame["request"]["method"] for frame in frames] == ["download_history_data2"]
+    hello("after")
+    bridge.step()
+    status = read_download_status(valkey, ACCOUNT, job_id)
+    assert status["state"] == "failed"
+    assert "outcome unknown" in status["error"]
+    assert not bridge.valkey.lists[bridge.features.active_key]
+    assert not bridge._inflight
 
 
 def test_bridge_log_helpers_hide_credentials_and_follow_causes():

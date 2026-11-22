@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import pickle
 import time
 
@@ -152,30 +153,25 @@ def iter_active_full_tick_demands(valkey_client, account_id, demand_ttl_seconds=
         field_text = _decode_text(field)
         try:
             payload = _loads_json(raw_payload)
-        except Exception:
+            if not isinstance(payload, dict) or not isinstance(payload.get("codes"), list):
+                raise ValueError("invalid snapshot demand")
+            expires_at = float(payload["expires_at_ts"])
+            codes = normalize_full_tick_codes(payload["codes"])
+            cache_ttl = float(payload.get("cache_ttl_seconds") or demand_ttl_seconds)
+            requested_at = float(payload.get("requested_at_ts") or 0)
+            if (not codes or expires_at <= now or cache_ttl <= 0
+                    or not all(map(math.isfinite, (expires_at, cache_ttl, requested_at)))):
+                raise ValueError("invalid or expired snapshot demand")
+        except (KeyError, TypeError, ValueError, OverflowError):
             try:
                 valkey_client.hdel(key, field_text)
             except Exception:
                 pass
             continue
-        expires_at = float(payload.get("expires_at_ts") or 0)
-        if expires_at <= now:
-            try:
-                valkey_client.hdel(key, field_text)
-            except Exception:
-                pass
-            continue
-        codes = normalize_full_tick_codes(payload.get("codes") or [])
-        if not codes:
-            try:
-                valkey_client.hdel(key, field_text)
-            except Exception:
-                pass
-            continue
-        payload["codes"] = codes
-        payload["cache_ttl_seconds"] = float(payload.get("cache_ttl_seconds") or demand_ttl_seconds)
+        payload.update(codes=codes, cache_ttl_seconds=cache_ttl, expires_at_ts=expires_at,
+                       requested_at_ts=requested_at)
         active.append(payload)
-    active.sort(key=lambda item: float(item.get("requested_at_ts") or 0), reverse=True)
+    active.sort(key=lambda item: item["requested_at_ts"], reverse=True)
     return active[: int(max_requests)]
 
 

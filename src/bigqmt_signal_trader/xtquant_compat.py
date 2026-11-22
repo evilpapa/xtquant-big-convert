@@ -6,6 +6,7 @@
 
 import os
 import json
+import math
 import time
 import uuid
 import queue as _queue
@@ -24,6 +25,7 @@ from .adapters.valkey_common import (
     local_valkey_config, normalize_valkey_url, valkey_client_class, valkey_connection_options,
 )
 from .code_utils import is_bond_code
+from .download_jobs import DONE, FAILED
 from .full_tick_cache import request_full_tick_cache, wait_full_tick_cache
 from .local_cache import LocalMarketCache
 from .order_id import OrderId, order_sys_id_of
@@ -2056,7 +2058,7 @@ class BigQmtXtData:
         if not codes:
             return {}
         cache_config = dict(getattr(self.client, "full_tick_cache_config", {}) or {})
-        if _bool_value(cache_config.get("enabled"), False):
+        if not types and _bool_value(cache_config.get("enabled"), False):
             valkey_client = self.client._valkey()
             request_full_tick_cache(
                 valkey_client,
@@ -3476,6 +3478,41 @@ class BigQmtXtData:
         data = self._call("get_divid_factors", stock_code=stock_code,
                           start_time=start_time, end_time=end_time)
         return _divid_factors_frame(data)
+
+    def submit_download_history_data(self, stock_code, period, start_time="", end_time="", incrementally=None):
+        return self._call(
+            "submit_download_history_data", stock_code=stock_code, period=period,
+            start_time=start_time, end_time=end_time, incrementally=incrementally,
+        )
+
+    def submit_download_history_data2(self, stock_list, period, start_time="", end_time="", incrementally=None):
+        return self._call(
+            "submit_download_history_data2", stock_list=_as_list(stock_list), period=period,
+            start_time=start_time, end_time=end_time, incrementally=incrementally,
+        )
+
+    def get_download_status(self, job_id):
+        return self._call("get_download_status", job_id=job_id)
+
+    def wait_download(self, job_id, timeout=None, poll_interval=None, callback=None):
+        """Poll from the client and return the terminal or last known job status."""
+        timeout = float(timeout if timeout is not None else self.client.download_wait_seconds)
+        interval = float(poll_interval if poll_interval is not None else self.client.download_poll_interval_seconds)
+        if not math.isfinite(timeout) or not math.isfinite(interval):
+            raise ValueError("invalid download wait timing")
+        deadline = time.monotonic() + max(0, timeout)
+        previous = None
+        while True:
+            status = self.get_download_status(job_id)
+            if callback is not None and status != previous:
+                callback(dict(status))
+            if status["state"] in (DONE, FAILED):
+                return status
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return status
+            previous = status
+            time.sleep(min(remaining, max(0.05, interval)))
 
     def download_history_data2(self, stock_list, period, start_time="", end_time="", callback=None, incrementally=None, dividend_type="none", chunk_size=None, download_timeout_seconds=180.0, data_wait_seconds=10.0):
         """通过 RPC 从大 QMT 拉 K 线并缓存到本地，分批进行。

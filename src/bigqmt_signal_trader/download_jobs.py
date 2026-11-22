@@ -83,9 +83,8 @@ def _dec(token):
         return None
 
 
-def submit_download_job(
-    valkey_client,
-    account_id,
+def _new_download_job(
+    job_id,
     stock_list,
     period,
     method="download_history_data2",
@@ -93,15 +92,12 @@ def submit_download_job(
     end_time="",
     incrementally=None,
     chunk_size=DEFAULT_CHUNK_SIZE,
-    job_ttl_seconds=DEFAULT_JOB_TTL_SECONDS,
 ):
-    """Queue a download job and return its initial status dict (non-blocking)."""
     codes = [str(code) for code in (stock_list or []) if str(code or "").strip()]
     if not codes:
         raise ValueError("stock_list is required for a download job")
-    job_id = uuid.uuid4().hex[:16]
     now = time.time()
-    job = {
+    return {
         "job_id": job_id,
         "method": str(method or "download_history_data2"),
         "stock_list": codes,
@@ -117,6 +113,25 @@ def submit_download_job(
         "created_at_ts": now,
         "updated_at_ts": now,
     }
+
+
+def submit_download_job(
+    valkey_client,
+    account_id,
+    stock_list,
+    period,
+    method="download_history_data2",
+    start_time="",
+    end_time="",
+    incrementally=None,
+    chunk_size=DEFAULT_CHUNK_SIZE,
+    job_ttl_seconds=DEFAULT_JOB_TTL_SECONDS,
+):
+    """Queue a download job and return its initial status dict (non-blocking)."""
+    job_id = uuid.uuid4().hex[:16]
+    job = _new_download_job(
+        job_id, stock_list, period, method, start_time, end_time, incrementally, chunk_size,
+    )
     ttl = int(max(1, job_ttl_seconds))
     valkey_client.setex(job_key(account_id, job_id), ttl, _enc(json.dumps(job, ensure_ascii=False)))
     valkey_client.rpush(queue_key(account_id), _enc(job_id))

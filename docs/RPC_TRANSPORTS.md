@@ -43,8 +43,6 @@ QMT 模型交易 (COM10) ←→ com0com ←→ Windows 桥接 (COM11) ←→ Val
        "rpc_allow_order_methods": False,
    }
    ```
-> PS: QMT 端原来依赖 Valkey 的快照缓存和异步下载任务会关闭，委托归属改用本地记录。
-
 4. 在 Windows 上先启动桥接，再启动 QMT 策略。桥接默认也读取 `BIGQMT_ACCOUNT_ID`，必须与 QMT 端一致。若 Valkey 需要认证，把连接串放在 `BIGQMT_SERIAL_VALKEY_URL` 环境变量；省略时使用 `valkey://127.0.0.1:6379/5`。
 
    ```powershell
@@ -65,7 +63,13 @@ QMT 模型交易 (COM10) ←→ com0com ←→ Windows 桥接 (COM11) ←→ Val
 
 串口每帧是 `8 位十六进制 CRC32` + `TAB` + `UTF-8 JSON` + `LF`。线程负责分帧和部分写入，QMT 的 `adjust` 从内存队列取请求；委托与成交回报由桥接发布到现有 Valkey 频道，行情全推也使用原频道。行情推送拥塞时会丢弃超出队列容量的更新，委托与成交回报使用独立队列。默认单帧上限 8 MiB，大行情按批查询，或者同时调整 QMT 的 `serial.max_frame_bytes` 与桥接的 `--max-frame-bytes`。延迟还取决于 QMT 调度间隔和串口传输量，请在目标终端实测。
 
-一个串口会话服务一个账号。串口模式自动关闭 QMT 侧的 Valkey 和原生 `xtdata` 直连；Valkey 快照缓存与异步下载任务也不可用。交易请求需使用更新后的 Valkey 客户端包：调用接口不变，请求会携带发送时间，让桥接拒绝积压到过期的委托。Windows 和客户端主机应同步时钟。串口异常后关闭并重启相关进程；桥接不会自动重放已取出的请求。若断线时交易状态不明，按备注查询委托和成交再决定是否重试。
+一个串口会话服务一个账号。串口模式关闭 QMT 侧的 Valkey 和原生 `xtdata` 直连，快照缓存和异步历史下载由独立桥接进程管理。交易请求需使用更新后的 Valkey 客户端包：调用接口不变，请求会携带发送时间，让桥接拒绝积压到过期的委托。Windows 和客户端主机应同步时钟。串口异常后关闭并重启相关进程；桥接不会自动重放未确认的交易请求。若断线时交易状态不明，按备注查询委托和成交再决定是否重试。
+
+### 快照缓存和异步下载
+
+- **行情快照**。客户端启用 `BIGQMT_FULL_TICK_CACHE_CONFIG = {"enabled": True}` 后，桥接按现有 Valkey 需求刷新缓存，相同代码集合共享一次刷新。指定证券和市场快照分别至少间隔 0.5 秒和 3 秒，实际间隔取决于请求队列、QMT 和串口。缓存使用默认证券类型，显式传 `types` 时走普通 RPC。全市场刷新仍受串口单帧上限约束。
+- **异步下载**。客户端调用 `xtdata.submit_download_history_data2(stock_list, period, start_time, end_time)` 后立即拿到 `job_id`。通过 `xtdata.get_download_status(job_id)` 或 `xtdata.wait_download(job_id)` 查看状态。桥接使用 Valkey 保存任务与进度，每次最多向 QMT 提交 10 只标的，可在提交 RPC 中用 `chunk_size` 调小。
+- **下载完成条件**。`accepted` 表示 QMT 已受理的标的数，`done` 表示在请求的时间窗内读回至少一条有效记录的标的数。批次内所有标的均通过读回才计入 `done`，这一检查不验证整个时间窗的数据完整性。开始读回后约 15 秒仍读不到数据，任务返回 `failed`。串口断开时若受理结果未知，任务返回 `failed` 并说明原因。重启桥接后可以继续排队中的任务，也可以在读回窗口内检查已确认受理的批次。
 
 ## 策略名与重启恢复
 
