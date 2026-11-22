@@ -81,7 +81,7 @@ class SlowRequestLogTest(unittest.TestCase):
         logging.getLogger("bigqmt").removeHandler(self.handler)
 
     def _slow_lines(self):
-        return [r.getMessage() for r in self.records if "slow request" in r.getMessage()]
+        return [r.getMessage() for r in self.records if "请求处理缓慢" in r.getMessage()]
 
     def test_slow_handler_is_named(self):
         service = _service(_Sleepy(self.clock))
@@ -222,7 +222,7 @@ class SlowResponseSegmentsTest(unittest.TestCase):
 
         self._request(service)
 
-        lines = self._messages("slow response")
+        lines = self._messages("应答发送缓慢")
         self.assertEqual(len(lines), 1, self.records)
         self.assertIn("method=get_full_tick", lines[0])
         self.assertIn("total=5.0s", lines[0])
@@ -230,7 +230,7 @@ class SlowResponseSegmentsTest(unittest.TestCase):
         self.assertIn("to_jsonable=5.0s", lines[0])
         self.assertIn("publish=", lines[0])
         # The handler note must stay quiet -- the handler was not slow.
-        self.assertEqual(self._messages("slow request"), [])
+        self.assertEqual(self._messages("请求处理缓慢"), [])
 
     def test_slow_handler_does_not_double_log(self):
         self._patch_jsonable(5.0)
@@ -238,8 +238,8 @@ class SlowResponseSegmentsTest(unittest.TestCase):
 
         self._request(service)
 
-        self.assertEqual(len(self._messages("slow request")), 1)
-        self.assertEqual(self._messages("slow response"), [])
+        self.assertEqual(len(self._messages("请求处理缓慢")), 1)
+        self.assertEqual(self._messages("应答发送缓慢"), [])
 
     def test_total_below_threshold_is_silent(self):
         self._patch_jsonable(5.0)
@@ -247,8 +247,8 @@ class SlowResponseSegmentsTest(unittest.TestCase):
 
         self._request(service)
 
-        self.assertEqual(self._messages("slow response"), [])
-        self.assertEqual(self._messages("slow request"), [])
+        self.assertEqual(self._messages("应答发送缓慢"), [])
+        self.assertEqual(self._messages("请求处理缓慢"), [])
 
     def test_fast_request_is_silent(self):
         service = _service(FakeMarketData())

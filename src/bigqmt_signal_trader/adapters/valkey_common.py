@@ -42,29 +42,30 @@ def valkey_connection_options(protocol):
     return {"protocol": int(protocol), "retry": Retry(NoBackoff(), 0)}
 
 
-def build_valkey_client(config=None):
+def build_valkey_client(config=None, *, environ=None):
     config = config or {}
+    environ = os.environ if environ is None else environ
     client_class = valkey_client_class()
 
-    protocol = int(config.get("protocol") or os.environ.get("BIGQMT_VALKEY_PROTOCOL") or 2)
+    protocol = int(config.get("protocol") or environ.get("BIGQMT_VALKEY_PROTOCOL") or 2)
     kwargs = dict(
         socket_connect_timeout=_float_or_none(config.get("socket_connect_timeout", 1.5), 1.5),
         socket_timeout=_float_or_none(config.get("socket_timeout", 1.5), 1.5),
     )
     kwargs.update(valkey_connection_options(protocol))
-    url = config.get("url") or os.environ.get("BIGQMT_VALKEY_URL")
+    url = config.get("url") or environ.get("BIGQMT_VALKEY_URL")
     if url:
         return client_class.from_url(normalize_valkey_url(url), **kwargs)
 
     db = config.get("db")
     if db is None or db == "":
-        db = os.environ.get("BIGQMT_VALKEY_DB") or 5
+        db = environ.get("BIGQMT_VALKEY_DB") or 5
     kwargs.update(
-        host=config.get("host") or os.environ.get("BIGQMT_VALKEY_HOST") or "127.0.0.1",
-        port=int(config.get("port") or os.environ.get("BIGQMT_VALKEY_PORT") or 6379),
+        host=config.get("host") or environ.get("BIGQMT_VALKEY_HOST") or "127.0.0.1",
+        port=int(config.get("port") or environ.get("BIGQMT_VALKEY_PORT") or 6379),
         db=int(db),
-        username=config.get("username") or os.environ.get("BIGQMT_VALKEY_USERNAME") or None,
-        password=config.get("password") or os.environ.get("BIGQMT_VALKEY_PASSWORD") or None,
+        username=config.get("username") or environ.get("BIGQMT_VALKEY_USERNAME") or None,
+        password=config.get("password") or environ.get("BIGQMT_VALKEY_PASSWORD") or None,
         health_check_interval=int(config.get("health_check_interval", 30)),
     )
     return client_class(**kwargs)

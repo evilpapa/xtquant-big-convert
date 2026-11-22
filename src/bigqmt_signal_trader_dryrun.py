@@ -1,9 +1,8 @@
 # coding: utf-8
-"""Big QMT signal trader dry-run entry.
+"""Big QMT 信号交易器干运行入口。
 
-Put this file into QMT's python strategy directory and load it from QMT.
-Current default uses empty signal source and DryRunOrderGateway, so it will not
-submit real orders.
+请将此文件放入 QMT 的 Python 策略目录，并从 QMT 中加载它。
+当前默认使用空信号源和 DryRunOrderGateway，因此不会提交真实订单。
 """
 
 from bigqmt_signal_trader_strategy import (  # noqa: E402
@@ -19,7 +18,7 @@ from bigqmt_signal_trader_strategy import (  # noqa: E402
 )
 
 
-# Fill this before real account testing. Leave empty for dry-run loading tests.
+# 填写此项后再进行真实账户测试。干运行加载测试时请留空。
 ACCOUNT_ID = ""
 
 

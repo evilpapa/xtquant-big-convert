@@ -975,7 +975,7 @@ class FormulaStaleWarnTest(unittest.TestCase):
         self.xc._warn_stale_formula_bars({"600000.SH": self._df(self.old_bar)}, {"period": "1m"})
         self.xc._warn_stale_formula_bars({"600000.SH": self._df(self.old_bar)}, {"period": "1m"})
         self.assertEqual(len(self.warns), 1)
-        self.assertIn("stale", self.warns[0])
+        self.assertIn("数据疑似过期", self.warns[0])
 
     def test_fresh_bar_does_not_warn(self):
         self.xc._warn_stale_formula_bars({"600000.SH": self._df(self.fresh_bar)}, {"period": "1m"})

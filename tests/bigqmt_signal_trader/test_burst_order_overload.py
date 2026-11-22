@@ -467,14 +467,14 @@ class OrderStockAfterTimeoutTest(unittest.TestCase):
         trader = self._trader([{"state": "refused", "response": {"ok": False, "error": "RequestExpired"}}])
         with self.assertRaises(TimeoutError) as ctx:
             self._order(trader)
-        self.assertIn("did NOT place", str(ctx.exception))
-        self.assertIn("refused as expired", str(ctx.exception))
+        self.assertIn("未下出这笔委托", str(ctx.exception))
+        self.assertIn("已过期被拒", str(ctx.exception))
 
     def test_an_unseen_order_says_not_placed(self):
         trader = self._trader([{"state": "unknown", "response": None}])
         with self.assertRaises(TimeoutError) as ctx:
             self._order(trader)
-        self.assertIn("did NOT place", str(ctx.exception))
+        self.assertIn("未下出这笔委托", str(ctx.exception))
 
     def test_a_settled_order_returns_the_reply_it_missed(self):
         trader = self._trader([{"state": "settled", "response": {
@@ -492,7 +492,7 @@ class OrderStockAfterTimeoutTest(unittest.TestCase):
         trader = self._trader([{"state": "dispatched", "response": {"ok": True, "data": {}}}] * 100)
         with self.assertRaises(TimeoutError) as ctx:
             self._order(trader)
-        self.assertIn("it is live", str(ctx.exception))
+        self.assertIn("它是活的", str(ctx.exception))
         self.assertGreater(len(trader.client.calls), 2, "did not keep asking")
 
     def test_a_dispatched_order_that_settles_meanwhile_returns_its_id(self):
@@ -508,8 +508,8 @@ class OrderStockAfterTimeoutTest(unittest.TestCase):
         trader = self._trader([RuntimeError("unknown method: get_request_outcome")])
         with self.assertRaises(TimeoutError) as ctx:
             self._order(trader)
-        self.assertIn("Query orders/trades before retrying", str(ctx.exception))
-        self.assertNotIn("did NOT place", str(ctx.exception))
+        self.assertIn("重试前请先查询委托/成交", str(ctx.exception))
+        self.assertNotIn("未下出这笔委托", str(ctx.exception))
 
     def test_the_outcome_is_asked_under_the_orders_own_request_id(self):
         trader = self._trader([{"state": "unknown", "response": None}])

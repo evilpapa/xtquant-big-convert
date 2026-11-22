@@ -162,11 +162,11 @@ client._formula_router().stats()
 启动时会打一行：
 
 ```
-[bigqmt_formula] active at 127.0.0.1:58600 (10 methods routed direct)
+[bigqmt_formula] 已连接 127.0.0.1:58600（10 个方法可直读）
 ```
 
 熔断时：
 
 ```
-[bigqmt_formula] unavailable, falling back to RPC for 30s: connect 127.0.0.1:58600 failed: ...
+[bigqmt_formula] 暂不可用，接下来 30 秒走 RPC：connect 127.0.0.1:58600 failed: ...
 ```

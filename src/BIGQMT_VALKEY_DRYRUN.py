@@ -1,14 +1,8 @@
 #coding:utf-8
-"""QMT bridge entry using the same file-loader pattern as qmt_realtime strategies.
+"""按路径加载桥接模块的 QMT 策略入口。
 
-Broker QMT strategy sandboxes may reject local package names through their
-normal ``import`` allowlist.  The realtime QMT strategies in gupiao_ztfx load
-their colocated helpers through ``importlib.util.spec_from_file_location``.
-This entry applies path-based loading to the bridge package, including its
-internal relative imports, while leaving all standard-library and QMT imports
-untouched.  This terminal's spec loader ignores custom builtins for nested
-package imports, so local bridge files are compiled explicitly after resolving
-their path.
+部分券商的导入白名单会拒绝项目包名。此入口对项目内模块按路径编译，
+包括包内相对导入。标准库和 QMT 模块沿用正常导入机制。
 """
 import builtins as _builtins
 import os
@@ -21,8 +15,8 @@ if sys.version_info < (3, 12):
 try:
     import importlib as _importlib
 except ImportError:
-    # Some QMT python36.zip builds omit importlib. The local loader only needs
-    # import_module and reload, so provide the smallest compatible fallback.
+    # 部分旧版 QMT 的 python36.zip 缺少 importlib。
+    # 本地加载器仅需 import_module 和 reload，因此只提供这两个兼容入口。
     _importlib = types.ModuleType("importlib")
 
     def _fallback_import_module(name, package=None):
@@ -44,15 +38,14 @@ _LOCAL_ROOTS = (
     "bigqmt_signal_trader_valkey_rpc_runtime",
     "bigqmt_signal_trader_qmt_config",
 )
-_ORIGINAL_IMPORT = _builtins.__import__
+_ORIGINAL_IMPORT        = _builtins.__import__
 _ORIGINAL_IMPORT_MODULE = _importlib.import_module
-_ORIGINAL_RELOAD = _importlib.reload
+_ORIGINAL_RELOAD        = _importlib.reload
 
 
 def _known_qmt_python_dir():
-    # Find the QMT python dir from sys.path instead of a hardcoded path, so
-    # the bridge loads regardless of broker install location or launch mode
-    # (editor / paste-run / exec). Falls back to empty when not found.
+    # 从 sys.path 查找 QMT 的 python 目录，兼容不同安装位置和启动方式。
+    # 未找到时返回空字符串。
     for p in sys.path:
         if p and r"\python" in p and os.path.isdir(p):
             return p
@@ -110,29 +103,23 @@ def _set_parent_attribute(name, module):
     setattr(parent, child_name, module)
 
 
-# A strategy file that arrived corrupted fails with a bare NameError naming a
-# 200-character token, which says nothing about the file being broken (issue
-# #102). Real symptom, from a reporter's terminal:
+# 策略文件损坏时可能只报 NameError，并显示约 200 字符的令牌（#102）。
+# 一次实际报错如下：
 #
 #     File "...\bigqmt_signal_trader_strategy.py", line 1, in <module>
 #         MiFBOecYoHXT4UUBBOIr3m5aTVbA5Rbt6OnG52cfBT5EAtPG9kA7kQnEsKuDUOORy...
 #     NameError: name 'MiFBOecYoHXT4UUB...' is not defined
 #
-# Python read line 1 as a variable name because that is all it was: the file
-# had been saved from something other than the source -- a download page, a
-# proxy that served a token instead of the file. Every version behaves the
-# same way, so "try a different version" sends people in the wrong direction.
+# Python 将首行当作变量名。此时保存下来的可能是下载页面或代理返回的令牌，
+# 需要重新取得源码。更换版本无法修复已经损坏的文件。
 _TOKEN_CHARS = set(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_=+/")
 
 
 def _looks_like_a_token_not_python(source):
-    """True when the first real line cannot be Python at all.
+    """首个非空行看起来是下载令牌时返回 True。
 
-    Deliberately narrow. A Python line this long with no whitespace and
-    nothing outside the base64 alphabet would have to be a bare identifier,
-    which is already broken -- so a false positive costs a clearer message on
-    code that was going to fail anyway.
+    只识别无空白且由 base64 字符组成的长行。即便误判，该行作为孤立标识符也会执行失败。
     """
     try:
         if isinstance(source, bytes):
@@ -166,7 +153,7 @@ def _load_local_module(name):
     module.__dict__["__builtins__"] = module_builtins
     module.__dict__["__bigqmt_load_local_module"] = _load_local_module
     sys.modules[name] = module
-    # QMT native allowlist rejects the root package eager exports.
+    # QMT 白名单会拒绝根包加载时立即导出的部分内容。
     if name == "bigqmt_signal_trader":
         return module
     source = None
@@ -176,9 +163,8 @@ def _load_local_module(name):
         exec(compile(source, source_path, "exec"), module.__dict__)
     except Exception as exc:
         sys.modules.pop(name, None)
-        # #420: on builds that forbid strategy FileIO the open() itself raises
-        # (PermissionError: Forbidden FileIO) and `source` never exists --
-        # the token check must not mask that with UnboundLocalError.
+        # 禁用策略 FileIO 的终端会在 open() 处抛出 PermissionError（#420）。
+        # 此时 source 尚未读入，避免诊断代码用 UnboundLocalError 掩盖原异常。
         if source is not None and _looks_like_a_token_not_python(source):
             raise RuntimeError(
                 "%s is not Python source -- its first line is one long token, "
@@ -195,8 +181,7 @@ def _load_local_module(name):
     return module
 
 
-# Names proven not to be modules. A miss costs a full sys.path
-# walk, so it is worth remembering; a hit never changes back.
+# 记住已经确认不是模块的名字，避免每次都遍历 sys.path。
 _MISSING_LOCAL_MODULES = set()
 
 
@@ -208,14 +193,8 @@ def _local_import(name, module_globals=None, module_locals=None, fromlist=(), le
     for child in fromlist or ():
         if child != "*":
             child_name = absolute_name + "." + child
-            # A fromlist entry is usually an attribute, not a submodule.
-            # Looking one up walks _SOURCE_ROOT plus every sys.path entry
-            # doing os.path.isfile, then raises -- and nothing remembered the
-            # answer, so it ran again on EVERY `from X import Y` in the
-            # sandbox. Measured in the live terminal: a ping whose handler is
-            # one such import took 1493ms in handle(); with the miss
-            # remembered it takes 0ms, and the round trip went from ~1800ms to
-            # ~95-200ms.
+            # fromlist 中通常是模块属性。未命中时需要扫描源码目录和 sys.path。
+            # 缓存未命中的名字后，实测 ping 往返从约 1800 毫秒降至 95～200 毫秒。
             if child_name in _MISSING_LOCAL_MODULES:
                 continue
             try:
@@ -261,8 +240,7 @@ def _stop_previous_rpc_service():
         reset()
         print("[bigqmt_shell] 已停止之前的 RPC 服务")
     except Exception as exc:
-        # Continue the reload so a broken old instance does not prevent QMT
-        # from reporting its normal startup error.
+        # 即使旧实例停止失败，也继续重新加载，让 QMT 报告实际启动错误。
         print("[bigqmt_shell] 停止之前的 RPC 服务失败：%s" % exc)
 
 
@@ -323,18 +301,8 @@ except Exception as account_config_error:
         _runtime.configure_runtime_account(account_id)
 
 try:
-    # QMT only injects its globals into the namespace of the file it mounts --
-    # THIS one -- so the capture has to happen here, with this file's globals().
-    #
-    # It used to be a hand-copied tuple of names right here, and that is exactly
-    # how query_credit_account went missing: it was added to the strategy
-    # module's _QMT_INJECTED_GLOBAL_FUNCS (which the strategy's own comment
-    # calls "the single source for that list; do not hand-copy the names
-    # elsewhere") and this copy was not updated. The bridge then reported
-    # "this terminal does not have query_credit_account" while the terminal had
-    # it all along -- a bridge bug misreported as a broker capability (#202).
-    #
-    # So: read the single source instead of copying it.
+    # QMT 只向挂载文件注入全局函数，因此在此处传入 globals()。
+    # 使用策略模块维护的统一名单，避免手工复制时遗漏 query_credit_account（#202）。
     qmt_extra = _runtime.capture_qmt_injected_funcs(globals())
     print("[bigqmt_shell] 下载相关全局函数已绑定=%s" % sorted(k for k in qmt_extra if "download" in k or "down_history" in k))
     _runtime.bind_runtime_api(
@@ -343,13 +311,9 @@ try:
         get_trade_detail_data_func=globals().get("get_trade_detail_data"),
         extra_funcs=qmt_extra or None,
     )
-    # QMT injects passorder / get_trade_detail_data / download_history_data
-    # into a file it runs AS A STRATEGY. When none of them are here the file is
-    # being exec'd as a plain script: the module body runs, init() is never
-    # called, no RPC service starts, and the run simply ends -- which from the
-    # log looks like a successful start followed by "finished" (issue #123).
-    # This file declares UTF-8 so Chinese diagnostics stay readable in the
-    # QMT strategy output panel.
+    # 作为策略运行时，QMT 会注入下单、交易查询和下载函数。
+    # 普通脚本也会执行模块顶层，但不会调用 init() 或启动 RPC（#123）。
+    # 文件声明 UTF-8，以便在 QMT 策略输出面板显示中文诊断。
     if not any(name in globals() for name in
                ("passorder", "get_trade_detail_data", "download_history_data")):
         print("[bigqmt_shell] 警告：QMT 未注入任何 API 全局函数"
@@ -369,7 +333,5 @@ stop = _runtime.stop
 adjust = _runtime.adjust
 order_callback = _runtime.order_callback
 deal_callback = _runtime.deal_callback
-# Credit-account counter query callback. QMT only calls back into the
-# namespace of the file it mounted, so this has to be re-exported here
-# the same way order_callback / deal_callback are (#202).
+# QMT 只向挂载文件调用回调，此处需暴露信用账户柜台查询回调（#202）。
 credit_account_callback = _runtime.credit_account_callback

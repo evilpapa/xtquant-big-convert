@@ -315,7 +315,7 @@ class ContractInfoRefusalTest(unittest.TestCase):
         with self.assertRaises(NotImplementedError) as caught:
             data.get_turn_over_rate("600519.SH")
         text = str(caught.exception)
-        self.assertIn("returns None for every code", text)
+        self.assertIn("对每个代码都返回 None", text)
         self.assertIn("call_method", text)
         self.assertEqual(data.calls, [])
 
@@ -332,7 +332,7 @@ class ContractInfoRefusalTest(unittest.TestCase):
         self.assertIn("[code]['pvolume']", text)
         self.assertNotIn("[code]['volume']", text)
         self.assertIn("get_last_volume", text)
-        self.assertIn("100x", text)             # 说清楚用错字段的后果
+        self.assertIn("100 倍", text)             # 说清楚用错字段的后果
 
     def test_the_turn_over_rate_message_names_the_data_precondition(self):
         # 区间版 get_turnover_rate 要求先下载财务数据（股本）+ 日线
@@ -344,7 +344,7 @@ class ContractInfoRefusalTest(unittest.TestCase):
         with self.assertRaises(NotImplementedError) as caught:
             data.get_turn_over_rate("600519.SH")
         text = str(caught.exception)
-        self.assertIn("financial data", text)
+        self.assertIn("财务数据", text)
         self.assertIn("download", text)
 
 

@@ -1,26 +1,4 @@
-"""Say so when the entry runs as a script instead of as a strategy (#123).
-
-lzxN put the files in the QMT python directory, ran BIGQMT_VALKEY_DRYRUN.py from
-the strategy editor, and got:
-
-    [BIGQMT_VALKEY_DRYRUN]开始运行
-    [bigqmt_shell] importlib entry source_root=...
-    [bigqmt_shell] account_type=STOCK (from BIGQMT_ACCOUNT_TYPE)
-    [bigqmt_shell] local valkey config loaded keys=[...]
-    [bigqmt_shell] local account config loaded=True
-    [bigqmt_shell] download globals bound=[]
-    [BIGQMT_VALKEY_DRYRUN]结束运行
-
-Every line looks like a healthy start. The tell is `download globals bound=[]`
--- empty -- and the absence of `init ok` and the diagnostics block. QMT injects
-its API globals into a file it runs AS A STRATEGY; here it injected none, so
-the module body ran, init() was never called, no RPC service started, and the
-run ended. Nothing said any of that.
-
-QMT's own docs name both causes: the editor window runs the file without the
-strategy lifecycle, and the "standalone python process" option execs it as
-__main__ "不会触发 init、handlebar 等函数".
-"""
+"""验证 QMT 按普通脚本运行时的诊断提示（#123）。"""
 
 import io
 import os
@@ -48,48 +26,35 @@ class WarnsTest(unittest.TestCase):
                       source)
 
     def test_it_says_init_will_never_be_called(self):
-        self.assertIn("init() will never be called", _source())
+        self.assertIn("init() 不会被调用", _source())
 
     def test_it_names_the_editor_window(self):
-        self.assertIn("EDITOR", _source())
+        self.assertIn("策略编辑窗口", _source())
 
     def test_it_names_the_standalone_process_option(self):
-        """QMT's docs: that option execs the file as __main__ and skips init."""
-        self.assertIn("standalone python", _source())
+        """独立进程以 __main__ 执行文件并跳过 init。"""
+        self.assertIn("独立 Python 进程", _source())
 
     def test_it_explains_the_log_looks_healthy(self):
-        """Without this the run reads as a successful start that just ended."""
+        """说明普通脚本执行结束后没有监听器。"""
         source = _source()
 
-        self.assertIn("nothing listening", source)
+        self.assertIn("运行将在此结束且没有监听器", source)
 
 
 class EncodingTest(unittest.TestCase):
-    """This file declares #coding:gbk and is stored as UTF-8.
+    """普通入口用 UTF-8 保存中文诊断。"""
 
-    That only holds together while every byte is ASCII. A Chinese character
-    added here would be decoded as GBK inside QMT and break the file that
-    bootstraps everything else -- so the warning is in English even though the
-    UI labels it refers to are Chinese.
-    """
-
-    def test_the_entry_declares_gbk(self):
-        self.assertTrue(_source().splitlines()[0].startswith("#coding:gbk"))
-
-    def test_the_entry_is_pure_ascii(self):
-        offenders = [index + 1 for index, line in enumerate(_source().splitlines())
-                     if any(ord(char) > 127 for char in line)]
-
-        self.assertEqual(offenders, [], "non-ASCII on lines %r" % (offenders,))
+    def test_the_entry_declares_utf8(self):
+        self.assertTrue(_source().splitlines()[0].startswith("#coding:utf-8"))
 
     def test_it_still_parses(self):
-        import ast
-
-        ast.parse(_source())
+        with open(ENTRY, "rb") as handle:
+            compile(handle.read(), ENTRY, "exec")
 
 
 class OnlyWhenNoneArePresentTest(unittest.TestCase):
-    """A strategy run has them; warning there would be noise on every start."""
+    """策略注入了任一 API 时，无需提示运行方式错误。"""
 
     def _warns(self, present):
         namespace = dict((name, lambda *a: None) for name in present)
@@ -102,8 +67,7 @@ class OnlyWhenNoneArePresentTest(unittest.TestCase):
             ["passorder", "get_trade_detail_data", "download_history_data"]))
 
     def test_one_present_is_enough_to_stay_quiet(self):
-        """A partial injection is a different problem; the diagnostics block
-        reports which bindings are missing."""
+        """部分注入时，缺失项由其他诊断提示报告。"""
         self.assertFalse(self._warns(["passorder"]))
 
     def test_none_present_warns(self):

@@ -1,9 +1,5 @@
 # coding: utf-8
-"""Live API smoke test + latency bench (read-only, safe for live account).
-
-Covers every read method grouped by category. Reports per-call status and
-latency, plus a category summary. Does NOT call any order/cancel method.
-"""
+"""按类别检查在线只读接口，记录每次调用的状态和耗时。"""
 import sys
 import time
 
@@ -15,10 +11,10 @@ import bigqmt_signal_trader.xtquant_compat as compat
 compat.configure()
 client = compat.get_default_client()
 ACCOUNT = client.account_id
-print("account:", ACCOUNT, "| transport:", client.transport_name)
+print("账号：", ACCOUNT, "｜传输方式：", client.transport_name)
 print("=" * 78)
 
-# (category, method, params)
+# 按类别列出方法和参数。
 GROUPS = [
     ("系统", [
         ("ping", {}),
@@ -97,7 +93,7 @@ GROUPS = [
     ]),
 ]
 
-results = []  # (category, method, status, ms, summary)
+results = []  # （类别、方法、状态、耗时毫秒、摘要）
 
 
 def summarize(d):
@@ -132,9 +128,10 @@ for category, methods in GROUPS:
             status = "FAIL"
             results.append((category, method, status, ms, str(e)[:40]))
         r = results[-1]
-        print("  [%-4s %6.1fms] %-28s %s" % (r[2], r[3], r[1], r[4]))
+        print("  [%s %6.1f 毫秒] %-28s %s" % (
+            "通过" if r[2] == "OK" else "失败", r[3], r[1], r[4]))
 
-# Summary
+# 汇总
 print("\n" + "=" * 78)
 print("=== 汇总 ===")
 ok = [r for r in results if r[2] == "OK"]
@@ -148,14 +145,15 @@ for r in results:
 for cat, items in cats.items():
     o = sum(1 for i in items if i[2] == "OK")
     avg = sum(i[3] for i in items) / len(items)
-    print("  %-22s %d/%d  avg=%.1fms" % (cat, o, len(items), avg))
+    print("  %-22s %d/%d  平均耗时=%.1f 毫秒" % (cat, o, len(items), avg))
 
-print("\n=== 延迟分布 (OK) ===")
+print("\n=== 成功调用的延迟分布 ===")
 lat = sorted(i[3] for i in ok)
 if lat:
     p50 = lat[len(lat) // 2]
     p90 = lat[int(len(lat) * 0.9)]
-    print("  n=%d  min=%.1fms  p50=%.1fms  p90=%.1fms  max=%.1fms" % (len(lat), lat[0], p50, p90, lat[-1]))
+    print("  样本=%d  最小=%.1f  p50=%.1f  p90=%.1f  最大=%.1f 毫秒" % (
+        len(lat), lat[0], p50, p90, lat[-1]))
 
 if fail:
     print("\n=== 失败明细 ===")

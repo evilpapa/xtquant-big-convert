@@ -1,8 +1,7 @@
-"""MiniQMT-style client objects backed by Big QMT Valkey RPC.
+"""通过大 QMT RPC 提供 MiniQMT 兼容接口。
 
-This module is the replacement edge for existing code that already calls
-``xt_trader.query_stock_positions(...)`` or ``xtdata.get_full_tick(...)``.
-The Big QMT process remains the only place that touches QMT runtime APIs.
+保留 query_stock_positions、get_full_tick 等现有调用形式，由大 QMT
+进程调用终端运行时 API。
 """
 
 import os
@@ -16,14 +15,7 @@ import importlib
 import warnings
 import datetime as _dt
 from typing import Any, Dict, Iterable, List, Optional
-# Only these three are used below, but every public constant is re-exported
-# further down: docs/XTQUANT_COMPAT_REPLACEMENT.md tells callers to do
-# ``from bigqmt_signal_trader import xtquant_compat as xtconstant`` and read
-# e.g. ``xtconstant.ORDER_SUCCEEDED`` off this module.
-#
-# This is deliberately not ``from xtquant.xtconstant import *``. That form is a
-# SyntaxError ("import * only allowed at module level") in the single-file QMT
-# builds, which exec each module inside a function body (issue #76).
+# 本模块使用这三个常量，下方还会暴露全部公开常量，兼容已有 xtconstant 调用。
 from xtquant import xtconstant as _xtconstant
 from xtquant.xtconstant import ORDER_UNKNOWN, STOCK_BUY, STOCK_SELL
 from xtquant.xttype import StockAccount
@@ -42,33 +34,21 @@ from .logging_setup import get_logger
 log = get_logger("xtquant_compat")
 
 
-# Re-export every public xtconstant name on this module, replacing what
-# ``import *`` used to do implicitly. Before #73 these 110-odd constants were
-# defined here outright, and the documented "approach 1" migration path binds
-# this module as ``xtconstant``, so dropping them would break callers that read
-# e.g. ``xtquant_compat.FIX_PRICE``.
-#
-# Written as an explicit loop rather than ``import *`` (a SyntaxError inside the
-# single-file builds' function-scope exec, issue #76) and rather than a
-# module-level ``__getattr__`` (PEP 562, Python 3.7+, while QMT ships 3.6).
+# 逐项暴露 xtconstant 的公开常量，保留 xtquant_compat.FIX_PRICE 等调用。
+# 单文件构建曾在函数作用域加载模块，使用 import * 会触发语法错误（#76）。
 for _const_name in dir(_xtconstant):
     if not _const_name.startswith("_"):
         globals().setdefault(_const_name, getattr(_xtconstant, _const_name))
 del _const_name
 
 
-# Default OHLCV fields pulled + cached by get_local_data fallback_rpc.
-# MiniQMT documents an empty field list as "all fields", including ``time`` and
-# ``openInterest`` for K-lines.  Cache fills deliberately use a bounded subset
-# instead, but omitting those two standard fields leaves the resulting frame
-# observably incompatible with MiniQMT consumers.
-# preClose: 下游策略(涨停解析/prepare_data等)按 MiniQMT 口径取 preClose 算涨跌幅, 缺列即 KeyError
+# get_local_data 回退到 RPC 补缓存时使用的默认字段。
+# 保留 MiniQMT K 线的 time 和 openInterest，并提供策略计算涨跌幅所需的 preClose。
 DEFAULT_DOWNLOAD_FIELDS = [
     "time", "open", "high", "low", "close", "volume", "amount", "openInterest",
     "preClose",
 ]
-# Codes per get_market_data_ex request. One request carries a single RPC timeout,
-# so a wide stock_list either fits or loses everything (issue #47).
+# get_market_data_ex 每批的代码数，避免一次请求的股票过多导致整批超时（#47）。
 DEFAULT_MARKET_DATA_CHUNK = 100
 _TIME_COL_NAMES = ("stime", "time", "index", "date", "datetime", "timetag")
 
@@ -91,7 +71,7 @@ DEFAULT_CLIENT_CONFIG_MODULES = (
 
 
 class CompatObject:
-    """Small attribute object matching xtquant's object-style returns."""
+    """模拟 xtquant 对象式返回值的小型属性对象。"""
 
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
@@ -102,19 +82,17 @@ class CompatObject:
 
 
 class CompatRow(dict):
-    """A dict that also answers attribute access, keys untouched.
+    """兼具属性访问的 dict，键保持不变。
 
-    MiniQMT's *sync* queries hand back the terminal's own objects. Only the
-    push path builds an xttype object -- ``on_push_AccountStatus`` is the one
-    place ``xttrader`` reads ``m_nStatus`` and converts it -- while every
-    ``query_*`` returns ``common_op_sync_with_seq``'s result unchanged, so the
-    account family arrives with m_ prefixed attributes on it.
+    MiniQMT 的 *同步* 查询返回终端自己的对象。只有推送路径会构造 xttype
+    对象 —— ``on_push_AccountStatus`` 是 ``xttrader`` 唯一读取 ``m_nStatus``
+    并做转换的地方 —— 而每个 ``query_*`` 都原样返回
+    ``common_op_sync_with_seq`` 的结果，所以账户类数据到手时带着 m_ 前缀属性。
 
-    The bridge relayed the right names in the wrong container: a dict, where
-    ``.m_nStatus`` raises AttributeError and only ``["m_nStatus"]`` works.
-    Subclassing dict adds the attribute path without taking the subscript one
-    away, so callers written against today's behaviour keep working, and so
-    does anything that json-encodes the row or checks ``isinstance(.., dict)``.
+    桥接层过去把正确的字段名装在了错误的容器里：一个 dict，``.m_nStatus``
+    会抛 AttributeError，只有 ``["m_nStatus"]`` 能用。继承 dict 在不影响下标
+    访问的前提下补上属性访问，因此按现有行为编写的调用方继续可用，对行做 json
+    编码或用 ``isinstance(.., dict)`` 判断的代码也同样可用。
     """
 
     def __getattr__(self, name):
@@ -125,16 +103,15 @@ class CompatRow(dict):
 
 
 def _as_compat_row(row):
-    """Wrap a native-field dict for attribute access; pass anything else through."""
+    """把原生字段 dict 包装成支持属性访问，其它类型原样返回。"""
     return CompatRow(row) if isinstance(row, dict) else row
 
 
 def _market_of(stock_code):
-    """``XtCancelError.market`` -- xtconstant SH_MARKET (0) / SZ_MARKET (1).
+    """``XtCancelError.market`` —— xtconstant 的 SH_MARKET (0) / SZ_MARKET (1)。
 
-    The code's suffix is the only source the bridge has, and the cancel paths
-    often carry no code at all. -1 there says "not known" rather than letting
-    an absent value impersonate 上海, which is what defaulting to 0 would do.
+    代码后缀是桥接层唯一的来源，而撤单路径常常完全不带代码。用 -1 表示
+    “未知”，而不是让缺失值冒充上海（默认取 0 就会这样）。
     """
     suffix = str(stock_code or "").rsplit(".", 1)[-1].upper()
     if suffix == "SH":
@@ -204,7 +181,7 @@ def _bool_value(value, default=False):
 
 
 def _first_set(*values):
-    """The first value that is not None; None if all are."""
+    """第一个不为 None 的值；全为 None 时返回 None。"""
     for value in values:
         if value is not None:
             return value
@@ -212,34 +189,33 @@ def _first_set(*values):
 
 
 class _ClientSetting(object):
-    """One client feature setting: explicit ``valkey_config`` first, then the
-    config module's section, then the environment / built-in default -- the
-    order the constructor already promises for host/port/password.
+    """单个客户端功能项的取值顺序：显式 ``valkey_config`` 优先，其次本地
+    .env、配置模块的 section，最后是环境变量 / 内置默认值——与构造函数对
+    host/port/password 已经承诺的顺序一致。
 
-    Issue #289: the three feature blocks each broke that in its own way.
-    ``local_cache`` read the module section first and used the explicit value
-    only as its ``.get`` fallback; ``formula_server`` ``or``-chained the module
-    section ahead of the explicit dict, so any module section discarded the
-    explicit one outright; ``full_tick`` never read ``valkey_config`` at all,
-    so its constructor switch did nothing even with no module present.
+    问题 #289：三个功能块各自以不同方式破坏了这个顺序。``local_cache``
+    先读模块 section，只把显式值当作 ``.get`` 的兜底；``formula_server``
+    用 ``or`` 把模块 section 串在显式 dict 前面，于是任何模块 section 都会
+    直接丢弃显式 dict；``full_tick`` 根本不读 ``valkey_config``，所以即使
+    没有模块，它的构造参数也不起作用。
 
-    ``section`` is what load_client_config hands over: the module's dedicated
-    dict (``BIGQMT_LOCAL_CACHE_CONFIG`` etc.) with the module's own
-    ``BIGQMT_CONFIG`` flat keys already folded in. How those two rank
-    against each other inside one file is that function's business and is
-    unchanged here. Flat keys carry the section prefix
-    (``local_cache_enabled``), section keys drop it (``enabled``); a section
-    may also spell the flat key, which the old code accepted, so both are
-    looked up there.
+    ``section`` 是 load_client_config 交过来的东西：模块专属的 dict
+    （``BIGQMT_LOCAL_CACHE_CONFIG`` 等），已经把模块自己的
+    ``BIGQMT_CONFIG`` 扁平键并入。这两者在一个文件内部如何排序，是那个
+    函数的职责，此处不变。扁平键带 section 前缀（``local_cache_enabled``），
+    section 键去掉前缀（``enabled``）；section 里也可以写扁平键，旧代码接受
+    这种写法，所以两种都会查。
     """
 
-    def __init__(self, explicit, section):
+    def __init__(self, explicit, section, local_env):
         self.explicit = dict(explicit or {})
         self.section = dict(section or {})
+        self.local_env = local_env
 
     def get(self, flat_key, section_key):
         return _first_set(
             self.explicit.get(flat_key),
+            self.local_env.get("BIGQMT_" + flat_key.upper()),
             self.section.get(section_key),
             self.section.get(flat_key),
         )
@@ -255,11 +231,13 @@ def _import_optional_module(module_name):
 
 
 def _quote_client_id():
-    """Process-stable client id for whole-quote subscriptions. Config or env wins;
-    otherwise read/create a persisted id so a restarted client is recognised as
-    the same subscriber by the server."""
-    client_config = load_client_config()
-    configured = client_config.get("quote_client_id") or os.environ.get("BIGQMT_QUOTE_CLIENT_ID")
+    """全推订阅用的进程级稳定客户端 id。配置或环境变量优先；
+    否则读取/创建持久化的 id，使重启后的客户端被服务端识别为同一个订阅者。"""
+    local_env = _client_local_env()
+    client_config = load_client_config(local_env.get(CLIENT_CONFIG_MODULE_ENV))
+    configured = (local_env.get("BIGQMT_QUOTE_CLIENT_ID")
+                  or client_config.get("quote_client_id")
+                  or os.environ.get("BIGQMT_QUOTE_CLIENT_ID"))
     if configured:
         return str(configured)
     cache_path = os.path.join(os.path.expanduser("~"), ".cache", "bigqmt", "quote_client_id")
@@ -281,7 +259,7 @@ def _quote_client_id():
 
 
 def _build_quote_push_channel(client):
-    """Build a Valkey push subscriber when Valkey is configured."""
+    """配置了 Valkey 时构造 Valkey 推送订阅者。"""
     from .quote_push_channel import ValkeyQuotePushChannel
 
     transport_name = str(getattr(client, "transport_name", "valkey") or "valkey").lower()
@@ -295,11 +273,11 @@ def _build_quote_push_channel(client):
 
 
 def _missing_account_id_message():
-    """Say what was searched and what to do, not just that something is missing.
+    """说明查了哪些地方、该怎么做，而不只是说缺东西。
 
-    "Big QMT account_id is required" told the reader nothing about where the
-    config was looked for, so a config file placed one sys.path away from the
-    running interpreter looked identical to no config at all (issue #90).
+    原来的提示「Big QMT account_id 是必需的」完全没告诉读者配置去哪儿找了，
+    于是放在离运行解释器一个 sys.path 之外的配置文件，看起来和完全没有配置
+    一样（问题 #90）。
     """
     searched = list(DEFAULT_CLIENT_CONFIG_MODULES)
     selected = os.environ.get(CLIENT_CONFIG_MODULE_ENV)
@@ -323,7 +301,7 @@ def _missing_account_id_message():
         "Fix it in any one of these ways:",
         "  1. put bigqmt_signal_trader_client_config.py somewhere on sys.path"
         " (the current working directory counts), with BIGQMT_ACCOUNT_ID set;",
-        "  2. set the BIGQMT_ACCOUNT_ID environment variable;",
+        "  2. set BIGQMT_ACCOUNT_ID in the current directory's .env or in the environment;",
         "  3. call bigqmt_signal_trader.xtquant_compat.configure(account_id=...)"
         " before use;",
         "  or run `bigqmt-init`, which writes both config files for you.",
@@ -333,8 +311,16 @@ def _missing_account_id_message():
     return "\n".join(lines)
 
 
+def _client_local_env():
+    if "__bigqmt_load_local_module" in globals():
+        return {}
+    from .local_env import read_local_env
+
+    return read_local_env()
+
+
 def load_client_config(module_name=None):
-    """Load local private client config without requiring environment variables."""
+    """加载本地私有客户端配置，不依赖环境变量。"""
     candidates = []
     selected = module_name or os.environ.get(CLIENT_CONFIG_MODULE_ENV)
     if selected:
@@ -388,12 +374,11 @@ def load_client_config(module_name=None):
 
 
 def _account_type_param(account):
-    """The type name a StockAccount declares, "" for a bare id string.
+    """StockAccount 声明的类型名，纯 id 字符串时返回 ""。
 
-    Sent as the ``account_type`` param of every trade RPC (港股通 on a stock
-    account: StockAccount(id, "HUGANGTONG") reads the HUGANGTONG book). The
-    server honours it only when the account is configured for that type,
-    otherwise the deployment's own type answers, as always (#92).
+    作为每个交易 RPC 的 ``account_type`` 参数发送（股票账户上的港股通：
+    StockAccount(id, "HUGANGTONG") 读取 HUGANGTONG 账本）。仅当账户配置为
+    该类型时服务端才采纳，否则仍由部署自身的类型作答（见 #92）。
     """
     if account is None or isinstance(account, (str, dict)):
         return ""
@@ -401,7 +386,7 @@ def _account_type_param(account):
 
 
 def _with_account_type(params, account):
-    """``params`` plus the account's declared type, when it declares one."""
+    """在 ``params`` 中加入账户声明的类型（若声明了）。"""
     name = _account_type_param(account)
     if name:
         params["account_type"] = name
@@ -432,7 +417,7 @@ def _action_to_order_type(action):
 
 
 def _action_of_row(row):
-    """BUY/SELL string for a queried order/trade object (#372 轮询事件用).
+    """查询到的委托/成交对象的 BUY/SELL 字符串（#372 轮询事件用）。
 
     方向判据与服务端一致：offset_flag（48 买/49 卖）优先，order_type 兜底。
     """
@@ -464,10 +449,10 @@ def _safe_float(value, default=0.0):
 
 
 def _to_unix_seconds(value, default=0):
-    """Normalize a trade/order time into Unix seconds (MiniQMT semantics).
+    """把成交/委托时间统一成 Unix 秒（MiniQMT 语义）。
 
-    Accepts numeric epochs, ``YYYY-MM-DD HH:MM:SS[.ffffff]`` and
-    ``YYYYMMDDHHMMSS`` strings. Anything else falls back to ``default``.
+    接受数值时间戳、``YYYY-MM-DD HH:MM:SS[.ffffff]`` 和
+    ``YYYYMMDDHHMMSS`` 字符串。其它形式回退到 ``default``。
     """
     if value is None or value == "":
         return default
@@ -492,10 +477,10 @@ def _as_list(value):
     return [value]
 
 
-# Big QMT m_nOpType -> MiniQMT order_type for the credit family (#330). 27-32
-# are the same number in both; big QMT's 33/34 (担保品买入/卖出) are MiniQMT's
-# CREDIT_BUY/CREDIT_SELL (23/24); the 专项 family is 70-75 there, 40-45 here.
-# 80-83 (可转债转股/回售) have no MiniQMT constant and pass through.
+# 大 QMT 的 m_nOpType -> MiniQMT 的两融族 order_type（#330）。27-32
+# 两边编号相同；大 QMT 的 33/34（担保品买入/卖出）对应 MiniQMT 的
+# CREDIT_BUY/CREDIT_SELL (23/24)；专项族在那边是 70-75，这里是 40-45。
+# 80-83（可转债转股/回售）在 MiniQMT 没有对应常量，直接透传。
 _CREDIT_ORDER_TYPE_BY_OP = {
     27: 27, 28: 28, 29: 29, 30: 30, 31: 31, 32: 32,
     33: 23, 34: 24,
@@ -505,12 +490,11 @@ _CREDIT_ORDER_TYPE_BY_OP = {
 
 
 def _credit_order_type_from_op(op_type, fallback):
-    """The MiniQMT order_type for a row's native opType, else ``fallback``.
+    """行的原生 opType 对应的 MiniQMT order_type，没有则用 ``fallback``。
 
-    query_stock_orders used to derive order_type from BUY/SELL alone, so a
-    融资买入 (opType 27) read as STOCK_BUY 23 (#330). Only the credit and
-    convertible families are mapped; ordinary 23/24 and the futures/option
-    numbers keep whatever the side-based logic decided.
+    过去 query_stock_orders 只按 BUY/SELL 推导 order_type，于是融资买入
+    （opType 27）被读成 STOCK_BUY 23（#330）。这里只映射两融族和可转债族；
+    普通 23/24 以及期货/期权编号仍沿用方向判据的结果。
     """
     try:
         value = int(op_type)
@@ -524,7 +508,7 @@ def _credit_order_type_from_op(op_type, fallback):
 # 买入=57，而 m_nOpType 两者没有区别——0.3.52 按 m_nOpType 的判据因此
 # 对这批终端永不生效。m_eEntrustType + 开平方向才是可靠判据。
 _CREDIT_ORDER_TYPE_BY_ENTRUST = {
-    # (entrust_type, is_buy) -> MiniQMT order_type
+    # (entrust_type, is_buy) -> MiniQMT 的 order_type
     (54, True): 27,    # 融资委托 + 买 = 融资买入 CREDIT_FIN_BUY
     (54, False): 31,   # 融资委托 + 卖 = 卖券还款 CREDIT_SELL_SECU_REPAY
     (55, True): 29,    # 融券委托 + 买 = 买券还券 CREDIT_BUY_SECU_REPAY
@@ -538,7 +522,7 @@ _CREDIT_SPECIAL_UPGRADE = {27: 40, 28: 41, 29: 42, 31: 44, 32: 45}
 
 
 def _credit_order_type_from_entrust(entrust_type, offset_flag, opt_name, fallback):
-    """The MiniQMT order_type from m_eEntrustType + side, else ``fallback``.
+    """由 m_eEntrustType + 方向得到的 MiniQMT order_type，没有则用 ``fallback``。
 
     ``opt_name`` 含「专项」时升级到专项族（40-45）；56 信用平仓等未列出的
     类别回退给调用方的下一个判据。
@@ -566,7 +550,7 @@ def _credit_order_type_from_entrust(entrust_type, offset_flag, opt_name, fallbac
 
 
 def _credit_order_type_for_row(item, fallback):
-    """Credit order_type for a snapshot dict: entrust first, op second (#330).
+    """快照 dict 的两融 order_type：先看 entrust，再看 op（#330）。
 
     0.3.55+ 的服务端在快照里带 m_eEntrustType；老服务端/老终端没有它时
     退回 0.3.52 的 m_nOpType 映射，再不行才用方向推的 23/24。
@@ -583,11 +567,11 @@ def _credit_order_type_for_row(item, fallback):
 
 
 def _account_type_name(value):
-    """The NAME of an account type, whatever form it arrives in.
+    """账户类型的名称，不限定它到达时的形式。
 
-    StockAccount stores the numeric code, not the string it was constructed
-    with: StockAccount(id, "CREDIT").account_type is 3. Comparing that against
-    the server's "CREDIT" would report a mismatch on every credit account.
+    StockAccount 保存的是数字代码，而不是构造时传入的字符串：
+    StockAccount(id, "CREDIT").account_type 是 3。拿它和服务端的 "CREDIT"
+    比较，会让每个两融账户都报不匹配。
     """
     text = str("" if value is None else value).strip()
     if not text:
@@ -603,12 +587,11 @@ def _account_type_name(value):
 
 
 def _account_type_code(value):
-    """The xtconstant NUMBER for an account type, whatever form it arrives in.
+    """账户类型对应的 xtconstant 数字，不限定它到达时的形式。
 
-    The mirror of _account_type_name. XtOrder / XtTrade / XtPosition all carry
-    account_type as an int (xttype sets it to SECURITY_ACCOUNT), so a name has
-    to come back as a number before it reaches a caller. 0 means "nothing to
-    go on" -- the caller decides what to fall back to.
+    _account_type_name 的镜像。XtOrder / XtTrade / XtPosition 都用 int 携带
+    account_type（xttype 把它置为 SECURITY_ACCOUNT），所以名称必须在交给
+    调用方之前变回数字。0 表示“没有依据”——回退什么由调用方决定。
     """
     text = str("" if value is None else value).strip()
     if not text:
@@ -622,12 +605,10 @@ def _account_type_code(value):
         from xtquant import xtconstant
     except Exception:
         return 0
-    # NOT ACCOUNT_TYPE_DICT alone: the xtquant that wins inside Big QMT is the
-    # terminal's own bundled copy, which has 91 of this shim's 538 names and
-    # does not include that dict. A client can land on it too -- appending the
-    # QMT python directory to sys.path is a documented way to reach the config
-    # modules. Fall back to the individual *_ACCOUNT constants, which both
-    # copies have.
+    # 不能只建 ACCOUNT_TYPE_DICT 上：大 QMT 内部生效的 xtquant 是终端自带的
+    # 那份，它只有本兼容层 538 个名字中的 91 个，且不含这个 dict。客户端也可能
+    # 落到那份上——把 QMT 的 python 目录追加到 sys.path 是访问配置模块的公开
+    # 做法。于是回退到各个 *_ACCOUNT 常量，两份都有。
     table = getattr(xtconstant, "ACCOUNT_TYPE_DICT", None)
     if isinstance(table, dict):
         for code, name in table.items():
@@ -646,13 +627,13 @@ def _account_type_code(value):
     return 0
 
 
-#: Where a server-side "this answer is degraded" marker lands on the rebuilt
-#: frame. ``DataFrame.attrs`` is pandas >= 1.0; on anything older the marker is
-#: simply dropped, which is why nothing downstream may depend on it existing.
+#: 服务端“此答案已降级”标记落在重建后的 frame 上的位置。
+#: ``DataFrame.attrs`` 需要 pandas >= 1.0；更老的版本会直接丢掉该标记，
+#: 因此下游任何逻辑都不能依赖它存在。
 PARTIAL_MARKER_ATTR = "bigqmt_partial"
 
-#: Reasons already warned about, so a polling caller is told once rather than
-#: once per bar pull (#139 is what unthrottled per-call logging costs).
+#: 已经告警过的原因，使轮询调用方只被通知一次，而不是每拉一次 K 线
+#: 就通知一次（#139 正是不加节流的逐次日志的代价）。
 _partial_warned = set()
 
 
@@ -667,7 +648,7 @@ def _attach_partial_marker(frame, marker):
 
 
 def _partial_marker(frame):
-    """The server's degraded-answer marker on a frame, or None."""
+    """frame 上的服务端降级答案标记，没有则为 None。"""
     try:
         marker = frame.attrs.get(PARTIAL_MARKER_ATTR)
     except Exception:
@@ -676,11 +657,10 @@ def _partial_marker(frame):
 
 
 def _warn_partial_market_data(markers):
-    """Say once per distinct degradation that the answer is not the full one.
+    """每种降级只说明一次：答案不是完整的那个。
 
-    The server logs this too, but the server's log is on the trading machine
-    and the caller is not reading it -- and the whole failure mode #237 is
-    about is an answer that looks complete and is not.
+    服务端也会记这条日志，但服务端日志在交易机上，调用方看不到——而 #237
+    要解决的整个失效模式，正是答案看起来完整、实际并不完整。
     """
     for marker in markers:
         if not isinstance(marker, dict):
@@ -722,18 +702,15 @@ def _restore_jsonable(value):
                                      columns=value.get("columns") or None)
             except Exception:
                 return value.get("records") or []
-            # #237: the server marks an answer that is not the one that was
-            # asked for -- fewer columns, a dropped argument, a different
-            # servant. Carry it onto the frame so a caller can see it without
-            # reading the terminal's log. An answer without the key rebuilds
-            # exactly as before, so an old server and a new client agree.
+            # #237：服务端会标记“这不是所请求的答案”——列少了、参数被丢弃、
+            # 换了服务对象。把它带到 frame 上，调用方不用去读终端日志就能看到。
+            # 没有这个键的答案按原样重建，因此旧服务端与新客户端仍然一致。
             _attach_partial_marker(frame, value.get("__bigqmt_partial__"))
             return frame
         if marker == "Panel":
-            # pandas dropped Panel in 1.0, so a 3-D object cannot be rebuilt on
-            # a modern client. It comes back as what a caller can actually use:
-            # {item: DataFrame} (issue #115). The axis labels ride along for
-            # anyone who needs to know how the cube was sliced.
+            # pandas 1.0 起移除了 Panel，现代客户端无法重建三维对象。它以一种
+            # 调用方真正能用的形式返回：{item: DataFrame}（问题 #115）。轴标签
+            # 一并带上，供需要知道这个立方体如何切分的人使用。
             return {key: _restore_jsonable(item)
                     for key, item in (value.get("data") or {}).items()}
         if marker == "Series":
@@ -756,17 +733,16 @@ _KNOWN_BAR_FIELDS = {
 
 
 def _to_documented_market_data_shape(data, field_list, stock_list, period):
-    """MiniQMT's documented get_market_data contract for bar periods:
-    ``dict[field] -> pd.DataFrame(index=stock_list, columns=time_list)``.
+    """MiniQMT 文档化的 get_market_data K 线周期契约：
+    ``dict[field] -> pd.DataFrame(index=stock_list, columns=time_list)``。
 
-    Big QMT hands back a bare long DataFrame for one stock and
-    ``dict[stock] -> long DataFrame`` for many -- both off-contract (the
-    reporter's printout, 2026-09-10). Pivot here, client-side: the server
-    keeps the long shape, so raw-RPC callers and the all-zero heal path are
-    untouched, and no QMT-side deploy is needed.
+    大 QMT 对单只股票返回裸的长表 DataFrame，对多只股票返回
+    ``dict[stock] -> 长表 DataFrame``——两者都不符合契约（报告方 2026-09-10
+    的打印结果）。这里在客户端做透视：服务端仍保留长表形状，因此原生 RPC
+    调用方和全零修复路径都不受影响，也不需要在 QMT 侧重部署。
 
-    Already-documented answers (keys are field names) and anything not a
-    per-stock long frame (tick period, empty, scalars) pass through.
+    已符合文档的答案（键为字段名）以及任何不是逐股长表的形状（tick 周期、
+    空表、标量）都原样透传。
     """
     if str(period or "").lower() == "tick":
         return data
@@ -776,13 +752,13 @@ def _to_documented_market_data_shape(data, field_list, stock_list, period):
         return data
 
     if hasattr(data, "columns"):
-        # Bare frame: one stock, no dict wrapper.
+        # 裸 frame：单只股票，没有 dict 包装。
         code = str((_as_list(stock_list) or [""])[0])
         per_stock = {code: data}
     elif isinstance(data, dict) and data:
         keys = [str(k) for k in data.keys()]
         if all(k in _KNOWN_BAR_FIELDS for k in keys):
-            return data  # already the documented {field: wide frame}
+            return data  # 已是文档化的 {field: 宽表}
         per_stock = data
     else:
         return data
@@ -790,17 +766,17 @@ def _to_documented_market_data_shape(data, field_list, stock_list, period):
     fields = [str(f) for f in (field_list or []) if str(f) != "time"]
     wide = {}
     for code, frame in per_stock.items():
-        # pandas Index raises on truthiness -- no `or []` here.
+        # pandas Index 做真值判断会抛异常——这里不能写 `or []`。
         _cols = getattr(frame, "columns", None)
         columns = list(_cols) if _cols is not None else []
         if not columns:
             continue
-        # RPC path long frames carry 'index'; FormulaServer-built frames carry
-        # 'stime'. Both are the time axis.
+        # RPC 路径的长表带 'index'，FormulaServer 构造的带
+        # 'stime'。两者都是时间轴。
         time_col = next(
             (c for c in ("time", "index", "stime") if c in columns), None)
         if time_col is None:
-            return data  # not a long bar frame -- pass through untouched
+            return data  # 不是 K 线长表——原样透传
         wanted = fields or [c for c in columns if c != time_col]
         for field in wanted:
             if field not in columns:
@@ -809,10 +785,9 @@ def _to_documented_market_data_shape(data, field_list, stock_list, period):
     if not wide:
         return data
     out = {field: pd.DataFrame(series).T for field, series in wide.items()}
-    # MiniQMT's time_list is STRINGS ('20260901', dtype='str' -- verified by
-    # printing data['open'].columns on a live miniQMT, not by the bare
-    # printout, which shows no quotes either way). Normalize every label to
-    # str so the frame matches miniQMT's dtype.
+    # MiniQMT 的 time_list 是字符串（'20260901'，dtype='str'——在实盘 miniQMT
+    # 上打印 data['open'].columns 验证过，而不是靠直接 print，那样两种情况下
+    # 都看不到引号）。把所有标签统一成 str，使 frame 的 dtype 与 miniQMT 一致。
     for frame in out.values():
         frame.columns = [str(c) for c in frame.columns]
     return out
@@ -832,10 +807,9 @@ _SHANGHAI_OFFSET_S = 8 * 3600
 
 
 def _divid_day_key(key):
-    """A big-QMT ms timestamp key -> the YYYYMMDD string xtdata indexes by.
+    """大 QMT 的毫秒时间戳键 -> xtdata 用作索引的 YYYYMMDD 字符串。
 
-    Already-YYYYMMDD keys (8 digits) pass through; anything that is not a
-    plain number is left alone rather than guessed at.
+    已经是 YYYYMMDD 的键（8 位数字）原样返回；不是纯数字的一律不动，不做猜测。
     """
     import datetime as _dt
 
@@ -852,25 +826,22 @@ def _divid_day_key(key):
 
 
 def _divid_factors_frame(data):
-    """``dict{ms: [7 values]}`` -> the DataFrame ``xtdata.get_divid_factors`` returns.
+    """``dict{ms: [7 个值]}`` -> ``xtdata.get_divid_factors`` 返回的 DataFrame。
 
-    Measured against the real xtdata (``df.info()`` on a live miniQMT):
+    对照真实 xtdata 实测（在实盘 miniQMT 上 ``df.info()``）：
 
-        Index: 19990823 to 20080707            <- ex-dividend day, YYYYMMDD
+        Index: 19990823 to 20080707            <- 除权日，YYYYMMDD
         time, interest, stockBonus, stockGift,
-        allotNum, allotPrice, gugai, dr        <- 8 columns, all float64
+        allotNum, allotPrice, gugai, dr        <- 8 列，均为 float64
 
-    The wire carries big QMT's native shape -- a dict keyed by the day's ms
-    timestamp with a positional 7-list -- so this adds the day index, the
-    ``time`` column (the ms key, as float), the names, and the float64 dtype,
-    the way ``get_market_data_ex`` turns wire records into frames. Passing the
-    dict through as-is made ``df["dr"]`` a KeyError for every caller written
-    against the real xtdata.
+    链路上传的是大 QMT 的原生形状——以当日毫秒时间戳为键、值为按位置排列的
+    7 元素列表——所以这里补上日期索引、``time`` 列（毫秒键，float）、列名和
+    float64 类型，做法与 ``get_market_data_ex`` 把链路记录转成 frame 相同。
+    直接透传该 dict 会让所有按真实 xtdata 编写的调用方在 ``df["dr"]`` 上
+    遇到 KeyError。
 
-    Rows keep the server's order (chronological from the terminal). A value
-    that already comes as a named dict is read by name. Anything that is not
-    a dict passes through untouched, so an error envelope is not turned into
-    an empty frame.
+    行序保持服务端顺序（终端给出的时间顺序）。已是具名 dict 的值按名字读取。
+    不是 dict 的一律原样透传，因此错误信封不会被变成空表。
     """
     if not isinstance(data, dict):
         return data
@@ -905,7 +876,7 @@ def _digits_only(value):
 
 
 def _time_compare_digits(value):
-    """A 14-digit string so QMT timestamps compare chronologically."""
+    """14 位数字字符串，使 QMT 时间戳可按时间先后比较。"""
     digits = "".join(ch for ch in str(value or "") if ch.isdigit())
     if not digits:
         return ""
@@ -1009,23 +980,20 @@ _EPOCH_PLACEHOLDER_FLOOR = "19900101"
 
 
 def _is_epoch_placeholder_label(value):
-    """True for a bar label that predates the A-share market itself (#228).
+    """对于早于 A 股市场本身的 K 线标签返回 True（#228）。
 
-    Asked for a window it has no data for, big QMT does not answer with zero
-    rows -- it answers with one row stamped at the epoch (`stime` `19700101`,
-    OHLC and volume all zero). miniQMT returns an empty frame there, and that
-    is the contract this bridge promises.
+    请求一段它没有数据的区间时，大 QMT 不会返回零行——它返回一行盖在纪元上
+    的数据（`stime` 为 `19700101`，OHLC 和成交量全为零）。miniQMT 在那里
+    返回空表，而那才是本桥接层承诺的契约。
 
-    The row is not harmless: a caller walking rows to derive period boundaries
-    reads it as a real bar and asks the calendar for `1969-12-29~1970-01-04`.
-    One downstream instance died on exactly that at 09:11 pre-open and idled
-    until someone stopped it, having already persisted `bar_time=1970-01-01`
-    rows that needed cleaning by hand.
+    这一行并非无害：遍历行来推导周期边界的调用方会把它当成真实 K 线，并向
+    日历询问 `1969-12-29~1970-01-04`。有一个下游实例就因此在 09:11 盘前挂掉，
+    一直空转到有人手动停掉它，而它此前已经落盘了需要人工清理的
+    `bar_time=1970-01-01` 行。
 
-    The floor is the market's own start, not a tuning knob: the Shanghai
-    exchange opened in December 1990, so nothing earlier can be a real bar. A
-    zero row on a *plausible* date is left alone -- a suspended day is
-    legitimately zero-volume, and `fill_data=True` fills gaps on purpose.
+    下限取市场自身的起点，不是可调参数：上海证券交易所 1990 年 12 月开市，
+    更早的都不可能是真实 K 线。落在 *合理* 日期上的全零行保持原样——停牌日
+    成交量确实为零，而且 `fill_data=True` 本来就是故意补空缺。
     """
     digits = _digits_only(value)
     if len(digits) < 8:
@@ -1034,16 +1002,14 @@ def _is_epoch_placeholder_label(value):
 
 
 def _iso_week_start_label(value):
-    """The Monday of the ISO week a ``1w`` bar label belongs to, as YYYYMMDD.
+    """``1w`` K 线标签所属 ISO 周的周一，格式 YYYYMMDD。
 
-    Big QMT labels a weekly bar with the **Sunday** of its ISO week. Measured
-    against the live terminal, the weekly close equals the last daily close in
-    Monday..Sunday for 19/19 weeks, two of them holiday-shortened -- so the
-    label is the period end, not the period start (#166).
+    大 QMT 用 ISO 周的 **周日** 标注周线。在实盘终端上实测，19/19 周的周线
+    收盘价都等于周一至周日内最后一个交易日的收盘价，其中两周因假期缩短——
+    所以该标签是周期结束日，不是周期起始日（#166）。
 
-    Deriving Monday from the label, rather than from where the previous bar
-    sat, is what lets the first bar of a window be filled at all. Returns None
-    for anything unparseable, so the caller fills nothing instead of guessing.
+    从标签本身（而不是上一根 K 线所在位置）倒推周一，才可能为窗口的第一根
+    K 线补值。无法解析时返回 None，让调用方什么都不补，而不是靠猜。
     """
     parsed = _parse_qmt_stime(value)
     if parsed is None:
@@ -1053,7 +1019,7 @@ def _iso_week_start_label(value):
 
 
 def _month_start_label(value):
-    """The 1st of the month a bar label belongs to, as YYYYMMDD."""
+    """K 线标签所属月份的 1 号，格式 YYYYMMDD。"""
     parsed = _parse_qmt_stime(value)
     if parsed is None:
         return None
@@ -1061,7 +1027,7 @@ def _month_start_label(value):
 
 
 def _quarter_start_label(value):
-    """The 1st of the quarter's first month a bar label belongs to."""
+    """K 线标签所属季度第一个月的 1 号。"""
     parsed = _parse_qmt_stime(value)
     if parsed is None:
         return None
@@ -1070,7 +1036,7 @@ def _quarter_start_label(value):
 
 
 def _halfyear_start_label(value):
-    """Jan 1 or Jul 1 of the half-year a bar label belongs to."""
+    """K 线标签所属半年的 1 月 1 日或 7 月 1 日。"""
     parsed = _parse_qmt_stime(value)
     if parsed is None:
         return None
@@ -1078,7 +1044,7 @@ def _halfyear_start_label(value):
 
 
 def _year_start_label(value):
-    """Jan 1 of the year a bar label belongs to."""
+    """K 线标签所属年份的 1 月 1 日。"""
     parsed = _parse_qmt_stime(value)
     if parsed is None:
         return None
@@ -1086,10 +1052,10 @@ def _year_start_label(value):
 
 
 def _period_end_label(period, value):
-    """The last calendar day of the natural period a bar label belongs to.
+    """K 线标签所属自然周期的最后一个日历日。
 
-    Used only to tell an in-progress bar (its period is not over yet) from a
-    finalized one. Returns None for anything unparseable.
+    仅用于区分进行中的 K 线（周期尚未结束）与已结束的 K 线。
+    无法解析时返回 None。
     """
     parsed = _parse_qmt_stime(value)
     if parsed is None:
@@ -1113,10 +1079,10 @@ def _period_end_label(period, value):
 
 
 def _bar_float(value):
-    """A bar cell as a float, or None for anything that is not a number.
+    """K 线单元格转成 float，非数字一律返回 None。
 
-    NaN counts as "not a number" on purpose: an all-NaN preClose column means
-    the same thing as an all-zero one -- the terminal did not answer.
+    NaN 有意算作“不是数字”：preClose 整列为 NaN 与整列为 0 含义相同——
+    终端没有作答。
     """
     try:
         number = float(value)
@@ -1128,11 +1094,11 @@ def _bar_float(value):
 
 
 def _frame_bar_labels(frame):
-    """Bar labels in row order, from the normalized index or a stime column.
+    """按行顺序的 K 线标签，取自规范化后的索引或 stime 列。
 
-    Both sources are checked for being date-shaped rather than trusted: a
-    frame that never went through _normalize_market_data_frame still carries a
-    positional index, and 0/1/2 would otherwise be read as bar labels.
+    两个来源都先检查是否为日期形状，而不直接信任：没经过
+    _normalize_market_data_frame 的 frame 仍带位置索引，否则 0/1/2 会被
+    当成 K 线标签。
     """
     for from_index in (True, False):
         try:
@@ -1146,7 +1112,7 @@ def _frame_bar_labels(frame):
 
 
 def _qmt_datetime_to_epoch_ms(dt_value):
-    # QMT bar labels are China local time; MiniQMT's time column is epoch ms.
+    # QMT 的 K 线标签是中国本地时间；MiniQMT 的 time 列是毫秒时间戳。
     china_tz = _dt.timezone(_dt.timedelta(hours=8))
     return int(dt_value.replace(tzinfo=china_tz).timestamp() * 1000)
 
@@ -1169,9 +1135,8 @@ def _normalize_market_data_frame(df, field_list=None):
                 _qmt_datetime_to_epoch_ms(parsed) if parsed is not None else None
                 for parsed in (_parse_qmt_stime(value) for value in stimes)
             ]
-        # Drop big QMT's "no data for this window" placeholders (#228). Done
-        # after the derived columns are built, and by position, so the rows
-        # that stay keep the values that belong to them.
+        # 丢掉大 QMT “该区间无数据”的占位行（#228）。在派生列生成后按位置
+        # 删除，因此保留下来的行仍持有属于自己的数值。
         keep = [
             position for position, value in enumerate(stimes)
             if not _is_epoch_placeholder_label(value)
@@ -1307,13 +1272,12 @@ def _is_hs_a_share(code):
 
 
 def _full_a_share_code(code):
-    """Ensure a callback stock_code carries its exchange suffix.
+    """确保回调的 stock_code 带交易所后缀。
 
-    Native MiniQMT XtOrder/XtTrade carry the full '600000.SH' form. Events from
-    an older server (or when the callback object exposes no exchange info) may
-    carry the bare 6-digit code; infer the suffix from the A-share code ranges
-    so consumers can key on the full form. Non-6-digit or already-suffixed
-    codes pass through unchanged.
+    原生 MiniQMT 的 XtOrder/XtTrade 携带完整 '600000.SH' 形式。来自旧服务端的
+    事件（或回调对象不暴露交易所信息时）可能只带裸 6 位代码；此时按 A 股代码
+    区间推断后缀，使消费方可以按完整形式作键。非 6 位或已带后缀的代码
+    原样透传。
     """
     text = str(code or "").strip().upper()
     if "." in text or not (len(text) == 6 and text.isdigit()):
@@ -1334,13 +1298,23 @@ class BigQmtRpcClient:
         timeout_seconds=None,
         transport=None,
     ):
-        client_config = load_client_config()
+        local_env = _client_local_env()
+        client_config = load_client_config(local_env.get(CLIENT_CONFIG_MODULE_ENV))
         valkey_config = valkey_config or {}
-        merged_valkey_config = dict(client_config.get("valkey_config") or {})
+        module_valkey_config = client_config.get("valkey_config") or {}
+        local_valkey_config = {
+            key: local_env[variable]
+            for key in ("host", "port", "db", "username", "password", "protocol", "url")
+            if (variable := "BIGQMT_VALKEY_" + key.upper()) in local_env
+        }
+        merged_valkey_config = dict(module_valkey_config)
+        merged_valkey_config.update(local_valkey_config)
         merged_valkey_config.update(valkey_config)
         self.account_id = str(
             account_id
-            or merged_valkey_config.get("account_id")
+            or valkey_config.get("account_id")
+            or local_env.get("BIGQMT_ACCOUNT_ID", "").strip()
+            or module_valkey_config.get("account_id")
             or client_config.get("account_id")
             or os.environ.get("BIGQMT_ACCOUNT_ID")
             or ""
@@ -1373,7 +1347,15 @@ class BigQmtRpcClient:
             "protocol": merged_valkey_config.get("protocol") or os.environ.get("BIGQMT_VALKEY_PROTOCOL") or 2,
         }
         self._valkey_url = merged_valkey_config.get("url") or os.environ.get("BIGQMT_VALKEY_URL")
-        config_timeout = client_config.get("timeout_seconds")
+        if local_valkey_config:
+            for settings in (valkey_config, local_valkey_config):
+                if settings.get("url") or any(
+                    settings.get(key) not in (None, "") for key in ("host", "port", "db")
+                ):
+                    self._valkey_url = settings.get("url")
+                    break
+        config_timeout = _first_set(
+            local_env.get("BIGQMT_RPC_TIMEOUT_SECONDS") or None, client_config.get("timeout_seconds"))
         self.timeout_seconds = float(
             timeout_seconds
             if timeout_seconds is not None
@@ -1381,22 +1363,24 @@ class BigQmtRpcClient:
             if config_timeout is not None
             else _env_float("BIGQMT_RPC_TIMEOUT_SECONDS", DEFAULT_RPC_TIMEOUT_SECONDS)
         )
-        config_download_wait = client_config.get("download_wait_seconds")
+        config_download_wait = _first_set(
+            local_env.get("BIGQMT_DOWNLOAD_WAIT_SECONDS") or None, client_config.get("download_wait_seconds"))
         self.download_wait_seconds = float(
             config_download_wait
             if config_download_wait is not None
             else _env_float("BIGQMT_DOWNLOAD_WAIT_SECONDS", 1800.0)
         )
-        config_download_poll = client_config.get("download_poll_interval_seconds")
+        config_download_poll = _first_set(
+            local_env.get("BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS") or None,
+            client_config.get("download_poll_interval_seconds"))
         self.download_poll_interval_seconds = float(
             config_download_poll
             if config_download_poll is not None
             else _env_float("BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS", 0.5)
         )
-        # Precedence for the three feature sections below (#289): explicit
-        # valkey_config > config module > env / default -- the order
-        # host/port/password already get above.
-        full_tick = _ClientSetting(valkey_config, client_config.get("full_tick_cache_config"))
+        # 功能配置沿用连接配置的优先级（#289）：显式参数、本地 .env、
+        # 配置模块、进程环境、默认值。
+        full_tick = _ClientSetting(valkey_config, client_config.get("full_tick_cache_config"), local_env)
         self.full_tick_cache_config = {
             "enabled": _bool_value(
                 full_tick.get("full_tick_cache_enabled", "enabled"),
@@ -1415,12 +1399,9 @@ class BigQmtRpcClient:
                 full_tick.get("full_tick_poll_interval_seconds", "poll_interval_seconds"),
                 _env_float("BIGQMT_FULL_TICK_POLL_INTERVAL_SECONDS", 0.2))),
         }
-        # Client-side local market-data cache. get_market_data_ex is cache-through;
-        # get_local_data falls back to Big QMT by default so a MiniQMT-style
-        # download of raw history can be followed by a read in another
-        # adjustment mode. Set fallback_rpc=False only for an explicitly
-        # offline, cache-only client.
-        local_cache = _ClientSetting(valkey_config, client_config.get("local_cache_config"))
+        # get_market_data_ex 将结果写入本地缓存。get_local_data 默认通过
+        # RPC 补齐缓存，支持下载原始数据后按其他复权方式读取。
+        local_cache = _ClientSetting(valkey_config, client_config.get("local_cache_config"), local_env)
         self.local_cache_config = {
             "enabled": _bool_value(
                 local_cache.get("local_cache_enabled", "enabled"),
@@ -1438,34 +1419,29 @@ class BigQmtRpcClient:
             "format": str(
                 local_cache.get("local_cache_format", "format")
                 or os.environ.get("BIGQMT_LOCAL_CACHE_FORMAT")
-                or "auto"  # parquet if pyarrow is available, else pickle
+                or "auto"  # 有 pyarrow 时用 Parquet，否则用 pickle
             ),
         }
-        # Transport selection. Default "valkey" keeps the legacy call_valkey_rpc
-        # path (so existing client configs are unchanged). Setting transport to
-        # "zmq"/"mysql"/"shm" (via config or constructor) routes calls through
-        # the swappable transport layer instead.
+        # 默认使用 call_valkey_rpc，其余传输交给传输工厂。
         self.transport_name = str(
             transport
-            or merged_valkey_config.get("transport")
+            or valkey_config.get("transport")
+            or local_env.get("BIGQMT_RPC_TRANSPORT")
+            or module_valkey_config.get("transport")
             or os.environ.get("BIGQMT_RPC_TRANSPORT")
             or "valkey"
         ).lower()
-        self._transport_instance = None  # lazily built by _transport()
-        # FormulaServer read fast-path. QMT's C++ quote service (port 58600)
-        # answers reference/history reads in ~0.07ms without touching the QMT
-        # python thread. Enabled by default; every miss falls back to RPC, so a
-        # client that cannot reach it just runs as before.
-        # Merge, do not choose: the module's section (valkey_config already
-        # folded in by load_client_config) updated by the explicit dict, key
-        # by key (#289). The old or-chain took the module section whole and
-        # never looked at the explicit dict.
+        self._transport_instance = None  # 由 _transport() 按需创建
+        # FormulaServer（默认 58600 端口）直读历史和参考数据，失败时回退到 RPC。
+        # 按字段合并模块配置、本地 .env 和显式参数（#289）。
         formula_config = dict(client_config.get("formula_server_config") or {})
+        if local_env.get("BIGQMT_FORMULA_ENABLED"):
+            formula_config["enabled"] = _bool_value(local_env["BIGQMT_FORMULA_ENABLED"])
         formula_config.update(valkey_config.get("formula_server") or {})
         if "enabled" not in formula_config:
             formula_config["enabled"] = _env_bool("BIGQMT_FORMULA_ENABLED", True)
         self.formula_server_config = formula_config
-        self._formula_router_instance = None  # lazily built by _formula_router()
+        self._formula_router_instance = None  # 由 _formula_router() 按需创建
 
     def _valkey(self):
         if self.valkey_client is None:
@@ -1484,7 +1460,7 @@ class BigQmtRpcClient:
     def _transport(self):
         if self._transport_instance is None:
             if self.transport_name in ("valkey", "", "default"):
-                # Legacy path: call_valkey_rpc builds its own request envelope.
+                # Valkey 路径由 call_valkey_rpc 构造请求。
                 return None
             from .transports.factory import build_transport
 
@@ -1497,10 +1473,10 @@ class BigQmtRpcClient:
         return self._transport_instance
 
     def close(self):
-        """Release the swappable transport's connections, if one was built.
+        """释放可替换 transport 的连接（若已构造）。
 
-        Called by ``BigQmtXtTrader.stop()``. Safe to call more than once;
-        the transport is rebuilt lazily if the client is used again.
+        由 ``BigQmtXtTrader.stop()`` 调用。可重复调用；客户端再次使用时
+        transport 会惰性重建。
         """
         transport = self._transport_instance
         self._transport_instance = None
@@ -1511,8 +1487,8 @@ class BigQmtRpcClient:
                 pass
 
     def _formula_router(self):
-        """Lazily build the FormulaServer router. Never raises — a router that
-        cannot be built simply means every read goes over RPC."""
+        """惰性构造 FormulaServer 路由器。从不抛异常——构造不出路由器只意味着
+        所有读取都走 RPC。"""
         if self._formula_router_instance is None:
             try:
                 from .formula_server import build_router
@@ -1533,8 +1509,8 @@ class BigQmtRpcClient:
 
     def call_tracked(self, method, params=None, account_id=None, request_id=None,
                      timeout_seconds=None):
-        """``call`` under a request_id the caller chose, so it can ask the
-        server what became of the request after a timeout (#303)."""
+        """用调用方指定的 request_id 执行 ``call``，以便在超时后向服务端
+        追问该请求的结果（#303）。"""
         return self.call(method, params, account_id=account_id,
                          timeout_seconds=timeout_seconds, request_id=request_id)
 
@@ -1544,10 +1520,8 @@ class BigQmtRpcClient:
         if not target_account:
             raise ValueError(_missing_account_id_message())
         wait_seconds = self.timeout_seconds if timeout_seconds is None else timeout_seconds
-        # Fast path: reference/history reads answered straight by QMT's
-        # FormulaServer, bypassing the strategy process and its GIL. Anything it
-        # declines (unmapped method, untranslatable params, server down) raises
-        # Unroutable and drops through to the RPC bridge below.
+        # 参考和历史数据优先从 FormulaServer 直读。方法、参数或服务不可用时，
+        # 捕获 Unroutable，继续走 RPC 桥。
         # use_formula=False 用于必须拿到最新数据的调用（如 subscribe_quote 的
         # 盘中形成 bar 轮询）——FormulaServer 的快照可能滞后数小时（实测盘中
         # 11:30 后冻结），形成 bar 只能走 RPC 桥读 QMT 实时数据。
@@ -1579,8 +1553,7 @@ class BigQmtRpcClient:
                 pass
         transport = self._transport()
         if transport is not None:
-            # Swappable transport path (zmq/mysql/...). Build the request
-            # envelope the same way call_valkey_rpc does.
+            # 与 call_valkey_rpc 使用相同的请求结构。
             request = {
                 "schema_version": 1,
                 "request_id": str(request_id or uuid.uuid4().hex),
@@ -1588,8 +1561,7 @@ class BigQmtRpcClient:
                 "method": method,
                 "params": params or {},
                 "ttl_seconds": 60,
-                # How long we wait. A server that only reaches this request
-                # after that refuses it instead of running it (#303).
+                # 客户端的等待时长，供服务端拒绝过期请求（#303）。
                 "timeout_seconds": float(wait_seconds),
             }
             response = transport.send_request(request, wait_seconds)
@@ -1604,28 +1576,23 @@ class BigQmtRpcClient:
             )
         if not response.get("ok"):
             raise RpcServerRepliedError(
-                response.get("error") or "Big QMT RPC failed: %s" % method)
+                response.get("error") or "大 QMT RPC 调用失败: %s" % method)
         # server_error 携带 QMT 端诊断（如 passorder 提交但委托没进系统）。
         # 只在交易类方法上设置（读取类恒为空），转成异常让调用方看到真实原因，
         # 而不是把「无委托号」误判为 -1 失败（issue #38）。
         server_error = str(response.get("server_error") or "")
         if server_error:
             raise RpcServerRepliedError(
-                "Big QMT %s server_error: %s" % (method, server_error))
-        # The transport already scanned the raw text for a typed envelope; when
-        # it found none there is provably nothing to rebuild, and skipping the
-        # walk turns 345.9ms into 3.7ms on a 51285-instrument snapshot. A None
-        # flag means the text was never seen (in-process routing), so walk.
+                "大 QMT %s server_error: %s" % (method, server_error))
+        # 传输层确认没有类型标记时，跳过递归还原。
+        # 未检查原文（如进程内调用）时，仍遍历数据。
         if response.pop(TYPED_PAYLOAD_FLAG, None) is False:
             return response.get("data")
         return _restore_jsonable(response.get("data"))
 
     # ------------------------------------------------------------------
-    # Async RPC (issue #63): call_async returns a Future immediately, so a
-    # caller can have many independent requests in flight instead of one
-    # blocking call at a time. The server still processes order RPCs on the
-    # QMT main thread serially — client-side async overlaps the round-trip
-    # latency, it does not parallelize the exchange leg.
+    # call_async 立即返回 Future，允许客户端并发等待应答。
+    # 下单 RPC 仍由 QMT 主线程串行执行（#63）。
     _ASYNC_RPC_MAX_IN_FLIGHT = 64
 
     def _async_rpc_pool(self):
@@ -1640,17 +1607,16 @@ class BigQmtRpcClient:
         return pool
 
     def call_async(self, method, params=None, account_id=None, timeout_seconds=None, callback=None):
-        """Submit an RPC without blocking; returns concurrent.futures.Future.
+        """提交 RPC 但不阻塞；返回 concurrent.futures.Future。
 
-        ``callback`` (optional) receives the result on a single dispatcher
-        thread — callbacks fire serialized in completion order, never
-        concurrently. In-flight requests are bounded; when the limit is hit
-        the call raises instead of queueing unboundedly.
+        ``callback``（可选）在单个分发线程上收到结果——回调按完成顺序串行
+        触发，绝不并发。在途请求数有上限；达到上限时直接抛异常，而不是
+        无限制排队。
         """
         pool = self._async_rpc_pool()
         if not self._rpc_async_slots.acquire(timeout=30.0):
             raise RuntimeError(
-                "too many RPCs in flight (max %d)" % self._ASYNC_RPC_MAX_IN_FLIGHT
+                "在途 RPC 过多（上限 %d）" % self._ASYNC_RPC_MAX_IN_FLIGHT
             )
 
         def _run():
@@ -1726,18 +1692,17 @@ class BigQmtRpcClient:
                 pass
 
 
-# IPO subscription codes are their own numbering, distinct from the listed
-# share's code. Classification is FAIL-CLOSED: an unrecognised code returns None
-# and the caller skips it. The version this replaced ended in `return True`
-# ("默认放行"), i.e. it guessed in favour of placing an order -- on a path whose
-# whole job was to keep BJ subscriptions, which freeze cash, out.
+# 新股申购代码是独立编号，与上市股票的代码不同。分类是 FAIL-CLOSED：
+# 无法识别的代码返回 None，由调用方跳过。被替换掉的旧版本以 `return True`
+# 结尾（「默认放行」），即它按有利于下单的方向猜测——而这条路径的职责恰恰
+# 是把会冻结资金的北交所申购挡在外面。
 _IPO_SH_PREFIXES = ("730", "732", "780", "787", "789", "707")
 _IPO_SZ_PREFIXES = ("00", "30")
 _IPO_BJ_PREFIXES = ("920", "889", "8", "4")
 
 
 def ipo_market_of(code):
-    """Return "SH" / "SZ" / "BJ", or None when the code is not recognised."""
+    """返回 "SH" / "SZ" / "BJ"，无法识别时返回 None。"""
     text = str(code or "").strip().upper()
     if not text:
         return None
@@ -1746,7 +1711,7 @@ def ipo_market_of(code):
             return market
     if not text.isdigit():
         return None
-    # Order matters: BJ 920/889 would otherwise be caught by a looser rule.
+    # 顺序很重要：否则北交所的 920/889 会先被更宽松的规则命中。
     if text.startswith(_IPO_BJ_PREFIXES):
         return "BJ"
     if text.startswith(_IPO_SH_PREFIXES):
@@ -1757,53 +1722,45 @@ def ipo_market_of(code):
 
 
 MARKET_TOKENS = frozenset({"SH", "SZ", "BJ", "HK"})
-# Above this many explicit codes, one RPC's single timeout starts to matter more
-# than the extra payload of reading the exchange and filtering (issue #104).
-# Measured against a live bridge: query_orders 1.5s, get_asset 1.4s,
-# get_financial_data 0.8s warm, a whole-market get_full_tick 7.7s. The old
-# 6s default sat under the cost of ordinary QMT data calls, and timing out
-# here is worse than waiting: the bridge keeps working on the abandoned
-# request, so the next call queues behind it and one timeout breeds more.
-# 30s is also what the whole-market snapshot path already used, so there is
-# one number rather than two.
+# 显式代码超过这个数量之后，一次 RPC 的超时就比“读取交易所再过滤”的额外
+# 开销更值得关注（问题 #104）。在实盘桥上实测：query_orders 1.5s、
+# get_asset 1.4s、get_financial_data 热态 0.8s、全市场 get_full_tick 7.7s。
+# 旧的 6s 默认值低于普通 QMT 数据调用的成本，而在这里超时比等待更糟：桥接层
+# 仍在继续处理被放弃的请求，于是下一次调用排在它后面，一次超时衍生更多超时。
+# 全市场快照路径本来就用了 30s，所以只有一个数字而不是两个。
 DEFAULT_RPC_TIMEOUT_SECONDS = 30.0
 
-# Batch timeout scaling: the server runs batch items serially on the adjust
-# thread. Per-item cost is milliseconds in market hours but ~300ms with the
-# counter disconnected -- a 100-item batch then outlives even the 30s default
-# (live 2026-09-05: the client gave up, fell back to singles, and the still
-# running batch completed too, doubling 100 orders into 200). Scale the wait
-# with N so the client outlives the server.
+# 批量超时按规模放大：服务端在 adjust 线程上串行执行批量项。盘中每项成本是
+# 毫秒级，但柜台断连时约 300ms——于是 100 项的批量连 30s 默认值都撑不到
+# （实盘 2026-09-05：客户端放弃并退回逐笔，而仍在运行的批量也完成了，100 笔
+# 委托变成 200 笔）。等待时间随 N 放大，让客户端比服务端活得久。
 BATCH_TIMEOUT_FLOOR_SECONDS = 15.0
 BATCH_TIMEOUT_PER_ITEM_SECONDS = 0.5
 
 
 class RpcServerRepliedError(RuntimeError):
-    """The server answered with an error -- as opposed to a timeout/transport
-    failure, where the request's fate is unknown.
+    """服务端以错误作答——区别于超时/传输失败，后者的请求去向未知。
 
-    The distinction matters for writes: a batch submit handler raises only
-    before its per-item loop, so a replied error means no item ran and a retry
-    is safe. A timeout means the batch may still be running and retrying
-    doubles orders."""
+    这个区分对写入很关键：批量提交处理器只在逐项循环之前抛异常，所以“有回复
+    的错误”意味着没有任何一项被执行，重试是安全的。超时则意味着批量可能仍在
+    运行，重试会让委托翻倍。"""
 
 
 
 
 LARGE_CODE_LIST = 1000
-# What the fallback reads first. Stocks are 8.7% of an exchange listing, so
-# starting narrow is 1.08s against 7.4s; it widens to "all" only if that misses.
+# 回退先读什么。股票只占交易所挂牌的 8.7%，所以从窄范围起步是 1.08s 对
+# 7.4s；只有它没命中时才扩到 "all"。
 DEFAULT_FALLBACK_TYPES = ("stock",)
 
-# How many int -> 合同编号 pairs a trader keeps so a cancel still resolves after
-# the caller round-tripped the id through JSON and lost the string (issue #113).
+# 交易进程保留多少组 int -> 合同编号 的映射，使调用方把 id 过一遍 JSON 丢掉
+# 字符串之后，撤单仍能解析（问题 #113）。
 _ORDER_ID_MEMORY = 4096
 
 
 def _markets_of(codes):
-    """Market tokens the given suffixed codes live on, or empty if any code
-    carries no recognised suffix -- filtering an exchange read cannot recover a
-    code we cannot place."""
+    """给定带后缀代码所在的行情品种标记；若有代码的后缀无法识别则返回空——
+    靠过滤一次交易所读取，救不回一个我们定位不了的代码。"""
     markets = set()
     for code in codes or []:
         _, _, suffix = str(code).rpartition(".")
@@ -1814,35 +1771,31 @@ def _markets_of(codes):
     return markets
 
 
-# Which instrument kinds a market token has to be asked for, per exchange.
+# 每个交易所的行情品种标记要按哪些品种去请求。
 #
-# The server narrows a market token to `types` and defaults to ("stock",) --
-# "SH" becomes the 上证A股 sector listing. So a token request that does not say
-# what it wants silently loses convertibles, funds, ETFs and indices: they are
-# subscribed and pushed, but absent from the first frame (#358). Asking for
-# ["all"] instead costs the whole exchange listing (26744 instruments, ~7.5s on
-# the adjust thread), which is exactly what #247/#104 removed. So infer the
-# kinds from the codes actually asked for.
+# 服务端会把行情品种标记收窄到 `types`，默认 ("stock",)——于是 "SH" 变成
+# 上证A股板块列表。所以不说明想要什么的品种请求会静默丢掉可转债、基金、ETF
+# 和指数：它们仍被订阅并推送，但不在第一帧里（#358）。改要 ["all"] 的代价是
+# 整个交易所挂牌（26744 个标的，在 adjust 线程上约 7.5s），而这正是
+# #247/#104 去掉的东西。于是从实际请求的代码推断品种。
 #
-# Prefixes are the exchanges' own code segments. Convertibles are not listed
-# here -- code_utils.is_bond_code already owns those prefixes, and duplicating
-# them is how the two copies drift apart.
+# 前缀是各交易所自己的代码段。可转债不列在这里——code_utils.is_bond_code
+# 已经拥有那些前缀，重复一遍正是两份拷贝逐渐漂移的起因。
 #
 #   SH  600/601/603/605/688/689 股票 · 5xx 基金/ETF · 000xxx 指数
 #   SZ  00x/30x 股票 · 15x/16x/18x 基金/ETF · 39xxxx 指数 (980xxx.SZ 也是指数，
 #       不在「沪深指数」板块里，所以不认它)
-#   BJ  43/83/87/88/92 股票 (899050.BJ 北证50 is an index and 沪深指数 does not
-#       carry it, so it stays unclassified on purpose)
+#   北交所 43/83/87/88/92 股票（899050.BJ 北证50 是指数，而沪深指数不包含
+#       它，所以有意保持不分类）
 #
-# A code that matches nothing here is NOT guessed at: it goes down the direct
-# per-code path instead, which is slower and right. Guessing is how the codes
-# went missing in the first place.
+# 在这里匹配不上的代码不做猜测：它改走逐代码的直连路径，更慢但正确。猜测
+# 恰恰是代码当初丢失的原因。
 _PRIME_TYPES_BY_PREFIX = {
     "SH": ((("600", "601", "603", "605", "688", "689"), ("stock",)),
            (("5",), ("fund", "etf")),
            (("000",), ("index",))),
-    # 30 rather than 300/301: 深证A股 already lists 302132.SZ, and the 30x
-    # segment is 创业板 only, so widening it cannot swallow another kind.
+    # 用 30 而不是 300/301：深证A股已经挂牌 302132.SZ，而 30x 段是创业板
+    # 专属，放宽也不会吞掉别的品种。
     "SZ": ((("000", "001", "002", "003", "30"), ("stock",)),
            (("15", "16", "18"), ("fund", "etf")),
            (("39",), ("index",))),
@@ -1851,10 +1804,9 @@ _PRIME_TYPES_BY_PREFIX = {
 
 
 def _prime_tick_types(code):
-    """Instrument kinds to narrow a market token to for `code`, or ().
+    """把行情品种标记收窄到 `code` 对应的品种，或返回 ()。
 
-    () means "not confidently classified" -- the caller must not narrow on this
-    code's behalf.
+    () 表示“无法可靠分类”——调用方不得代这个代码去收窄。
     """
     text = str(code or "").strip().upper()
     if "." not in text:
@@ -1871,9 +1823,9 @@ def _prime_tick_types(code):
 
 
 def _full_tick_params(codes, types=None):
-    """RPC params for get_full_tick. `types` narrows a whole-market token to one
-    instrument kind at REQUEST time -- filtering the reply would still pay QMT's
-    per-instrument cost for everything the exchange lists (issue #104)."""
+    """get_full_tick 的 RPC 参数。`types` 在请求时就把全市场标记收窄到单一
+    品种——对回复做过滤仍要为交易所挂牌的所有标的付 QMT 的逐标的成本
+    （问题 #104）。"""
     params = {"codes": codes}
     if types:
         params["types"] = [types] if isinstance(types, str) else list(types)
@@ -1883,19 +1835,17 @@ def _full_tick_params(codes, types=None):
 _FIELD_LIST_NOTICE = {"shown": False}
 DIRECT_PATH_FIELDS = ("open", "high", "low", "close", "volume", "amount")
 
-# Periods whose preClose big QMT answers as 0.0, and which we therefore fill
-# from daily bars (#166). Measured read-only on 国金 2.1.19.0 / 0.3.19:
-# 1d/1mon/1q/1hy/1y all carry a real preClose; only 1w is zero, for every code
-# tried and under both fill_data settings. Adding a period here needs the same
-# scan first -- the label semantics differ per period and are verified, not
+# preClose 被大 QMT 答成 0.0 的周期，因此改由日线补（#166）。
+# 在国金 2.1.19.0 / 0.3.19 上只读实测：1d/1mon/1q/1hy/1y 都带真实 preClose，
+# 只有 1w 为 0，且对所有试过的代码、两种 fill_data 设置都如此。往这里加周期
+# 必须同样先做实测——各周期的标签语义不同，是验证出来的，不是猜的。
 # assumed.
 PRE_CLOSE_BACKFILL_PERIODS = ("1w",)
 _PRE_CLOSE_PERIOD_STARTS = {"1w": _iso_week_start_label}
 _PRE_CLOSE_NOTICE = {"shown": False}
 
-# Periods whose ongoing bar QMT synthesizes from the request window instead
-# of from all local data (#226). Pinned as a set the way #172 pinned its
-# period list -- a new period enters only with a measurement behind it.
+# 进行中的 K 线由 QMT 按请求窗口（而不是本地全部数据）合成的那些周期
+# （#226）。像 #172 钉住周期列表那样用集合钉住——新周期必须有实测才进来。
 RESYNTH_ONGOING_PERIODS = ("1w", "1mon", "1q", "1hy", "1y")
 RESYNTH_PERIOD_STARTS = {
     "1w": _iso_week_start_label,
@@ -1909,13 +1859,10 @@ _DAILY_RESCUE_NOTICE = {"shown": False}
 
 
 def _in_trading_session(now):
-    """Weekday inside the day session (auction open through the settle
-    margin after close). The resynth used to start at 09:30, but the
-    zero-volume ongoing bar was measured at 09:26 (#307): the terminal's
-    rescue serves a synthesized period bar right after the auction match,
-    before continuous trading opens. After the close the ongoing multi-day
-    bar is finalized and passes through untouched (#226's after-close
-    control)."""
+    """日盘时段内的工作日（集合竞价开盘至收盘后的结算宽限）。重合成过去从
+    09:30 开始，但零成交量的进行中 K 线在 09:26 就测到了（#307）：终端的
+    救援在集合竞价撮合之后、连续交易开盘之前就给出合成周期 K 线。收盘之后
+    进行中的多日 K 线已定稿，原样透传（#226 的盘后对照）。"""
     if now.weekday() > 4:
         return False
     return _dt.time(9, 15) <= now.time() <= _dt.time(15, 5)
@@ -1926,12 +1873,11 @@ def _now():
 
 
 def _notice_field_list_cost(field_list):
-    """Say once that naming fields is what enables the fast path.
+    """说明一次：点名字段才是快路径的开关。
 
-    Not a warning about a mistake: an empty field_list correctly returns all 11
-    columns and only RPC can do that. But the speedup is invisible unless
-    someone tells you it exists (issue #104). Asking for a field the direct
-    path lacks is safe -- it falls back to RPC rather than returning NaN."""
+    这不是在提示谁犯了错：空的 field_list 正确返回全部 11 列，而那只有 RPC
+    做得到。但除非有人告诉你它存在，否则这个提速是看不见的（问题 #104）。
+    索要直连路径没有的字段是安全的——它会退回 RPC，而不是返回 NaN。"""
     if field_list or _FIELD_LIST_NOTICE["shown"]:
         return
     _FIELD_LIST_NOTICE["shown"] = True
@@ -1947,20 +1893,18 @@ def _notice_field_list_cost(field_list):
         pass
 
 
-# Bar subscriptions poll, because there is no server-side push for K-lines: the
-# bridge only exposes ContextInfo.subscribe_whole_quote, which carries ticks.
-# Interval is a floor on how stale a bar can be, not a promise of freshness.
+# K 线订阅靠轮询，因为服务端没有针对 K 线的推送：桥接层只暴露
+# ContextInfo.subscribe_whole_quote，而它只带 tick。间隔是“K 线最多能有多
+# 旧”的下限，而不是新鲜度的承诺。
 DEFAULT_BAR_POLL_INTERVAL_SECONDS = 3.0
 
 
 class _BarPoller(object):
-    """Emit a K-line callback when the newest bar changes.
+    """最新 K 线变化时发出 K 线回调。
 
-    MiniQMT's subscribe_quote pushes each bar update. We approximate it by
-    re-reading the last bars and firing only when the newest one differs, so a
-    caller written against MiniQMT keeps working. Every callback is wrapped:
-    a raising subscriber must not kill the polling thread and silently end the
-    subscription.
+    MiniQMT 的 subscribe_quote 逐根推送 K 线更新。这里通过重读最近几根 K 线、
+    仅当最新一根变化时才触发来近似，使按 MiniQMT 编写的调用方继续可用。
+    每个回调都被包裹：抛异常的订阅者不能杀掉轮询线程并静默终止订阅。
     """
 
     def __init__(self, fetch, callback, interval_seconds, on_error=None,
@@ -1985,12 +1929,12 @@ class _BarPoller(object):
 
     @staticmethod
     def _signature(data):
-        """Identify the newest bar cheaply, without assuming a container type."""
+        """以低成本识别最新一根 K 线，不假设容器类型。"""
         try:
             for value in (data or {}).values():
                 if value is None:
                     continue
-                if hasattr(value, "empty"):          # pandas DataFrame
+                if hasattr(value, "empty"):          # pandas 的 DataFrame
                     if getattr(value, "empty", True):
                         continue
                     return str(value.index[-1]), int(len(value))
@@ -2009,10 +1953,9 @@ class _BarPoller(object):
                 data = self._fetch()
                 signature = self._signature(data)
                 if signature is None:
-                    # No bars for this period. The subscription is live and will
-                    # start firing if data appears, but until then the caller
-                    # gets nothing -- which is indistinguishable from a broken
-                    # subscription unless we say so. Reported once, not per poll.
+                    # 该周期还没有 K 线。订阅是活的，数据出现就会开始触发，
+                    # 但在这之前调用方什么都收不到——除非我们明说，否则这与
+                    # 订阅已坏无法区分。只报告一次，不按轮询次数重复。
                     if not self._reported_no_data:
                         self._reported_no_data = True
                         if self._on_no_data is not None:
@@ -2035,21 +1978,20 @@ _VERSION_WARNED = {"shown": False}
 
 
 def warn_on_version_mismatch(ping_response):
-    """Warn once when the QMT-side bridge is not the build this client is.
+    """当 QMT 侧的桥接层不是本客户端的版本时告警一次。
 
-    Deploying into QMT is a file copy and QMT keeps modules across strategy
-    re-runs, so a stale server behaves like a fix that "did not work". Say so on
-    connect instead of leaving it to be discovered by debugging.
+    部署到 QMT 只是拷文件，而 QMT 在策略重跑之间会保留模块，于是一个过期的
+    服务端表现得像“修了但没生效”。在连接时就说明，而不是留给排查去发现。
 
-    Silent when the versions agree, when the server is too old to report one, or
-    when it has already been said. Never raises: this is on the connect path.
+    版本一致、服务端太老不报版本、或已经说过时静默。从不抛异常：这里在连接
+    路径上。
     """
     if _VERSION_WARNED["shown"]:
         return None
     try:
         server = str((ping_response or {}).get("version") or "")
         if not server:
-            return None      # server predates version reporting; nothing to compare
+            return None      # 服务端早于版本上报；无可比较
         from .version import __version__ as local
 
         if server == local:
@@ -2068,8 +2010,7 @@ def warn_on_version_mismatch(ping_response):
 
 
 def auto_sync_enabled():
-    """Writing into a live trading terminal is opt-in, not a side effect of
-    connecting."""
+    """向运行中的交易终端写入需要显式开启，而不是连接带来的副作用。"""
     return _bool_value(os.environ.get("BIGQMT_AUTO_SYNC"), False)
 
 
@@ -2078,9 +2019,9 @@ class BigQmtXtData:
         self.client = client
         self._subscribe_seq = int(time.time() * 1000)
         self._cache_obj = None
-        self._quote_session = None          # lazily built WholeQuoteClientSession
-        self._quote_session_factory = None  # test hook: returns a session-like object
-        self._bar_pollers = {}              # seq -> _BarPoller, for K-line periods
+        self._quote_session = None          # 惰性构造的 WholeQuoteClientSession
+        self._quote_session_factory = None  # 测试钩子：返回类会话对象
+        self._bar_pollers = {}              # seq -> _BarPoller，用于 K 线周期
         self._bar_poller_lock = threading.Lock()
 
     def _next_seq(self):
@@ -2099,14 +2040,13 @@ class BigQmtXtData:
         return self.client.call(method, params)
 
     def get_full_tick(self, code_list, timeout_seconds=None, types=None, market_fallback=True):
-        """Fetch full tick data for a list of codes.
+        """获取一批代码的全推 tick 数据。
 
-        Args:
-            code_list: stock codes to query.
-            timeout_seconds: per-request RPC timeout. None = auto (30s for whole-market
-                snapshots, else the client default, DEFAULT_RPC_TIMEOUT_SECONDS).
-                Callers can pass a larger value when querying many codes (e.g. 1256
-                ETF options may need 150-180s).
+        参数:
+            code_list: 要查询的股票代码。
+            timeout_seconds: 单次请求的 RPC 超时。None = 自动（全市场快照 30s，
+                否则用客户端默认值 DEFAULT_RPC_TIMEOUT_SECONDS）。查询大量代码时
+                调用方可以传更大的值（例如 1256 个 ETF 期权可能需要 150-180s）。
             market_fallback: True（默认）时，大名单直读不全或失败会扩读交易所
                 再过滤（#104 的恢复设计）；False 时**不扩读**——缺票照实返回
                 部分结果、原异常原样抛出，且市场重读不再把显式超时硬抬到 60s
@@ -2137,15 +2077,15 @@ class BigQmtXtData:
                 return data
             upper_codes = {str(code).strip().upper() for code in codes}
             if upper_codes & {"SH", "SZ", "BJ", "HK"}:
-                # Whole-market snapshots must stay on the demand cache. A live RPC
-                # here would ship ~50k rows on every miss, so surface the timeout.
-                raise TimeoutError("full tick valkey cache timeout: %s" % ",".join(str(code) for code in codes))
-            # Symbol-list miss (cold start / expired snapshot): fall back to a live
-            # RPC so the first call is ~ms instead of a hard wait_seconds stall.
+                # 全市场快照必须留在按需缓存上。这里走实时 RPC 会在每次未命中
+                # 时传约 5 万行，所以直接把超时抛出来。
+                raise TimeoutError("全推 tick 的 valkey 缓存超时: %s" % ",".join(str(code) for code in codes))
+            # 代码清单未命中（冷启动 / 快照过期）：改走实时 RPC，使首次调用约
+            # 几毫秒，而不是死等 wait_seconds。
             rpc_timeout = timeout_seconds if timeout_seconds is not None else None
             return self.client.call("get_full_tick", _full_tick_params(codes, types), timeout_seconds=rpc_timeout) or {}
         upper_codes = {str(code).strip().upper() for code in codes}
-        # Caller-provided timeout takes priority; otherwise auto-detect whole-market.
+        # 调用方给的超时优先；否则自动判断是否全市场。
         if timeout_seconds is not None:
             rpc_timeout = timeout_seconds
         else:
@@ -2181,11 +2121,10 @@ class BigQmtXtData:
                     return merged
                 return recovered
             if failure is not None:
-                # A bare `raise` here has no active exception -- the except
-                # block above has already exited -- so it produced
-                # "RuntimeError: No active exception to reraise" and buried
-                # the real timeout (reported on issue #104). Re-raise the
-                # actual failure, and say why the recovery did not help.
+                # 这里的裸 `raise` 没有活跃异常——上面的 except 块已经退出——
+                # 于是它产生 "RuntimeError: No active exception to reraise"，
+                # 并把真正的超时埋掉（问题 #104 报告的情况）。改为重新抛出实际
+                # 失败，并说明为何恢复没有起作用。
                 if fallback_errors:
                     log.warning(
                         "get_full_tick：%d 个代码直接读取失败（%s），"
@@ -2202,36 +2141,33 @@ class BigQmtXtData:
         return data or {}
 
     def _can_fall_back_to_markets(self, codes, upper_codes):
-        """Only an explicit list of suffixed codes can be recovered this way."""
+        """只有显式的带后缀代码列表才能这样恢复。"""
         if upper_codes & MARKET_TOKENS:
-            return False          # already a whole-market request
+            return False          # 本来就是全市场请求
         if len(codes) <= LARGE_CODE_LIST:
-            return False          # small list: a failure here is a real failure
+            return False          # 小名单：这里的失败就是真失败
         return bool(_markets_of(codes))
 
     def _should_fall_back(self, codes, upper_codes, data):
         if data is None:
-            return True           # the request raised
+            return True           # 请求抛异常了
         if not self._can_fall_back_to_markets(codes, upper_codes):
             return False
-        # Short answer: the server dropped codes, or truncated. Anything missing
-        # is worth one whole-market read rather than silently returning less
-        # than was asked for (issue #104).
+        # 简言之：服务端丢了代码，或被截断。缺的任何东西都值得读一次全市场，
+        # 而不是静默返回比要求更少的内容（问题 #104）。
         return len(data) < len(set(str(c) for c in codes))
 
     def _full_tick_via_markets(self, codes, market_timeout, types=None, errors=None):
-        """Read the exchange(s) these codes live on, then filter to them.
+        """读取这些代码所在的交易所，再过滤到它们。
 
-        A long explicit list is one RPC carrying one timeout, so it either fits
-        or loses everything; a market token is a single cheap argument that
-        cannot truncate.
+        长显式名单就是一次 RPC、一个超时，要么全中要么全丢；而市场标记是单个
+        廉价的参数，无法被截断。
 
-        Narrowed first, "all" only if that came up short. An exchange listing is
-        mostly bonds -- "SH" is 26744 instruments of which 2315 are stocks -- so
-        reading all of it costs 7.4s against 1.08s for the stocks. No reason to
-        pay that when the codes being recovered are stocks (issue #104).
+        先收窄，只有不够时才用 "all"。交易所挂牌以债券为主——"SH" 有 26744
+        个标的，其中 2315 只是股票——所以全读要 7.4s，只读股票 1.08s。要恢复
+        的代码是股票时，没理由付这个成本（问题 #104）。
 
-        ``market_timeout`` 由调用方解析好：显式超时原样用（#373），缺省才
+        ``market_timeout`` 由调用方解析好：显式超时原样用（#373），缺省时才
         按市场读的成本抬到 60s。
         """
         markets = _markets_of(codes)
@@ -2255,13 +2191,13 @@ class BigQmtXtData:
                         if str(key) in wanted:
                             merged[key] = value
             except Exception as exc:
-                # Swallowing the reason here left the caller with nothing to
-                # report; hand it back so the raise can name it (issue #104).
+                # 在这里吞掉原因，会让调用方无从报告；把它带回去，让抛出时
+                # 能点名（问题 #104）。
                 if errors is not None:
                     errors.append(exc)
                 return None
             if len(merged) >= len(wanted):
-                break          # everything asked for; no need to widen
+                break          # 全部拿到；无需扩读
 
         log.warning(
             "get_full_tick：%d 个代码未直接返回；已按 %s 重新读取，"
@@ -2274,12 +2210,11 @@ class BigQmtXtData:
         return merged
 
     def get_deployment_info(self):
-        """Where the QMT-side bridge is running from, and which build it is.
+        """QMT 侧桥接层从哪儿运行，以及是哪个构建版本。
 
-        Returns version / package_dir / qmt_python_dir / strategy_dir /
-        python_version. Use it to check a deploy landed before hunting for a
-        fix that was never actually there -- QMT keeps modules across strategy
-        re-runs, so a forgotten copy and an un-reloaded one look the same.
+        返回 version / package_dir / qmt_python_dir / strategy_dir /
+        python_version。用它先确认部署真的落地，再去追一个其实从未存在过的
+        修复——QMT 在策略重跑之间保留模块，忘了拷贝和没重新加载看起来一样。
         """
         return self.client.call("get_deployment_info", {}) or {}
 
@@ -2306,12 +2241,11 @@ class BigQmtXtData:
         get_instrument_type()，实测能区分 stock / fund / etf / bond / index。
         """
         raise NotImplementedError(
-            "get_stock_type is not usable on Big QMT: the server-side "
-            "ContextInfo.get_stock_type stub returns 0 for every code "
-            "(verified live against a stock, an ETF, a bond and an option, and "
-            "against every code format). Use get_instrument_type(stock_code) "
-            "instead -- it returns "
-            "{'stock': ..., 'fund': ..., 'etf': ..., 'bond': ..., 'index': ...}."
+            "get_stock_type 在大 QMT 上不可用：服务端的 "
+            "ContextInfo.get_stock_type 桩对每个代码都返回 0 "
+            "（已对股票、ETF、债券和期权，以及每种代码格式做过实盘验证）。"
+            "请改用 get_instrument_type(stock_code) —— 它返回 "
+            "{'stock': ..., 'fund': ..., 'etf': ..., 'bond': ..., 'index': ...}。"
         )
 
     def subscribe_l2thousand(self, stock_code, gear_num=None, callback=None):
@@ -2335,7 +2269,7 @@ class BigQmtXtData:
         if name in ("沪深A股", "沪深A股".encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")):
             ticks = self.get_full_tick(["SH", "SZ"])
             return sorted(code for code in ticks.keys() if _is_hs_a_share(code))
-        raise NotImplementedError("sector is not supported by BigQMT compat: %s" % sector_name)
+        raise NotImplementedError("大 QMT 兼容层不支持 sector: %s" % sector_name)
 
     def get_market_data(
         self,
@@ -2359,32 +2293,31 @@ class BigQmtXtData:
             fill_data=fill_data,
         )
         data = self._call("get_market_data", **params)
-        # Self-heal adjusted reads (all-zero bars -> server raw download + retry).
+        # 自愈复权读取（全零 K 线 -> 服务端原始下载后重试）。
         data = self._heal_adjusted("get_market_data", params, data)
-        # The documented MiniQMT shape is dict[field] -> DataFrame indexed by
-        # stock with time columns; Big QMT sends long frames. Convert after
-        # the heal so the heal sees the shape it knows.
+        # 文档化的 MiniQMT 形状是 dict[field] -> 以股票为索引、时间为列的
+        # DataFrame；大 QMT 发的是长表。要在自愈之后转换，使自愈看到它熟悉的
+        # 形状。
         return _to_documented_market_data_shape(data, field_list, stock_list, period)
 
     def _get_market_data_ex_batch(self, params, timeout_seconds=None, use_formula=True,
                                   heal=True):
-        """One RPC's worth of bars, healed and normalized. No caching."""
+        """一次 RPC 取回的 K 线，已修复并规范化。不做缓存。"""
         if use_formula:
             data = self.client.call("get_market_data_ex", params, timeout_seconds=timeout_seconds)
         else:
             # 只在绕路时显式传参——保持既有调用方/桩签名不变。
             data = self.client.call("get_market_data_ex", params, timeout_seconds=timeout_seconds,
                                     use_formula=False)
-        # Self-heal adjusted reads (all-zero bars -> server raw download + retry).
+        # 自愈复权读取（全零 K 线 -> 服务端原始下载后重试）。
         if heal:
             data = self._heal_adjusted("get_market_data_ex", params, data,
                                        timeout_seconds=timeout_seconds)
-        # Normalize Big QMT's stime-indexed frame to MiniQMT shape (time-indexed).
+        # 把大 QMT 以 stime 为索引的 frame 规范成 MiniQMT 形状（以 time 为索引）。
         if isinstance(data, dict):
-            # Capture the degraded-answer markers first: normalisation copies,
-            # slices and drops columns, and pandas only propagates ``attrs``
-            # on a best-effort basis -- a marker that survives on one pandas
-            # version and not the next is worse than none (#237).
+            # 先取出降级答案标记：规范化会拷贝、切片并删列，而 pandas 只在
+            # 尽力而为的程度上传递 ``attrs``——某个标记在这个 pandas 版本上活
+            # 下来、下个版本就没了，比没有更糟（#237）。
             markers = dict((code, _partial_marker(frame))
                            for code, frame in data.items())
             data = _normalize_market_data_result(
@@ -2399,11 +2332,10 @@ class BigQmtXtData:
 
     @staticmethod
     def _pre_close_missing(frame):
-        """True when a frame has a preClose column and no usable value in it.
+        """当 frame 有 preClose 列却没有任何可用值时返回 True。
 
-        "Column present, says nothing" is the #166 symptom. A frame without
-        the column was never asked for it, and one with a single real value
-        came from a terminal that answers -- neither wants filling.
+        “列在，但什么也没说”正是 #166 的症状。没有该列的 frame 本来就没要它；
+        只有一个真实值的 frame 来自会作答的终端——两者都不需要补。
         """
         try:
             column = list(frame["preClose"])
@@ -2417,17 +2349,15 @@ class BigQmtXtData:
 
     def _backfill_pre_close(self, data, period, dividend_type,
                             timeout_seconds=None, use_formula=True, subscribe=None):
-        """Fill an all-zero preClose from daily bars (#166).
+        """用日线补全零的 preClose（#166）。
 
-        Big QMT answers preClose = 0.0 on every ``1w`` bar. The right value,
-        and the one MiniQMT gives, is the daily preClose of the period's FIRST
-        trading day -- which on an ex-dividend day is the adjusted reference
-        price, so it is NOT interchangeable with the previous bar's close even
-        though the two agree in most weeks.
+        大 QMT 对每根 ``1w`` K 线都答 preClose = 0.0。正确值（也是 MiniQMT
+        给出的值）是该周期第一个交易日的日线 preClose——在除权除息日它就是
+        调整后的参考价，因此不能和上一根 K 线的收盘价互换，即使大多数周两者
+        相同。
 
-        Costs one extra daily request, and only when a frame actually came
-        back empty-handed: a terminal that answers preClose pays nothing, and
-        neither does a caller who never asked for the column (#104).
+        代价是多一次日线请求，而且只在 frame 真的空手而归时才发：会答 preClose
+        的终端不用付，从没要过这列的调用方也不用付（#104）。
         """
         period_start = _PRE_CLOSE_PERIOD_STARTS.get(str(period or ""))
         if period_start is None or not isinstance(data, dict):
@@ -2451,14 +2381,14 @@ class BigQmtXtData:
                 field_list=["preClose", "stime"], stock_list=sorted(targets),
                 period="1d", start_time=min(starts), end_time=max(ends),
                 count=-1, dividend_type=dividend_type,
-                # A filled row carries no real preClose and would be picked as
-                # a period's "first trading day" if it were returned (#167).
+                # 补出来的行没有真实 preClose，若被返回会被当成某周期的
+                # “第一个交易日”（#167）。
                 fill_data=False, timeout_seconds=timeout_seconds,
                 use_formula=use_formula, backfill_pre_close=False, subscribe=subscribe,
             )
         except Exception as exc:
-            # Degrade to the terminal's answer. The bars themselves are good;
-            # taking the whole read down over the fill would be the worse bug.
+            # 退回到终端的答案。K 线本身是好的；为这次补值把整次读取搞挂
+            # 才是更糟的 bug。
             log.warning("period=%s 的 preClose 回填已跳过：%s", period, exc)
             return data
 
@@ -2476,7 +2406,7 @@ class BigQmtXtData:
             for position, (label, start) in enumerate(spans):
                 if position >= len(filled):
                     break
-                for day, pre_close in rows:      # ascending -> first match wins
+                for day, pre_close in rows:      # 升序 -> 首个命中即为所需
                     if start <= day <= label:
                         filled[position] = pre_close
                         hits += 1
@@ -2492,7 +2422,7 @@ class BigQmtXtData:
 
     @staticmethod
     def _daily_pre_close_rows(frame):
-        """[(YYYYMMDD, preClose)] ascending, skipping cells with no number."""
+        """升序的 [(YYYYMMDD, preClose)]，跳过没有数字的单元格。"""
         labels = _frame_bar_labels(frame) if frame is not None else []
         if not labels:
             return []
@@ -2511,45 +2441,37 @@ class BigQmtXtData:
     def _resynth_ongoing_multiday_bars(self, data, period, start_time,
                                        end_time, dividend_type,
                                        timeout_seconds=None, use_formula=True, subscribe=None):
-        """Rebuild the in-progress multi-day bar from the period's daily bars (#226).
+        """用该周期的日线重建进行中的多日 K 线（#226）。
 
-        Big QMT synthesizes an ongoing 1w/1mon/1q/1hy/1y bar from the bars in
-        the REQUEST window, so a window covering only today answers the weekly
-        bar with today's volume and the week's earlier days lost. MiniQMT's
-        get_local_data synthesizes from ALL local base data and start/end only
-        filters the returned rows -- this rebuild is what makes the bridge
-        match that.
+        大 QMT 用 **请求窗口** 内的 K 线合成进行中的 1w/1mon/1q/1hy/1y K 线，
+        所以只覆盖今天的窗口会用今天的成交量回答周线，本周前几天的量丢了。
+        MiniQMT 的 get_local_data 用 **全部本地基础数据** 合成，start/end 只
+        过滤返回的行——本重建就是让桥接层与之一致的东西。
 
-        Two result-driven triggers on top of the original #226 window shape
-        (both from #307, measured live on terminal build 2.0.8.300):
+        在 #226 原有窗口判据之上，还有两个由结果驱动的触发条件（都来自 #307，
+        在终端 2.0.8.300 上实盘测得）：
 
-        * reconcile -- the last bar IS the ongoing period: its volume is
-          checked against the daily sum of that period, whatever the window
-          shape. The zero-volume form was measured at 09:26 right after the
-          auction match (the rescue's synthesized bar carries no period
-          accumulation) and the partial-days form is the original #226
-          truncation; a window covering the whole period is NO LONGER an
-          exemption, because the covered answer was measured wrong too. A
-          bar that already agrees passes through untouched, so the one
-          extra daily read is the only cost on a healthy terminal.
-        * append -- the last bar is finalized history but the request window
-          covers the current period (start <= its start) and that period has
-          daily bars: the MISSING ongoing bar is appended, synthesized from
-          the dailies. Measured mid-session: the in-session answer simply
-          drops the current period's bar.
+        * reconcile —— 最后一根 K 线就是进行中的周期：无论窗口是什么形状，都用
+          该周期的日线合计核对它的成交量。零成交量形态在集合竞价撮合之后
+          09:26 就测到（救援合成的那根 K 线不带周期累计量），部分天数形态是
+          #226 原本的截断；覆盖整个周期的窗口 **不再** 豁免，因为覆盖到的答案
+          也被测出是错的。已经对得上的 K 线原样通过，所以在健康终端上唯一成本
+          就是多读一次日线。
+        * append —— 最后一根 K 线是已定稿的历史，但请求窗口覆盖当前周期
+          （start <= 它的起点）且该周期已有日线：把 **缺失的** 进行中 K 线用
+          日线合成后追加。盘中实测：盘内答案干脆丢掉了当前周期的 K 线。
 
-        Guards kept: multi-day periods only, an explicit start_time, the
-        clock inside the day session (09:15..15:05), nothing after the close
-        when the bar is finalized.
+        保留的守卫：仅限多日周期、明确的 start_time、时钟在日盘时段内
+        （09:15..15:05）、收盘后 K 线已定稿时不做。
 
-        Degrades like the preClose backfill (#166): a failed or empty daily
-        read keeps the terminal's answer and warns once; nothing raises.
+        降级方式与 preClose 回填相同（#166）：日线读取失败或为空时保留终端的
+        答案并告警一次；不抛异常。
         """
         if str(period or "") not in RESYNTH_ONGOING_PERIODS or not isinstance(data, dict):
             return data
         start_text = str(start_time or "")
         if not start_text:
-            return data          # count-based reads never showed the truncation
+            return data          # 按根数读取从未出现截断
         now = _now()
         if not _in_trading_session(now):
             return data
@@ -2559,9 +2481,8 @@ class BigQmtXtData:
         current_start = RESYNTH_PERIOD_STARTS[period](today)
         if current_start is None:
             return data
-        # A window "covers" the ongoing period only when BOTH ends straddle
-        # it: reading pure history (an end inside a past period) never asked
-        # for the ongoing bar, so appending one there would invent data.
+        # 只有当窗口两端都跨过进行中周期时才说它“覆盖”了该周期：读纯历史
+        # （终点落在过去某周期内）从没要求进行中的 K 线，在那里追加等于造数据。
         covers_current = start_day <= current_start and (
             not end_day or end_day >= current_start)
 
@@ -2569,7 +2490,7 @@ class BigQmtXtData:
         for code, frame in data.items():
             labels = _frame_bar_labels(frame)
             if not labels:
-                # No rows at all: append when the window covers the period.
+                # 一行都没有：窗口覆盖该周期时追加。
                 if covers_current:
                     append[code] = current_start
                 continue
@@ -2579,13 +2500,13 @@ class BigQmtXtData:
             if period_start is None or period_end is None:
                 continue
             if period_start <= today <= period_end:
-                # The ongoing bar itself: reconcile against the daily sum
-                # regardless of the window shape (#307).
+                # 就是进行中的那根 K 线：无论窗口形状如何，都按日线合计核对
+                # （#307）。
                 reconcile[code] = period_start
                 continue
             if today > period_end and covers_current:
-                # Finalized history where the ongoing bar should also be:
-                # append it from the period's dailies (#307 missing form).
+                # 已定稿的历史，而进行中的 K 线本该也在：用该周期的日线追加
+                # 一笔（#307 的缺失形态）。
                 append[code] = current_start
         if not reconcile and not append:
             return data
@@ -2602,8 +2523,7 @@ class BigQmtXtData:
                 backfill_pre_close=False, resynth_ongoing_multiday=False, subscribe=subscribe,
             )
         except Exception as exc:
-            # The terminal's answer was good enough to serve; taking the whole
-            # read down over the rebuild would be the worse bug.
+            # 终端的答案已足够可服务；为这次重建把整次读取搞挂才是更糟的 bug。
             log.warning("正在形成的 %s K 线重建已跳过：%s", period, exc)
             return data
 
@@ -2615,7 +2535,7 @@ class BigQmtXtData:
             if summary is None:
                 continue
             if not self._last_bar_disagrees(frame, summary):
-                continue          # already the daily sum: leave it untouched
+                continue          # 已等于日线合计：不动它
             if self._write_last_bar(frame, summary):
                 rebuilt += 1
         for code, period_start in append.items():
@@ -2623,7 +2543,7 @@ class BigQmtXtData:
             daily_frame = daily.get(code) if isinstance(daily, dict) else None
             summary = self._sum_daily_bars(daily_frame, period_start, today)
             if summary is None:
-                continue          # no dailies in the period yet: nothing to add
+                continue          # 该周期还没有日线：无可补充
             label = _period_end_label(period, period_start)
             if label is None:
                 continue
@@ -2635,19 +2555,15 @@ class BigQmtXtData:
 
     def _rescue_ongoing_daily_bar(self, data, period, end_time, dividend_type,
                                   timeout_seconds=None):
-        """Append today's forming 1d bar when the read stops at the previous
-        trading day (#226/#307 family, the 1d case).
+        """读取止于上一交易日时，补上今天正在形成的 1d K 线
+        （#226/#307 系列中的 1d 情形）。
 
-        The live daily read carries today's partial bar mid-session (measured
-        on 2.1.33 intraday), but two read paths lose it: a client-cache frame
-        written before today's session -- nothing between
-        download_history_data2 and this read refreshes the cache -- and, on
-        some terminals, a local-store read right after an incremental
-        download. Same guards as the multiday resynth (weekday inside
-        09:15..15:05, a request whose window still covers today) and the same
-        degrade: a failed or empty live read keeps the original answer and
-        warns once. The appended row lives in the returned frame only; it is
-        never written back into the cache.
+        实盘日线读取在盘中是带今天的部分 K 线的（2.1.33 盘中实测），但有两条
+        读取路径会丢掉它：今天开盘前写入的客户端缓存 frame——从
+        download_history_data2 到这次读取之间没有任何东西刷新缓存——以及某些
+        终端上增量下载后立刻读本地库。守卫与多日重合成相同（工作日且时钟在
+        09:15..15:05、请求窗口仍覆盖今天），降级也相同：实时读取失败或为空时
+        保留原答案并告警一次。追加的行只存在于返回的 frame 中，绝不写回缓存。
         """
         if str(period or "") != "1d" or not isinstance(data, dict) or not data:
             return data
@@ -2657,7 +2573,7 @@ class BigQmtXtData:
         today = now.strftime("%Y%m%d")
         end_day = _digits_only(str(end_time or ""))[:8]
         if end_day and end_day < today:
-            return data          # a pure-history window never asked for today
+            return data          # 纯历史窗口从没要求今天
         wanted = []
         for code, frame in data.items():
             labels = _frame_bar_labels(frame) if frame is not None else None
@@ -2675,8 +2591,7 @@ class BigQmtXtData:
                 backfill_pre_close=False, resynth_ongoing_multiday=False,
             )
         except Exception as exc:
-            # The local answer was good enough to serve; taking the whole
-            # read down over the appended bar would be the worse bug.
+            # 本地答案已足够可服务；为追加这一根把整次读取搞挂才是更糟的 bug。
             log.warning("正在形成的 1d K 线补救已跳过：%s", exc)
             return data
         appended = 0
@@ -2684,7 +2599,7 @@ class BigQmtXtData:
             live_frame = live.get(code) if isinstance(live, dict) else None
             summary = self._sum_daily_bars(live_frame, today, today)
             if summary is None:
-                continue          # no live bar yet (pre-open): nothing to add
+                continue          # 还没有实时 K 线（盘前）：无可补充
             if self._append_ongoing_bar(data[code], today, summary):
                 appended += 1
         if appended:
@@ -2693,7 +2608,7 @@ class BigQmtXtData:
 
     @staticmethod
     def _notice_1d_rescue(appended):
-        """Say once that today's forming daily bar was appended here."""
+        """说明一次：今天正在形成的日线是在这里追加的。"""
         if _DAILY_RESCUE_NOTICE["shown"]:
             return
         _DAILY_RESCUE_NOTICE["shown"] = True
@@ -2709,23 +2624,21 @@ class BigQmtXtData:
 
     @staticmethod
     def _last_bar_disagrees(frame, summary):
-        """True when the last bar's volume differs from the daily sum.
+        """最后一根 K 线的成交量与日线合计不同时返回 True。
 
-        Volume is the reconciliation key (#307): every broken form measured
-        so far -- the 09:26 zero-volume rescue bar, the #226 window
-        truncation, a partial-days synthesis -- shows up there. A frame that
-        never asked for the volume column cannot be proved right; reporting
-        disagreement keeps the rebuild as the fallback for those.
+        成交量是核对键（#307）：目前测到的每种坏形态——09:26 的零成交量救援
+        K 线、#226 的窗口截断、部分天数合成——都体现在这里。没有要求 volume
+        列的 frame 无法证明正确；报告不一致可让重建继续作为这些情况的兜底。
         """
         try:
             values = list(frame["volume"])
         except Exception:
-            return True          # no volume column: cannot prove agreement
+            return True          # 没有 volume 列：无法证明一致
         if not values:
             return True
         wanted = summary.get("volume")
         if wanted is None:
-            return False         # nothing to reconcile against
+            return False         # 没有可核对的对象
         current = _bar_float(values[-1])
         if current is None:
             return True
@@ -2733,7 +2646,7 @@ class BigQmtXtData:
 
     @staticmethod
     def _append_ongoing_bar(frame, label, summary):
-        """Append the missing ongoing bar, only into columns the frame has."""
+        """追加缺失的进行中 K 线，只写 frame 已有的列。"""
         row = {name: value for name, value in summary.items()
                if value is not None and name in list(frame.columns)}
         if not row:
@@ -2746,8 +2659,8 @@ class BigQmtXtData:
 
     @staticmethod
     def _sum_daily_bars(frame, period_start, today):
-        """open/high/low/close/volume/amount for one ongoing period from its
-        daily bars, or None when there is nothing to sum."""
+        """由一个进行中周期的日线算出 open/high/low/close/volume/amount，
+        无可合计时返回 None。"""
         labels = _frame_bar_labels(frame) if frame is not None else None
         if not labels:
             return None
@@ -2779,8 +2692,8 @@ class BigQmtXtData:
 
     @staticmethod
     def _write_last_bar(frame, summary):
-        """Write the rebuilt values into the last bar, only into columns the
-        caller actually asked for. True when anything was written."""
+        """把重建出的值写入最后一根 K 线，只写调用方真正要过的列。
+        有写入时返回 True。"""
         wrote = False
         for name, value in summary.items():
             if value is None:
@@ -2788,7 +2701,7 @@ class BigQmtXtData:
             try:
                 values = list(frame[name])
             except Exception:
-                continue          # the column was never requested
+                continue          # 该列从未被要求
             if not values:
                 continue
             values[-1] = value
@@ -2801,7 +2714,7 @@ class BigQmtXtData:
 
     @staticmethod
     def _notice_resynth_ongoing(period, count, appended=0):
-        """Say once that ongoing bars are rebuilt here, not answered by QMT."""
+        """说明一次：进行中的 K 线是在这里重建的，不是 QMT 给的。"""
         if _RESYNTH_NOTICE["shown"]:
             return
         _RESYNTH_NOTICE["shown"] = True
@@ -2818,7 +2731,7 @@ class BigQmtXtData:
 
     @staticmethod
     def _notice_pre_close_backfill(period):
-        """Say once that these preClose values are derived, not the terminal's."""
+        """说明一次：这些 preClose 是推导出来的，不是终端给的。"""
         if _PRE_CLOSE_NOTICE["shown"]:
             return
         _PRE_CLOSE_NOTICE["shown"] = True
@@ -2851,42 +2764,35 @@ class BigQmtXtData:
         heal=True,
         subscribe=None,
     ):
-        """Pull bars over RPC, in batches of ``chunk_size`` codes.
+        """通过 RPC 拉 K 线，每批 ``chunk_size`` 个代码。
 
-        ``heal=False`` skips the self-heal that answers an unready raw store
-        with a server-side raw download. The one caller that must turn it
-        off is ``download_history_data2``'s readiness poll (#275): it is
-        waiting for a download it just submitted, and healing there
-        re-submits that same download every 1.5s round, pushing the landing
-        it is waiting for further back until the 60s budget is gone.
+        ``heal=False`` 跳过自愈——自愈会在原始库未就绪时改用服务端原始下载
+        作答。唯一必须关掉它的是 ``download_history_data2`` 的就绪轮询
+        （#275）：它在等自己刚提交的下载，而在这里自愈会每 1.5s 一轮重新提交
+        同一次下载，把它等待的落地时间一再推后，直到 60s 预算耗尽。
 
         ``subscribe`` 是 QMT 原生签名的最后一个参数：True（大 QMT 默认）会把
         查过的标的塞进常驻内存订阅池，批量拉分钟线时终端内存单调上涨直到崩溃
         （#361）；False 只读本地已下载数据。缺省 None = 不传、维持原生默认。
         批量历史回补请显式传 ``subscribe=False``。
 
-        Cache-through: whatever is fetched is written to the local cache (keyed
-        by dividend_type), so it stays the latest -- important for 前复权 data,
-        whose history re-scales on each dividend.
+        缓存贯通：取到的内容都会写入本地缓存（按 dividend_type 分键），因此它
+        始终是最新的——这对前复权数据很重要，它的历史会随每次分红重新缩放。
 
-        Batching exists because one request carrying every code shares a single
-        RPC timeout (6s by default), so a wide stock_list times out and loses
-        the whole pull rather than degrading (issue #47). Splitting keeps each
-        request small enough to answer, and a batch that still fails only costs
-        its own codes -- the rest are returned.
+        分批存在的原因是：一个携带全部代码的请求共用一个 RPC 超时（默认 6s），
+        于是宽的 stock_list 会超时并丢掉整次拉取，而不是降级（问题 #47）。拆批
+        让每个请求小到能回答，仍然失败的批次只损失它自己的代码——其余照常返回。
 
-        ``chunk_size=0`` restores the old single-request behaviour.
+        ``chunk_size=0`` 恢复旧的单请求行为。
 
-        An empty ``field_list`` means "every field", which only the RPC path can
-        answer: FormulaServer has the six bar columns plus time, and not the
-        four daily ones (settelementPrice, openInterest, preClose,
-        suspendFlag). Naming the fields you actually want is what unlocks the
-        direct path -- 0.015s against 5.8s, measured (issue #104).
+        空的 ``field_list`` 表示“全部字段”，而那只有 RPC 路径能回答：
+        FormulaServer 有六个 K 线列加 time，没有那四个日线列
+        （settelementPrice、openInterest、preClose、suspendFlag）。点名你真正
+        想要的字段，才是打开直连路径的钥匙——实测 0.015s 对 5.8s（问题 #104）。
 
-        Asking it for a field it lacks is now refused at the router and served
-        by RPC instead. It used to answer with a column of NaN, so naming all
-        eleven columns looked like a free speedup and quietly cost four of them
-        (see formula_server.SERVED_FIELDS).
+        向它索要它没有的字段，现在会在路由器处被拒绝并改由 RPC 提供。以前它会
+        用一列 NaN 作答，于是点名全部 11 列看起来是免费提速，实际悄悄少给了
+        四列（见 formula_server.SERVED_FIELDS）。
         """
         _notice_field_list_cost(field_list)
         codes = list(stock_list or [])
@@ -2920,15 +2826,14 @@ class BigQmtXtData:
                         use_formula=use_formula, heal=heal,
                     )
                 except Exception as exc:
-                    # Losing one batch must not lose the others: a partial
-                    # result beats an exception when 500 codes were asked for.
+                    # 丢掉一批不能连带丢掉其它批：在请求了 500 个代码时，
+                    # 部分结果胜过异常。
                     failures.append((batch, exc))
                     continue
                 if isinstance(part, dict):
                     data.update(part)
             if failures and not data:
-                # Nothing came back at all -- surface the first cause rather
-                # than returning a silent empty dict.
+                # 什么都没有回来——抛出第一个原因，而不是静默返回空 dict。
                 raise failures[0][1]
             for batch, exc in failures:
                 print("[bigqmt_client] get_market_data_ex 批量读取失败"
@@ -2936,16 +2841,16 @@ class BigQmtXtData:
                       % (len(batch), batch[0] if batch else "", exc))
 
         if backfill_pre_close:
-            # Before the cache write, so the cache keeps the corrected bars
-            # rather than a copy of the zeros (#166).
+            # 在写缓存之前，这样缓存保留的是修正后的 K 线，而不是全零那份
+            # （#166）。
             data = self._backfill_pre_close(
                 data, period=period, dividend_type=dividend_type,
                 timeout_seconds=timeout_seconds, use_formula=use_formula, subscribe=subscribe,
             )
 
         if resynth_ongoing_multiday:
-            # Same rule as the backfill: the cache keeps the rebuilt bar, not
-            # the window-truncated one (#226).
+            # 与回填同一规则：缓存保留重建后的 K 线，而不是被窗口截断的那根
+            # （#226）。
             data = self._resynth_ongoing_multiday_bars(
                 data, period=period, start_time=start_time, end_time=end_time,
                 dividend_type=dividend_type, timeout_seconds=timeout_seconds,
@@ -2975,21 +2880,20 @@ class BigQmtXtData:
         data_dir=None,
         resynth_ongoing_multiday=True,
     ):
-        """Read bars from the CLIENT-side local cache — no RPC to Big QMT.
+        """从 **客户端** 本地缓存读取 K 线——不发 RPC 给大 QMT。
 
-        Returns a dict {code: DataFrame}. A cache-missed code is omitted, unless
-        local_cache_fallback_rpc is enabled (then it is fetched + cached over RPC).
+        返回 dict {code: DataFrame}。缓存未命中的代码会被省略，除非开启了
+        local_cache_fallback_rpc（那时会通过 RPC 取回并缓存）。
 
-        The cache-less RPC branch answers from the terminal's local files and
-        gets the same ongoing multi-day reconciliation get_market_data_ex has
-        (#226/#307): with the cache off this is THE read callers use for
-        trusted local data, and the terminal's synthesized-period answer drops
-        or zeroes the ongoing bar there just the same.
+        无缓存的 RPC 分支从终端本地文件作答，并做与 get_market_data_ex 相同的
+        进行中多日核对（#226/#307）：关掉缓存后，这就是调用方读取可信本地数据
+        所用的那个调用，而终端合成的周期答案在那里同样会丢掉或清零进行中的
+        K 线。
         """
         codes = [str(c) for c in (stock_list or []) if str(c or "").strip()]
         cache = self._local_cache()
         if cache is None:
-            # Cache disabled -> behave like a plain RPC local-data read.
+            # 缓存已关 -> 行为等同普通 RPC 本地数据读取。
             data = self._call(
                 "get_local_data",
                 field_list=_as_list(field_list),
@@ -3004,10 +2908,9 @@ class BigQmtXtData:
             )
             if (resynth_ongoing_multiday
                     and str(period or "") in RESYNTH_ONGOING_PERIODS):
-                # The raw local read answers a bare frame for one code and a
-                # {code: frame} dict for several (#307 was reported through
-                # the dict shape); wrap the single-code frame so both get the
-                # same reconciliation, then unwrap.
+                # 原始本地读取对单代码返回裸 frame，对多代码返回 {code: frame}
+                # 的 dict（#307 就是通过 dict 形状报告的）；把单代码 frame 包装
+                # 起来，使两者走同一套核对，然后再拆包。
                 single = None
                 payload = data
                 if not isinstance(data, dict) and codes:
@@ -3020,9 +2923,8 @@ class BigQmtXtData:
                     )
                 data = payload.get(single) if single is not None else payload
             if resynth_ongoing_multiday and str(period or "") == "1d":
-                # The 1d twin of the block above: a forming daily bar the
-                # local answer dropped is appended from the live read. The
-                # single-code frame gets the same wrap/unwrap treatment.
+                # 上面那段在 1d 上的孪生：本地答案丢掉的正在形成的日线，从
+                # 实时读取补上。单代码 frame 同样走一遍包装/拆包。
                 single = None
                 payload = data
                 if not isinstance(data, dict) and codes:
@@ -3060,9 +2962,8 @@ class BigQmtXtData:
                         fields,
                     )
         if result and resynth_ongoing_multiday and str(period or "") == "1d":
-            # The cache branch is where a stale frame bites: a file written
-            # before today's session serves all day with the last bar at the
-            # previous trading day, and downloads never refresh it.
+            # 缓存分支才是过期 frame 咬人的地方：今天开盘前写入的文件会用最后
+            # 一根停在上一个交易日的 K 线服务一整天，而下载从不刷新它。
             result = self._rescue_ongoing_daily_bar(
                 result, period=period, end_time=end_time,
                 dividend_type=dividend_type)
@@ -3080,18 +2981,17 @@ class BigQmtXtData:
 
     @staticmethod
     def _is_all_zero_any(data):
-        """Detect the all-zero adjusted-bars symptom (server lacks raw data).
+        """识别复权 K 线全为零的症状（服务端缺原始数据）。
 
-        Big QMT computes front/back-adjusted bars from raw bars + dividend
-        factors; when those are missing server-side the price columns come
-        back all 0.0 (only the last bar may hold the live price). Recursively
-        handles DataFrame, {code: DataFrame} and {field: {code: [..]}} shapes.
+        大 QMT 由原始 K 线 + 分红因子计算前/后复权 K 线；服务端缺这些数据时
+        价格列会全为 0.0（只有最后一根可能带实时价）。递归处理 DataFrame、
+        {code: DataFrame} 和 {field: {code: [..]}} 三种形状。
         """
         try:
             if data is None:
                 return False
             cols = getattr(data, "columns", None)
-            if cols is not None:  # pandas DataFrame
+            if cols is not None:  # pandas 的 DataFrame
                 if "close" not in list(cols):
                     return False
                 closes = data["close"]
@@ -3112,20 +3012,18 @@ class BigQmtXtData:
 
     @staticmethod
     def _is_placeholder_frame(frame):
-        """One code's frame is a no-trade placeholder: every bar has
-        ``volume == 0`` and ``suspendFlag == 1``.
+        """单个代码的 frame 是无成交占位：每根 K 线 ``volume == 0`` 且
+        ``suspendFlag == 1``。
 
-        Big QMT answers a window it has no local bars for with placeholder
-        bars rather than an empty frame, and the fill differs by build. The
-        国金 terminal fills zeros (the all-zero shape ``_is_all_zero_any``
-        catches). A 华泰 terminal on 0.3.40 filled the previous close into
-        open/high/low/close instead (#339, @wolfeee: 002594.SZ 1m from
-        20260918 answered 150 bars dated 20260919 -- a Saturday -- all at
-        84.3, volume 0, suspendFlag 1). Nonzero prices slip past the
-        all-zero detector, so the heal never fired and the caller was handed
-        a day of flat fake bars with nothing said. Both columns are required:
-        a frame without ``suspendFlag`` (the FormulaServer six-column path)
-        never matches, and one nonzero volume anywhere means real trades.
+        对没有本地 K 线的窗口，大 QMT 会用占位 K 线作答而不是空表，填充内容
+        还因构建而异。国金终端填 0（即 ``_is_all_zero_any`` 抓到的全零形状）。
+        0.3.40 上的一个华泰终端则把前收填进 open/high/low/close（#339，
+        @wolfeee：20260918 起 002594.SZ 的 1m 答了 150 根日期为 20260919——
+        一个周六——的 K 线，全为 84.3，volume 0，suspendFlag 1）。非零价格会
+        绕过全零检测器，于是自愈从未触发，调用方拿到一整天的横盘假 K 线而
+        没有任何提示。两列都是必需的：没有 ``suspendFlag`` 的 frame
+        （FormulaServer 的六列路径）永远不会命中，而任何一处非零成交量都说明
+        有真实成交。
         """
         cols = getattr(frame, "columns", None)
         if cols is None:
@@ -3142,14 +3040,12 @@ class BigQmtXtData:
 
     @staticmethod
     def _is_placeholder_all(data):
-        """Every served frame is a placeholder (see ``_is_placeholder_frame``).
+        """返回的每个 frame 都是占位（见 ``_is_placeholder_frame``）。
 
-        ``all`` rather than ``any`` on purpose: a genuinely suspended stock
-        answers the same shape truthfully, and one of those inside a
-        portfolio read must not turn the whole read into a per-call heal
-        (download + sleep + re-read). Every code flat at once is the
-        raw-store-not-populated signal, the same reasoning as the majority
-        guard on the none-adjusted branch.
+        有意用 ``all`` 而不是 ``any``：真正停牌的股票确实会诚实地答出同样形状，
+        而组合读取中出现这样一只，绝不能把整次读取变成每次调用的自愈
+        （下载 + 睡眠 + 重读）。所有代码同时走平才是原始库未填充的信号，与非
+        复权分支上的多数守卫同理。
         """
         try:
             cols = getattr(data, "columns", None)
@@ -3165,7 +3061,7 @@ class BigQmtXtData:
             return False
 
     def _ensure_server_raw(self, codes, period, start_time, end_time):
-        """Trigger a server-side raw download so adjusted bars can be computed."""
+        """触发服务端原始下载，使复权 K 线可以算出。"""
         try:
             self.client.call(
                 "download_history_data2",
@@ -3182,19 +3078,16 @@ class BigQmtXtData:
 
     @staticmethod
     def _served_codes(data):
-        """Codes the server actually served, across both return shapes:
-        get_market_data_ex is code-keyed ({code: DataFrame}), get_market_data
-        is field-keyed ({field: {code: [..]}}) -- reading keys off the wrong
-        level would make every code look missing.
+        """服务端实际返回的代码，覆盖两种返回形状：
+        get_market_data_ex 以代码为键（{code: DataFrame}），get_market_data
+        以字段为键（{field: {code: [..]}}）——在错误的层级上读键会让每个代码
+        都显得缺失。
 
-        A code counts only when it carries at least one row (#387): the
-        server fills an empty envelope for every requested code the native
-        read did not return, and counting the envelope as served made the
-        missing-majority heal guard compute missing=0 and skip the raw
-        download entirely -- 14 of 17 natively-failed minute codes came
-        back as empty frames and heal never fired. Placeholder frames keep
-        counting as served: they have rows (volume 0 / suspendFlag 1), so
-        the #339 placeholder branch above still owns them."""
+        只有携带至少一行（#387）的代码才算数：服务端会为每个被请求、但原生
+        读取没有返回的代码填入空信封，而把空信封算作已返回，会让缺失多数自愈
+        守计算出 missing=0 从而完全跳过原始下载——17 个原生失败的分钟代码中
+        有 14 个以空 frame 返回，自愈从未触发。占位 frame 仍算作已返回：它们
+        有行（volume 0 / suspendFlag 1），所以上面的 #339 占位分支仍然管它们。"""
         if not isinstance(data, dict):
             return set()
 
@@ -3210,33 +3103,26 @@ class BigQmtXtData:
         return {code for code, frame in data.items() if _rows(frame) > 0}
 
     def _heal_adjusted(self, method, params, data, wait_seconds=2.0, timeout_seconds=None):
-        """Self-heal reads served from an unready raw store: if the adjusted
-        pull came back all-zero, or a none-adjusted pull came back missing
-        most requested codes, or every code came back as a no-trade
-        placeholder frame (#339), trigger a server-side raw download, wait
-        for async landing, retry once."""
+        """对来自未就绪原始库的读取做自愈：若复权拉取全为零，或非复权拉取缺了
+        大部分请求的代码，或每个代码都返回无成交占位 frame（#339），则触发
+        服务端原始下载，等待异步落地，重试一次。"""
         dividend_type = str(params.get("dividend_type") or "none").lower()
         codes = list(params.get("stock_list") or params.get("stock_code") or [])
         if not codes:
             return data
         if self._is_placeholder_all(data):
-            # Applies on both branches: the placeholder fill is a raw-store
-            # answer, not an adjustment artefact, so a none-adjusted read
-            # gets the same flat bars -- and those codes count as *served*,
-            # which is why the missing-majority guard below never sees them.
+            # 两个分支都适用：占位填充是原始库的答案，不是复权产物，所以非复权
+            # 读取也会拿到同样的横盘 K 线——而那些代码算作 *已返回*，这正是下面
+            # 的缺失多数守卫看不到它们的原因。
             pass
         elif dividend_type in ("", "none"):
-            # None-adjusted bars are never zero-filled, so the all-zero
-            # detector does not apply -- a *missing* code means the server
-            # has no raw bars for it at all. Big QMT's raw store is not
-            # auto-populated market-wide (a --tick pipeline read 8 of 5225
-            # codes on 2026-08-30 because nothing ever downloaded the raw
-            # dailies), so heal that the same way. But a full-market read
-            # always has a few codes the server can never serve (delisted,
-            # suspended, no quote permission), and healing on *any* missing
-            # code made those a per-call cost -- raw download + sleep + full
-            # re-read, every time. Heal only when the majority came back
-            # missing: that is the raw-store-not-populated signal.
+            # 非复权 K 线从不被填零，所以全零检测器不适用——代码 *缺失* 意味着
+            # 服务端根本没有它的原始 K 线。大 QMT 的原始库不会全市场自动填充
+            # （2026-08-30 一条 --tick 管道只读到 5225 个代码中的 8 个，因为从来
+            # 没人下载过原始日线），所以也用同样方式自愈。但全市场读取总有几个
+            # 服务端永远给不了的代码（退市、停牌、无行情权限），而在 *任何* 代码
+            # 缺失时自愈会让它们变成每次调用的成本——每次都是原始下载 + 睡眠 +
+            # 全量重读。只在多数缺失时自愈：那才是原始库未填充的信号。
             served = self._served_codes(data)
             missing = sum(1 for code in codes if code not in served)
             if missing < max(1, len(codes) // 2):
@@ -3255,11 +3141,9 @@ class BigQmtXtData:
         else:
             healed = self._call(method, **params)
         if self._is_placeholder_all(healed):
-            # The download did not change the answer: either the terminal
-            # has no data to download for this window (a real suspension,
-            # or the reporter's terminal where the download RPC itself
-            # answers False, #339) -- say so rather than hand back a flat
-            # frame that reads like bars.
+            # 下载没有改变答案：要么终端这个窗口本就没有数据可下（真停牌，或
+            # 报告者那种下载 RPC 本身回 False 的终端，#339）——那就直说，而不是
+            # 交回一个读起来像 K 线的横盘 frame。
             log.warning(
                 "%s %s %s %s~%s：服务端下载并重试后，每根 K 线仍是"
                 "volume=0 / suspendFlag=1。这些是大 QMT 的占位 K 线，并非真实成交；"
@@ -3273,7 +3157,7 @@ class BigQmtXtData:
         return healed
 
     def _pull_and_cache(self, codes, period, start_time, end_time, count, dividend_type="none"):
-        """Fetch codes over RPC (get_market_data_ex already caches them)."""
+        """通过 RPC 拉取代码（get_market_data_ex 已经会缓存它们）。"""
         data = self.get_market_data_ex(
             field_list=DEFAULT_DOWNLOAD_FIELDS,
             stock_list=list(codes),
@@ -3291,16 +3175,14 @@ class BigQmtXtData:
         return out
 
     def subscribe_quote(self, stock_code, period="1d", start_time="", end_time="", count=0, callback=None):
-        """Subscribe to one instrument, MiniQMT-style: the callback keeps firing.
+        """按 MiniQMT 的方式订阅一个标的：回调会持续触发。
 
-        This used to invoke the callback exactly once and never again -- a
-        one-shot fetch wearing a subscription's name, which is worse than not
-        having it, because it looks like it works (issue #95).
+        过去它只调用一次回调、之后再无消息——挂着订阅的名字做一次性拉取，比
+        没有更糟，因为看起来像是能用的（问题 #95）。
 
-        Ticks ride the whole-quote push channel; a single code is just a
-        one-element code list. K-lines have no server-side push -- the bridge
-        only exposes ContextInfo.subscribe_whole_quote, which carries ticks --
-        so they are polled and emitted when the newest bar changes.
+        tick 走全推推送通道；单个代码就是单元素代码列表。K 线没有服务端推送
+        ——桥接层只暴露 ContextInfo.subscribe_whole_quote，而它只带 tick——所以
+        K 线靠轮询，最新一根变化时才发出。
         """
         payload = {
             "stock_code": stock_code,
@@ -3314,8 +3196,8 @@ class BigQmtXtData:
             session = self._whole_quote_session()
             session.start()
             seq = session.subscribe_whole_quote([stock_code], callback=callback)
-            # The whole-quote callback is incremental; prime it with a snapshot
-            # so a subscriber is not left with nothing until the first change.
+            # 全推回调是增量的；先用一次快照给它打底，使订阅者不至于在第一次
+            # 变化之前什么都拿不到。
             if callback is not None:
                 try:
                     callback(self.get_full_tick([stock_code]))
@@ -3361,9 +3243,8 @@ class BigQmtXtData:
             return DEFAULT_BAR_POLL_INTERVAL_SECONDS
 
     def _record_subscription(self, seq, payload, active=True):
-        """Bookkeeping only -- nothing on the server consumes it, and it needs a
-        Valkey client, which a zmq deployment does not have. Never let it break
-        an otherwise working subscription."""
+        """只是记账——服务端没有任何东西消费它，而且它需要 Valkey 客户端，
+        zmq 部署没有。绝不让它弄坏一个本来可用的订阅。"""
         try:
             self.client.save_quote_subscription(seq, dict(payload, seq=seq), active=active)
             self.client.publish_event(
@@ -3410,20 +3291,19 @@ class BigQmtXtData:
         return _build_quote_push_channel(self.client)
 
     def quote_subscription_status(self):
-        """What whole-quote combos the bridge thinks are alive, and how stale.
+        """桥接层认为还活着的全推组合，以及各自的陈旧程度。
 
-        The diagnostic for "something keeps pushing and I lost the seq": a
-        combo staying fresh has a LIVE keepalive feeding it (a leftover client
-        process); one going silent past the heartbeat timeout is about to be
-        reaped by the server (measured live: ~30s after the client dies).
+        用来诊断“有东西一直在推，但我的 seq 丢了”：一直很新鲜的组合说明有
+        LIVE keepalive 在喂它（某个遗留的客户端进程）；超过心跳超时后静默的，
+        即将被服务端回收（实盘实测：客户端死后约 30s）。
         """
         return self.client.call("quote_subscription_status", {})
 
     def quote_unsubscribe_all(self):
-        """Kill every whole-quote subscription on the bridge, no seq needed.
+        """杀掉桥接层上的所有全推订阅，不需要 seq。
 
-        keepalive is a no-op on unknown sub_ids, so a force-cleared combo
-        stays down until someone subscribes again.
+        keepalive 对未知 sub_id 是空操作，所以被强制清掉的组合会一直静默，直到
+        有人重新订阅。
         """
         return self.client.call("quote_unsubscribe_all", {})
 
@@ -3433,61 +3313,49 @@ class BigQmtXtData:
         session = self._whole_quote_session()
         session.start()
         sub_id = session.subscribe_whole_quote(code_list, callback=callback)
-        # The big-QMT whole-quote callback is incremental (changed symbols only),
-        # so prime the callback once with a full get_full_tick snapshot.
+        # 大 QMT 的全推回调是增量的（只带变化的标的），所以先用一次完整
+        # get_full_tick 快照给回调打底。
         #
-        # types=["all"] deliberately: the push side is ContextInfo's own
-        # subscribe_whole_quote, which is not narrowed, so a narrowed snapshot
-        # would hand the subscriber 2315 stocks and then start pushing all
-        # 26744 instruments. The primer has to cover what the push covers.
+        # 有意用 types=["all"]：推送侧是 ContextInfo 自己的
+        # subscribe_whole_quote，不做收窄，因此收窄过的快照会先给订阅者 2315
+        # 只股票，然后开始推全部 26744 个标的。打底必须覆盖推送覆盖的范围。
         #
-        # Large individual code lists (e.g. 3000 stocks) would block the server
-        # adjust thread for seconds via get_full_tick(thousands_of_codes). Instead,
-        # extract the exchange tokens (SH/SZ/...) from the codes and call
-        # get_full_tick with those tokens -- QMT handles exchange tokens as
-        # whole-exchange operations (fast). Then filter the result to only the
-        # codes the caller actually asked for.
+        # 巨大的单列代码名单（例如 3000 只股票）会让服务端 adjust 线程通过
+        # get_full_tick(上千个代码) 阻塞数秒。改为从代码里取出交易所标记
+        # （SH/SZ/...），用这些标记调用 get_full_tick——QMT 把交易所标记当作
+        # 全交易所操作（很快）。然后把结果过滤到调用方真正要的代码。
         #
-        # The token path cannot pass ["all"] -- that is the 26744-instrument
-        # read #247 removed -- so it passes the kinds the requested codes
-        # actually are (#358). Saying nothing there is what made convertibles
-        # disappear from the first frame above 100 codes while the push kept
-        # delivering them.
+        # 标记路径不能传 ["all"]——那正是 #247 去掉的 26744 个标的的读取——
+        # 所以它按请求代码实际所属的品种传（#358）。那里什么都不说，就是 100
+        # 个代码以上时可转债从第一帧消失、而推送仍在送它们的原因。
         if callback is not None:
             try:
-                # Called unconditionally, including with an empty snapshot:
-                # that is what this did before #247, and a subscriber that
-                # waits for its first callback must not hang because the
-                # primer happened to come back empty.
+                # 无条件调用，包括收到空快照时：这是 #247 之前的做法，而一个
+                # 等待首次回调的订阅者，不能因为打底恰好为空就挂住。
                 callback(self._prime_snapshot(code_list))
             except Exception:
                 pass
         return sub_id
 
-    # Exchange tokens QMT actually answers a whole-market snapshot for.
-    # Measured on the live terminal: SH 卡 SZ together return 5218 rows in
-    # ~330ms, BJ returns 343. Every futures token -- SF DF ZF IF INE GF --
-    # returns **0 rows**, so routing a futures list through the token path
-    # yields an empty prime, and the subscriber silently never gets a first
-    # frame. That is the #95 shape again: the subscription looks alive, the
-    # snapshot is just missing.
+    # QMT 确实会为全市场快照作答的交易所标记。
+    # 在实盘终端上实测：SH 和 SZ 一起在约 330ms 内返回 5218 行，BJ 返回 343。
+    # 期货标记 SF DF ZF IF INE GF 全部返回 **0 行**，所以把期货名单走标记
+    # 路径会得到空打底，订阅者静默地永远收不到第一帧。这就是 #95 的形态再现：
+    # 订阅看着是活的，只是快照缺了。
     _WHOLE_MARKET_TOKENS = ("SH", "SZ", "BJ")
 
     def _prime_snapshot(self, code_list):
-        """First-frame snapshot for subscribe_whole_quote.
+        """subscribe_whole_quote 的首帧快照。
 
-        Per-code get_full_tick runs on QMT's adjust thread, and its cost grows
-        with the list: measured medians on the live terminal were ~170ms at 100
-        codes, ~500ms at 200, ~2.5s at 500, ~9.5s at 1000, and a hard
-        TimeoutError at 3000 -- with the adjust thread blocked for that whole
-        time, which stalls the drain and queues every other RPC behind it
-        (#247). A whole-market token is ~330ms flat regardless of size, so
-        above the threshold the token path wins.
+        逐代码的 get_full_tick 在 QMT 的 adjust 线程上跑，成本随名单增长：
+        实盘终端上的中位数是 100 个代码约 170ms、200 个约 500ms、500 个约
+        2.5s、1000 个约 9.5s，3000 个直接 TimeoutError——而 adjust 线程在这段
+        时间里全程阻塞，使 drain 停滞并把其它 RPC 都排在后面（#247）。
+        全市场标记约 330ms 且与规模无关，所以超过阈值后标记路径更优。
 
-        Codes are passed to QMT **verbatim**; only the exchange suffix is
-        upper-cased for routing and only upper-cased copies are used for
-        matching. Big QMT has cu2610.SF and not CU2610.SF, so upper-casing a
-        code before sending it silently kills futures subscriptions (#58/#95).
+        代码 **原样** 传给 QMT；只对交易所后缀做大写化用于路由，且只对大写副本
+        做匹配。大 QMT 有 cu2610.SF 而没有 CU2610.SF，所以发送前把代码转大写会
+        静默弄死期货订阅（#58/#95）。
         """
         codes = [str(c).strip() for c in (code_list or []) if str(c or "").strip()]
         if not codes:
@@ -3495,7 +3363,7 @@ class BigQmtXtData:
         if len(codes) <= self._SUBSCRIBE_PRIME_MAX_CODES:
             return self.get_full_tick(codes, types=["all"]) or {}
 
-        # Split by whether this code's exchange can be primed wholesale.
+        # 按这个代码的交易所能否整体打底来分流。
         whole, direct = [], []
         for code in codes:
             suffix = code.rsplit(".", 1)[-1].upper() if "." in code else ""
@@ -3509,32 +3377,28 @@ class BigQmtXtData:
             for code in whole:
                 code_kinds = _prime_tick_types(code)
                 if not code_kinds:
-                    # Unclassified: the server would narrow the token to stocks
-                    # and drop this code without saying so (#358). Read it
-                    # directly instead -- slow beats silently absent.
+                    # 未分类：服务端会把标记收窄成股票并丢掉这个代码而不说明
+                    # （#358）。改成直接读它——慢胜过静默缺失。
                     direct.append(code)
                     continue
                 wanted.add(code.upper())
                 tokens.add(code.rsplit(".", 1)[-1].upper())
                 kinds.update(code_kinds)
             if tokens:
-                # types= is what keeps the push side and the primer covering the
-                # same instruments: the push is ContextInfo's own
-                # subscribe_whole_quote and is not narrowed at all.
+                # types= 才能让推送侧和打底覆盖同一批标的：推送是 ContextInfo
+                # 自己的 subscribe_whole_quote，完全不做收窄。
                 full = self.get_full_tick(sorted(tokens), types=sorted(kinds)) or {}
                 snapshot.update(
                     (k, v) for k, v in full.items() if str(k).upper() in wanted)
         if direct:
-            # No whole-market token for these (futures, and anything new).
-            # Slow for a long list, but slow-and-correct beats fast-and-empty:
-            # before #247 this was the only path, so it is not a regression.
+            # 这些没有全市场标记（期货，以及任何新东西）。长名单会慢，但慢而
+            # 正确胜过快而空：在 #247 之前这是唯一路径，所以不是退步。
             snapshot.update(self.get_full_tick(direct, types=["all"]) or {})
         return snapshot
 
     def unsubscribe_quote(self, seq):
-        # Three kinds of handle now: whole-quote / tick subscriptions owned by
-        # the push session, K-line pollers owned here, and legacy seqs that only
-        # ever existed as valkey bookkeeping.
+        # 现在有三类句柄：推送会话持有的全推/tick 订阅、这里持有的 K 线轮询，
+        # 以及只作为 valkey 记账存在过的历史 seq。
         with self._bar_poller_lock:
             poller = self._bar_pollers.pop(seq, None)
         if poller is not None:
@@ -3552,16 +3416,14 @@ class BigQmtXtData:
         return 0
 
     def unsubscribe_quotes(self, seqs):
-        """Batch-release whole-quote handles: one RPC, one topic re-sync (#418).
+        """批量释放全推句柄：一次 RPC，一次 topic 重同步（#418）。
 
-        ``unsubscribe_quote`` per handle costs an RPC plus a subscriber
-        rebuild each -- a 26-handle exit paid 26 RPCs and 25 rebuilds and
-        took seconds. This releases only THIS client's named handles server-
-        side (shared combos stay up for their other subscribers;
-        quote_unsubscribe_all remains the last resort it was). Handles that
-        are K-line pollers keep their per-item semantics (they are local
-        threads, no RPC at all). Returns the server's report: released /
-        unknown / native_errors.
+        逐个句柄调用 ``unsubscribe_quote`` 每次都要一次 RPC 加一次订阅者重建
+        ——一次 26 个句柄的退出付了 26 次 RPC 和 25 次重建，耗时数秒。这里只
+        在服务端释放 **本** 客户端点名的句柄（共享组合为其它订阅者保留；
+        quote_unsubscribe_all 仍是最后手段）。属于 K 线轮询的句柄保留其逐项
+        语义（它们是本地线程，完全不发 RPC）。返回服务端的报告：released /
+        unknown / native_errors。
         """
         wanted = [s for s in (seqs or [])]
         session_owned = []
@@ -3590,9 +3452,8 @@ class BigQmtXtData:
         return report
 
     def stop_all_subscriptions(self):
-        """Stop every K-line poller this object owns. Daemon threads die with
-        the process anyway; this is for tests and for callers that recycle a
-        client without exiting."""
+        """停掉本对象持有的所有 K 线轮询。守护线程本来会随进程退出而死；
+        这是给测试和回收客户端但不退出进程的调用方用的。"""
         with self._bar_poller_lock:
             pollers = list(self._bar_pollers.values())
             self._bar_pollers.clear()
@@ -3617,64 +3478,56 @@ class BigQmtXtData:
         return _divid_factors_frame(data)
 
     def download_history_data2(self, stock_list, period, start_time="", end_time="", callback=None, incrementally=None, dividend_type="none", chunk_size=None, download_timeout_seconds=180.0, data_wait_seconds=10.0):
-        """Pull bars from Big QMT over RPC and cache them locally, in batches.
+        """通过 RPC 从大 QMT 拉 K 线并缓存到本地，分批进行。
 
-        Mirrors xtdata.download_history_data2: after this, get_local_data(..., the
-        same dividend_type) reads the data locally with no further RPC. Each batch
-        re-pulls live, so re-running keeps the cache latest — needed for 前复权
-        (front-adjusted) data. ``callback`` (optional) is invoked once per stock with
-        {finished, total, stockcode} — xtdata-style. Returns {finished, total}.
+        与 xtdata.download_history_data2 对应：此后 get_local_data(..., 同一
+        dividend_type) 就地读本地数据、不再发 RPC。每批都会重新实时拉取，
+        所以重跑能让缓存保持最新——前复权数据需要这一点。``callback``（可选）
+        每只股票调用一次，参数 {finished, total, stockcode}——xtdata 风格。
+        返回 {finished, total}。
 
-        The server-side download runs for EVERY dividend_type, matching
-        xtdata semantics ("populate the local QMT store"). It used to be skipped
-        for unadjusted pulls, which made an unadjusted download a no-op that
-        still reported progress (issue #47).
+        服务端下载对 **每个** dividend_type 都会执行，与 xtdata 语义一致
+        （“填充本地 QMT 库”）。过去非复权拉取会跳过它，使非复权下载变成空操作
+        却仍报告进度（问题 #47）。
 
-        Adjusted data (dividend_type != none) additionally depends on it: Big QMT
-        computes adjusted bars from the RAW history + dividend factors, and
-        without both, get_market_data_ex(dividend_type='front') returns all-zero
-        closes (verified live).
+        复权数据（dividend_type != none）还额外依赖它：大 QMT 由 **原始** 历史
+        + 分红因子计算复权 K 线，两者都不存在时
+        get_market_data_ex(dividend_type='front') 返回全零收盘价（实盘验证）。
 
-        ``download_timeout_seconds`` covers the server-side download only; it is
-        generous because a cold code with a wide window can take minutes.
+        ``download_timeout_seconds`` 只覆盖服务端下载；给得宽是因为冷代码配宽
+        窗口可能要几分钟。
 
-        ``data_wait_seconds`` is how long a batch keeps re-polling for codes the
-        first pull came back empty for. The server download returns after the
-        data landed (measured: 20,726 1m bars readable 0.3s after a 0.6-1.4s
-        download), so an empty first pull almost always means the terminal
-        has nothing for that code (suspended, new, delisted) and will not get
-        it by waiting. The old default of 60s made one such code hold its
-        whole batch for a minute (#339: "12s per contract" on 300 contracts).
-        10s is a few polls, enough for a terminal that lands data late.
+        ``data_wait_seconds`` 是每批对首拉为空的代码继续轮询的时长。服务端下载
+        在数据落地后才返回（实测：20,726 根 1m K 线在 0.6-1.4s 下载结束后 0.3s
+        可读），所以首拉为空几乎总意味着终端对该代码没有数据（停牌、新股、
+        退市），等也不会来。旧的 60s 默认值会让这样一个代码拖住整批一分钟
+        （#339：300 个合约上“每个合约 12s”）。10s 是几次轮询，够覆盖数据落地
+        偏晚的终端。
 
-        The server-side download is best-effort while the client pull can still
-        save it (cache enabled), but with the local cache disabled it is the
-        entire job -- its failure raises instead of reporting {finished: total},
-        which would be the fake progress of issue #47. With the cache enabled
-        the same applies once the pull comes back empty for a code: a failed
-        download that nothing stood in for raises, naming the codes (#339).
+        服务端下载是尽力而为的，前提是客户端拉取仍能补救它（缓存开启）；本地
+        缓存关闭时它就是全部工作——它失败会抛异常，而不是报告
+        {finished: total}，那正是问题 #47 的虚假进度。缓存开启时，一旦某个代码
+        拉取回来为空也同样适用：没有任何东西替代的失败下载会抛异常并点名代码
+        （#339）。
         """
         codes = [str(c) for c in (stock_list or []) if str(c or "").strip()]
         if not codes:
             return {"finished": 0, "total": 0}
 
-        # Server-side download first, for EVERY dividend_type.
+        # 先做服务端下载，对每一个 dividend_type。
         #
-        # This used to run only when adjustment was requested, on the reasoning
-        # that an unadjusted pull can be served straight from get_market_data_ex.
-        # That reads whatever Big QMT already has -- it does not fetch anything.
-        # So an unadjusted "download" left the QMT-side store untouched while
-        # still reporting {finished: N} through the callback: a progress bar for
-        # work that never happened (issue #47, and the real cause behind #39,
-        # which was closed on an incomplete reading of this function).
+        # 过去只在请求复权时才跑，理由是未复权拉取可以直接由
+        # get_market_data_ex 服务。可它读的是大 QMT 已有的东西——并不去取任何
+        # 数据。于是未复权的“下载”没碰 QMT 侧库，却仍通过回调报告
+        # {finished: N}：给一件从未发生的工作画进度条（问题 #47，也是 #39 的
+        # 真正原因，那个 issue 基于对本函数不完整的解读被关掉了）。
         #
-        # xtdata.download_history_data means "populate the local QMT store", and
-        # callers depend on that: FormulaServer and get_local_data both read it,
-        # and codes "downloaded" this way had zero bars there.
+        # xtdata.download_history_data 的意思是“填充本地 QMT 库”，调用方依赖
+        # 这一点：FormulaServer 和 get_local_data 都读它，而这样“下载”过的代码
+        # 在那里是零根 K 线。
         #
-        # Adjusted data additionally NEEDS this: QMT computes front/back-adjusted
-        # bars from raw bars + dividend factors, and both must exist server-side
-        # or the result is all zeros.
+        # 复权数据还额外 **需要** 它：QMT 由原始 K 线 + 分红因子计算前/后复权
+        # K 线，两者都必须在服务端存在，否则结果全为零。
         server_download_error = None
         try:
             download_reply = self.client.call(
@@ -3692,23 +3545,19 @@ class BigQmtXtData:
                 # 从这里漏过去，下面的空拉被当成「停牌/退市」容忍掉，最终报出
                 # finished==total 的假进度）。失败必须响（#47 契约）。
                 server_download_error = RuntimeError(
-                    "server reported download_history_data2 = %r: the terminal "
-                    "did not accept the download task (codes=%d period=%s)" % (
+                    "服务端报告 download_history_data2 = %r：终端没有受理这次下载任务"
+                    "（codes=%d period=%s）" % (
                         download_reply, len(codes), period))
         except Exception as exc:
-            # Best-effort only while the pull below can still save the
-            # download (data already on the server). With the local cache
-            # disabled there is no pull -- the server-side download is the
-            # whole job, and reporting {finished: total} after a failed one
-            # is the fake progress of issue #47.
+            # 只有在下面的拉取还能补救下载时才尽力而为（数据已在服务端）。
+            # 本地缓存关闭时就没有拉取——服务端下载就是全部工作，失败之后仍报
+            # {finished: total} 就是问题 #47 的虚假进度。
             server_download_error = exc
 
         if self._local_cache() is None:
-            # local cache disabled: server-side download only (step 1). The
-            # data lands in the server-side DATs, so this is real work -- not
-            # the fake progress download of issue #47. The client pull is
-            # skipped uniformly for every period (tick and bars alike) and
-            # progress is reported per code without any pull.
+            # 本地缓存关闭：只做服务端下载（步骤 1）。数据落在服务端 DAT 文件
+            # 里，所以这是真工作——不是问题 #47 的假进度下载。对所有周期（tick
+            # 和 K 线一样）统一跳过客户端拉取，进度按代码报告而无需任何拉取。
             if server_download_error is not None:
                 raise server_download_error
             total = len(codes)
@@ -3746,10 +3595,10 @@ class BigQmtXtData:
                     count=-1,
                     dividend_type=dividend_type,
                     fill_data=False,  # fill 会用全 0 占位行冒充数据，轮询判定必须关掉
-                    # The RPC timeout for one pull is not the poll budget: a
-                    # batch of 300 codes x 20k bars is a multi-second reply.
+                    # 单次拉取的 RPC 超时不是轮询预算：300 个代码 x 2 万根
+                    # K 线的批次是多秒级的回复。
                     timeout_seconds=max(float(data_wait_seconds), 60.0),
-                    subscribe=False,  # Cache population must not allocate native subscriptions.
+                    subscribe=False,  # 填充缓存不得占用原生订阅。
                     # 等的就是刚提交的那笔下载。heal 看到「还没落地」会把它原样
                     # 再提交一遍、睡 2 秒、再读——每轮如此，等待目标被反复推后，
                     # 单票冷启动必然打满 60 秒（#275）。轮询里的读不参与 heal。
@@ -3764,20 +3613,17 @@ class BigQmtXtData:
                     break
                 time.sleep(1.5)
             if server_download_error is not None and ready < len(batch):
-                # The server-side download failed AND the pull found nothing
-                # to save for some of the batch: the download did not happen
-                # and nothing stands in for it. Reporting {finished: total}
-                # here is the fake progress of #47 one branch over (#339).
-                # A failed download whose bars were already on the server
-                # still finishes above (ready == len(batch)); an empty code
-                # after a download that did NOT fail keeps the tolerant
-                # timeout (suspended / delisted codes have no bars to wait for).
+                # 服务端下载失败，且对批次中部分代码拉取也没找到可补救的内容：
+                # 下载没有发生，也没有任何东西替代它。在这里报告
+                # {finished: total} 就是 #47 的虚假进度换个分支再现（#339）。
+                # 下载失败但 K 线本来就在服务端的，仍会在上面完成
+                # （ready == len(batch)）；下载 **没有** 失败之后的空代码保留
+                # 宽容超时（停牌/退市代码没有 K 线可等）。
                 missing = [code for code in batch
                            if getattr((data or {}).get(code), "shape", (0,))[0] == 0]
                 raise RuntimeError(
-                    "download_history_data2 %s %s~%s: the server-side download "
-                    "failed (%s) and the pull found no rows for %s -- nothing was "
-                    "downloaded for these codes" % (
+                    "download_history_data2 %s %s~%s: 服务端下载失败（%s），"
+                    "且拉取对 %s 没有取到任何行——这些代码什么都没下载" % (
                         period, start_time, end_time, server_download_error,
                         ",".join(missing)))
             skipped = []
@@ -3788,10 +3634,9 @@ class BigQmtXtData:
                     no_data, period, start_time, end_time)
                 if skipped:
                     skipped_all.extend(skipped)
-                    # #397: the terminal's injected download only appends from
-                    # its local last bar -- these windows ended before it, so
-                    # nothing was written even though the task was accepted.
-                    # Name them instead of reporting fake progress.
+                    # #397：终端注入式下载只从本地最后一根 K 线往后追加——这些
+                    # 窗口在它之前结束，所以即使任务被接受也没写入。要点名它们，
+                    # 而不是报告虚假进度。
                     log.warning(
                         "download_history_data2 %s %s~%s：%d 个代码位于"
                         "仅追加下载的死区（窗口结束时间早于终端本地最后一根 K 线，"
@@ -3814,14 +3659,13 @@ class BigQmtXtData:
         return result
 
     def _download_skipped_dead_zone(self, codes, period, start_time, end_time):
-        """Empty-poll codes that are in the append-only dead zone, not data-less.
+        """轮询为空的代码属于只追加的死区，而不是真的没有数据。
 
-        #397: the terminal's injected download only appends from its local
-        last bar; a window ending BEFORE that bar is silently not written.
-        Telling that from a genuinely data-less code (suspended / delisted /
-        never downloaded -- the tolerance those were for) needs one tail read:
-        a code with later data is in the dead zone; a code with none is not.
-        Batched, count=1, heal off -- cheap, and read-only.
+        #397：终端注入式下载只从本地最后一根 K 线往后追加；终点早于那根 K 线
+        的窗口会被静默地不写入。要把它和真正没有数据的代码（停牌/退市/从未
+        下载——也就是上面那套宽容处理针对的情形）区分开，需要一次尾部读取：
+        有更晚数据的代码在死区里；没有的则不在。批量、count=1、关闭 heal——
+        便宜，而且只读。
         """
         if not codes or not start_time:
             return []
@@ -3831,7 +3675,7 @@ class BigQmtXtData:
                 count=1, dividend_type="none", fill_data=False,
                 heal=False, subscribe=False, timeout_seconds=60.0)
         except Exception:
-            return []   # cannot tell: keep the old tolerant finish
+            return []   # 无法判断：沿用旧的宽容收尾
         end_digits = _time_compare_digits(end_time)
         if not end_digits:
             return []
@@ -3852,7 +3696,7 @@ class BigQmtXtData:
         return self.download_history_data2([stock_code], period, start_time, end_time, dividend_type=dividend_type)
 
     def local_cache_stats(self):
-        """Return (cached files, periods) for the client-side local cache."""
+        """返回客户端本地缓存的（缓存文件, 周期）。"""
         cache = self._local_cache()
         return cache.stats() if cache is not None else (0, [])
 
@@ -3900,14 +3744,14 @@ class BigQmtXtData:
         dedate,
         opttype="",
         isavailavle=None,
-        available=None, # fix typo
+        available=None, # 修正拼写错误
     ):
         if (
             available is not None
             and isavailavle is not None
             and bool(isavailavle) != bool(available)
         ):
-            raise ValueError("isavailavle and available must not conflict")
+            raise ValueError("isavailavle 与 available 不能同时提供")
         selected_available = (
             bool(available)
             if available is not None
@@ -3960,12 +3804,11 @@ class BigQmtXtData:
         return result
 
     def get_sector_list(self, allow_fallback=False):
-        """Sector names, or an error saying the terminal cannot list them.
+        """板块名称，或说明终端无法列出板块的错误。
 
-        ``allow_fallback=True`` opts into the 13 curated well-known names,
-        which still drive ``get_stock_list_in_sector``. Big QMT cannot
-        enumerate real sectors at all, and handing back the curated list
-        unasked made a fake answer indistinguishable from a real one (#143).
+        ``allow_fallback=True`` 显式选择那 13 个内置知名板块，它们仍会驱动
+        ``get_stock_list_in_sector``。大 QMT 根本无法枚举真实板块，而未经要求
+        就交回内置列表，会让假答案和真答案无法区分（#143）。
         """
         return self._call("get_sector_list", allow_fallback=bool(allow_fallback))
 
@@ -4115,7 +3958,7 @@ class BigQmtXtData:
         price_period="1m",
         include_native_iv=False,
     ):
-        """Return client-side IV and Greeks for one option contract."""
+        """返回单个期权合约的客户端 IV 和希腊字母。"""
         from .option_analytics_client import get_option_analytics
 
         return get_option_analytics(
@@ -4142,7 +3985,7 @@ class BigQmtXtData:
         dividend_yield=None,
         price_period="1m",
     ):
-        """Return batched client-side IV and Greeks for one option expiry."""
+        """返回某个期权到期日的批量客户端 IV 和希腊字母。"""
         from .option_analytics_client import get_option_chain_analytics
 
         return get_option_chain_analytics(
@@ -4162,7 +4005,7 @@ class BigQmtXtData:
         return self._call("get_option_detail_data", stockcode=stockcode)
 
     def get_option_detail_data_batch(self, stockcodes, timeout_seconds=300.0):
-        """Fetch many option details in one RPC; QMT loops over the codes."""
+        """用一次 RPC 取回多个期权详情；QMT 内部按代码循环。"""
         return self.client.call(
             "get_option_detail_data_batch",
             {"stockcodes": list(stockcodes)},
@@ -4361,20 +4204,17 @@ class BigQmtXtData:
         和「缺基础数据」。
         """
         raise NotImplementedError(
-            "get_turn_over_rate is not usable on this Big QMT terminal: the "
-            "server-side ContextInfo.get_turn_over_rate stub returns None for "
-            "every code (verified live against a stock, an ETF, an index and "
-            "several code formats, after the close). The range version "
-            "get_turnover_rate answered an empty DataFrame in the same run, "
-            "and it documents a precondition this terminal has not met: the "
-            "financial data (share capital) and daily bars must be downloaded "
-            "first (download_financial_data / download_history_data). If yours "
-            "has them, call it explicitly with "
-            "xtdata.call_method(\"get_turn_over_rate\", stockcode=...). "
-            "Otherwise derive it: get_ticks()[code]['pvolume'] / "
-            "get_last_volume(code) -- pvolume is in shares like the float "
-            "share count, while ['volume'] is in lots and would come out 100x "
-            "too small."
+            "get_turn_over_rate 在这台大 QMT 终端上不可用：服务端的 "
+            "ContextInfo.get_turn_over_rate 桩对每个代码都返回 None "
+            "（收盘后已对股票、ETF、指数和多种代码格式做过实盘验证）。同一次"
+            "运行里区间版 get_turnover_rate 返回的是空 DataFrame，而它要求一个"
+            "本终端未满足的前置条件：必须先下载财务数据（股本）和日线"
+            "（download_financial_data / download_history_data）。如果你的终端"
+            "有这些数据，可以显式调用 "
+            "xtdata.call_method(\"get_turn_over_rate\", stockcode=...)。否则自行"
+            "推导：get_ticks()[code]['pvolume'] / get_last_volume(code)——"
+            "pvolume 的单位是股，与流通股本一致；而 ['volume'] 的单位是手，"
+            "算出来会小 100 倍。"
         )
 
     # int32 最大值。合约乘数不可能是这个数，它是「没有值」的哨兵。
@@ -4398,15 +4238,13 @@ class BigQmtXtData:
             is_sentinel = False
         if is_sentinel:
             raise NotImplementedError(
-                "get_contract_multiplier(%r) answered %s -- the int32 sentinel "
-                "this terminal returns when it has no multiplier for the code "
-                "(verified live: stocks, ETFs, options and futures codes all "
-                "answer it, and the same terminal has no futures data at all: "
-                "get_instrument('IF2612.IF') is {} and get_his_contract_list"
-                "('IF') is empty). Using it as a multiplier would misprice an "
-                "order by a factor of 2e9, so it is not returned. Check the "
-                "futures market data is subscribed, or read "
-                "get_instrument_detail(code)['VolumeMultiple'] instead."
+                "get_contract_multiplier(%r) 返回了 %s —— 这是本终端在没有该代码"
+                "乘数时返回的 int32 哨兵值（已实盘验证：股票、ETF、期权、期货"
+                "代码都这样，而同一台终端根本没有期货数据："
+                "get_instrument('IF2612.IF') 是 {}，get_his_contract_list"
+                "('IF') 为空）。把它当乘数用会让下单价错 2e9 倍，所以不返回它。"
+                "请检查期货行情是否已订阅，或改读 "
+                "get_instrument_detail(code)['VolumeMultiple']。"
                 % (stockcode, self.CONTRACT_MULTIPLIER_SENTINEL))
         return answer
 
@@ -4436,12 +4274,12 @@ class BigQmtXtData:
         return self._call("get_his_index_data", stock_code=stock_code)
 
     def call_method(self, method, **params):
-        """Generic escape hatch: call any RPC market-data method by name.
+        """通用逃生口：按名字调用任何 RPC 行情方法。
 
-        Use this for ContextInfo methods that don't have an explicit wrapper
-        above (e.g. ``xtdata.call_method("get_last_close", stock="000001.SZ")``,
-        ``xtdata.call_method("get_float_caps", stockcode="000001.SZ")``). The
-        full list of callable methods is in ``MARKET_DATA_METHODS``.
+        用于上面没有显式封装的 ContextInfo 方法（例如
+        ``xtdata.call_method("get_last_close", stock="000001.SZ")``、
+        ``xtdata.call_method("get_float_caps", stockcode="000001.SZ")``）。
+        可调用方法的完整列表见 ``MARKET_DATA_METHODS``。
         """
         return self._call(method, **params)
 
@@ -4537,54 +4375,48 @@ class BigQmtXtTrader:
         self.callback = None
         self._event_thread = None
         self._event_running = False
-        # Async order submission (issue #50). One worker, started on first use,
-        # so a client that never calls order_stock_async pays nothing.
+        # 异步下单提交（问题 #50）。一个工作线程，首次使用时启动，因此从不调用
+        # order_stock_async 的客户端不付任何代价。
         self._async_order_queue = _queue.Queue()
         self._async_order_thread = None
         self._async_order_lock = threading.Lock()
-        # Outcomes (response/error + #51 barrier release) fire on this second
-        # thread, so a slow user callback -- or the bounded wait for a late
-        # order id -- never holds up the next submit (issue #181).
+        # 结果（回复/错误 + #51 的屏障释放）在这个第二线程上触发，所以慢的用户
+        # 回调——或等待迟到订单号的有限等待——永远不会挡住下一次提交
+        # （问题 #181）。
         self._async_callback_queue = _queue.Queue()
         self._async_callback_thread = None
-        # Async cancel submission — same worker-queue pattern as async orders.
-        # cancel_order_stock_async used to call the blocking RPC inline, which
-        # made 15 cancels take ~30s.  Now the cancel runs on a worker thread
-        # and batches a backlog into one RPC.
+        # 异步撤单提交——与异步下单相同的“工作队列”模式。
+        # cancel_order_stock_async 过去就地调用阻塞 RPC，使 15 次撤单耗时约
+        # 30s。现在撤单在工作线程上运行，并把积压合并成一次 RPC。
         self._async_cancel_queue = _queue.Queue()
         self._async_cancel_thread = None
-        # Reuses _async_order_lock for start-up serialisation.
-        # int -> 合同编号 for ids handed out as OrderId (issue #113).
+        # 复用 _async_order_lock 做启动串行化。
+        # int -> 合同编号，用于以 OrderId 形式发出的 id（问题 #113）。
         self._order_sys_ids = _OrderedDict()
-        # on_account_status used to report a hardcoded "STOCK" even for a
-        # credit deployment (issue #103). The server is authoritative -- the
-        # client's StockAccount(..., "CREDIT") never travels -- so prefer what
-        # ping reports, fall back to what the caller declared.
+        # on_account_status 过去即使对两融部署也硬编码报 "STOCK"（问题 #103）。
+        # 服务端才是权威——客户端的 StockAccount(..., "CREDIT") 从不上传——所以
+        # 优先用 ping 报告的，其次用调用方声明的。
         self._server_account_type = ""
         self._server_account_types = []
         self._declared_account_type = ""
-        # Set once the exec-event listener is really subscribed; start() waits
-        # on it instead of sleeping blind. Never cleared on reconnect rounds --
-        # start() only waits once, and a resubscribe does not un-start it.
+        # 执行事件监听器真正订阅成功后置位；start() 等它而不是盲睡。重连轮次
+        # 从不清除它——start() 只等一次，重新订阅不会让它回到未启动状态。
         self._event_ready = threading.Event()
         try:
             self.event_listener_ready_timeout = float(
                 os.environ.get("BIGQMT_EVENT_READY_TIMEOUT") or 1.0)
         except (TypeError, ValueError):
             self.event_listener_ready_timeout = 1.0
-        # Account-query cache fallback (#243). OFF by default: a failed
-        # POSITION/ASSET query must reach the caller, the way it already does
-        # on every non-valkey transport. Serving the last valkey snapshot
-        # instead turns "the query failed" into "here is what you own",
-        # which is the one answer a strategy must never be given wrongly.
+        # 账户查询缓存兜底（#243）。默认关闭：失败的 POSITION/ASSET 查询必须
+        # 传到调用方，就像它在所有非 valkey 传输上已经做到的那样。改用最近的
+        # valkey 快照作答，会把“查询失败”变成“这是你持仓”，而那是策略绝不能
+        # 拿到的错误答案。
         #
-        # Deliberately NOT tied to local_cache_enabled: that key is the
-        # client-side *market data* cache. Two different caches, two
-        # switches -- conflating them is what made local_cache_enabled=False
-        # look like it should have disabled this and it did not.
-        # Read the config as handed to us: BigQmtRpcClient normalises its own
-        # copy and drops keys it does not know, so self.client.valkey_config
-        # cannot be the source here.
+        # 有意 **不** 绑定 local_cache_enabled：那个键是客户端的 *行情* 缓存。
+        # 两个不同的缓存，两个开关——把它们混为一谈，正是
+        # local_cache_enabled=False 看起来应该关掉这里却没关的原因。
+        # 按交给我们的配置读：BigQmtRpcClient 会规范化自己的副本并丢掉不认识的
+        # 键，所以这里不能用 self.client.valkey_config 作来源。
         cache_config = dict((load_client_config() or {}).get("valkey_config") or {})
         cache_config.update(dict(valkey_config or {}))
         self.account_cache_fallback = _bool_value(
@@ -4599,11 +4431,10 @@ class BigQmtXtTrader:
             self.account_cache_max_age_seconds = 30.0
 
     def _snapshot_age_seconds(self, snapshot):
-        """How old the cached snapshot is, or None when it does not say.
+        """缓存快照有多旧；快照没说时返回 None。
 
-        A snapshot that carries no ``updated_at`` is treated as unusable
-        rather than fresh: the whole point of the bound is refusing to answer
-        with facts we cannot date.
+        不带 ``updated_at`` 的快照按不可用处理，而不是当作新鲜：设这个上下限的
+        全部意义，就是拒绝用无法确定时间的“事实”作答。
         """
         stamp = (snapshot or {}).get("updated_at")
         if not stamp:
@@ -4615,17 +4446,16 @@ class BigQmtXtTrader:
             except ValueError:
                 continue
             return max(0.0, (_dt.datetime.now() - parsed).total_seconds())
-        try:  # epoch seconds
+        try:  # Unix 秒
             return max(0.0, time.time() - float(text))
         except (TypeError, ValueError):
             return None
 
     def _account_cache_usable(self, account_id, what):
-        """May we answer `what` from the cached snapshot at all?
+        """到底能否用缓存快照回答 `what`？
 
-        Returns the snapshot when the fallback is switched on AND the data is
-        dated AND it is inside the age bound. Anything else -> None, and the
-        caller re-raises the original error.
+        当兜底开关开启、数据带时间、且未超过时效上限时返回该快照。其它情况
+        返回 None，由调用方重新抛出原始错误。
         """
         if not self.account_cache_fallback:
             return None
@@ -4688,8 +4518,8 @@ class BigQmtXtTrader:
         return 0
 
     def start(self):
-        # Launch the real-time execution-event listener so a registered callback's
-        # on_stock_order / on_stock_trade fire as soon as Big QMT pushes them.
+        # 启动实时执行事件监听器，使注册过的回调的 on_stock_order /
+        # on_stock_trade 在大 QMT 推送时立刻触发。
         self._start_event_listener()
         return 0
 
@@ -4715,21 +4545,19 @@ class BigQmtXtTrader:
             raise
 
     def sync_deployment(self, dry_run=False):
-        """Push this client's package into the QMT python directory.
+        """把本客户端的包推入 QMT 的 python 目录。
 
-        The copy runs here, not inside QMT: a trading process rewriting its own
-        code mid-session would put whatever is in the source tree, half-finished
-        edits included, straight onto the live terminal.
+        拷贝在这里执行，不在 QMT 内部：交易进程在盘中重写自己的代码，会把
+        源码树里当时的内容（包括改到一半的编辑）直接搬上实盘终端。
 
-        Config files are never written. The strategy still has to be restarted
-        afterwards -- QMT keeps modules in sys.modules across re-runs, so a copy
-        on its own changes nothing.
+        绝不写配置文件。之后策略仍须重启——QMT 在重跑之间把模块留在
+        sys.modules 里，所以只拷贝本身不改变任何东西。
         """
         from .sync import sync_deployment as _sync
 
-        # get_deployment_info lives on BigQmtXtData; this class never had it,
-        # so xt_trader.sync_deployment() died with AttributeError. Call the
-        # RPC directly -- the trader's client is the same one.
+        # get_deployment_info 在 BigQmtXtData 上；本类从来没有它，所以
+        # xt_trader.sync_deployment() 死于 AttributeError。直接调用 RPC——
+        # 交易端用的客户端是同一个。
         info = self.client.call("get_deployment_info", {}) or {}
         target = info.get("qmt_python_dir") or ""
         if not target:
@@ -4760,22 +4588,18 @@ class BigQmtXtTrader:
             self._warn_on_account_type_mismatch()
         if not self.client.account_id:
             self.client.account_id = _account_id(account)
-        # (Re)start the listener now that the account is known; the loop resubscribes
-        # to the account's channels within ~1s if the account changed.
+        # 既然账户已知，就（重新）启动监听器；账户变化时循环在约 1s 内重新
+        # 订阅该账户的频道。
         self._start_event_listener()
         self._fire_account_status()
-        # Wait for the exec-event listener to actually be subscribed, rather
-        # than sleeping a fixed second and hoping (#247 shipped time.sleep(1)
-        # here with "原因不明"). The race is real: _start_event_listener starts
-        # a daemon thread and returns, so events published between subscribe()
-        # and the pubsub.subscribe() inside that thread are lost -- a caller
-        # that orders immediately after subscribe() can miss its own fill
-        # callback. start() has the same shape but MiniQMT callers reach events
-        # through subscribe(), which is where the sleep was.
-        #
-        # Bounded by the same 1s the sleep cost, so the worst case is no worse
-        # than before, while the normal case (subscribed in a few ms) no longer
-        # pays for it. BIGQMT_EVENT_READY_TIMEOUT=0 disables the wait.
+        # 等执行事件监听器真正订阅上，而不是固定睡一秒然后祈祷（#247 当时
+        # 在这里发了 time.sleep(1) 并标注“原因不明”）。竞态是真实的：
+        # _start_event_listener 启动一个守护线程就返回，所以在 subscribe() 与
+        # 那个线程内部 pubsub.subscribe() 之间发布的事件会丢——订阅后立刻下单的
+        # 调用方可能错过自己的成交回调。start() 形状相同，但 MiniQMT 调用方是
+        # 通过 subscribe() 拿到事件的，而睡眠就在那里。
+        # 上限与原睡眠的 1s 相同，所以最坏情况不变差，而常规情况（几毫秒就订阅
+        # 上）不再付这个成本。BIGQMT_EVENT_READY_TIMEOUT=0 关闭该等待。
         self._await_event_listener()
         return 0
 
@@ -4786,16 +4610,16 @@ class BigQmtXtTrader:
         return self._event_ready.wait(timeout)
 
     def stop(self):
-        # Drain first: orders already queued must go out before teardown.
-        # Costs nothing when the queue is empty (issue #156).
+        # 先排空：已排队的委托必须在拆除之前发出去。队列为空时无成本
+        # （问题 #156）。
         self._drain_async_orders_on_exit()
         self._event_running = False
         thread = self._event_thread
         if thread is not None and thread.is_alive():
             thread.join(1.0)
         self._event_thread = None
-        # The trader built its client in __init__, so it owns the transport
-        # too, and releases its transport connections.
+        # 交易端在 __init__ 里构造了自己的客户端，所以它同时拥有 transport，
+        # 由它释放 transport 连接。
         try:
             self.client.close()
         except Exception:
@@ -4812,7 +4636,7 @@ class BigQmtXtTrader:
         self._event_thread.start()
 
     def _note_server_account_type(self, pong):
-        """Remember what the deployment says it trades as."""
+        """记住部署声明的交易账户类型。"""
         try:
             reported = str((pong or {}).get("account_type") or "").strip().upper()
             listed = [str(t or "").strip().upper()
@@ -4825,18 +4649,17 @@ class BigQmtXtTrader:
             self._warn_on_account_type_mismatch()
 
     def _warn_on_account_type_mismatch(self):
-        """Say so when the caller and the deployment disagree.
+        """调用方与部署不一致时说出来。
 
-        A client asking for CREDIT against a STOCK deployment gets an all-zero
-        asset row and no error at all -- that was issue #92, and it cost the
-        reporter a long time because nothing anywhere said the two disagreed.
+        客户端要 CREDIT 而部署是 STOCK 时，会拿到全零的资产行且完全没有错误
+        ——那就是问题 #92，它让报告者花了很久，因为没有任何地方说过两者不一致。
         """
         server = self._server_account_type
         declared = self._declared_account_type
         if not server or not declared or server == declared:
             return
-        # A deployment configured for several types (港股通 on a stock
-        # account) answers each request as the type its StockAccount named.
+        # 配置了多个类型的部署（股票账户上的港股通）按 StockAccount 声明的
+        # 类型回答每个请求。
         if declared in (getattr(self, "_server_account_types", None) or []):
             return
         log.warning(
@@ -4848,11 +4671,10 @@ class BigQmtXtTrader:
             declared, server, declared, server)
 
     def _fire_account_status(self):
-        """Fire on_account_status after connect/subscribe (MiniQMT parity).
+        """连接/订阅之后触发 on_account_status（与 MiniQMT 对齐）。
 
-        Big QMT has no per-strategy account-status push; we synthesize a
-        CONNECTED status once the RPC link is up so client code that waits
-        for on_account_status before trading keeps working.
+        大 QMT 没有按策略的账户状态推送；RPC 链路连通后我们合成一次 CONNECTED
+        状态，使那些先等 on_account_status 再交易的客户端代码继续可用。
         """
         callback = self.callback
         if callback is None:
@@ -4863,14 +4685,14 @@ class BigQmtXtTrader:
                     account_id=str(self.client.account_id or ""),
                     account_type=(self._server_account_type
                                   or self._declared_account_type or "STOCK"),
-                    status=1,  # ACCOUNT_STATUS_ONLINE (MiniQMT XtAccountStatus)
+                    status=1,  # ACCOUNT_STATUS_ONLINE（MiniQMT 的 XtAccountStatus）
                 )
             )
         except Exception:
             log.exception("用户回调执行失败：on_account_status")
 
     def _event_loop_poll(self):
-        """One poll-loop round: synthesize exec events by diffing queries (#372).
+        """一轮轮询：通过对比查询结果合成执行事件（#372）。
 
         没有推送通道、valkey 也不可达时，查询 RPC 仍然通——按
         「服务端给副账号做的 #320 轮询」同一个模式，在客户端按 sysid+status
@@ -4888,7 +4710,7 @@ class BigQmtXtTrader:
         failures = 0
         while self._event_running:
             if str(self.client.account_id or "") != account_id:
-                return       # account changed -> outer loop re-selects
+                return       # 账户变了 -> 外层循环重新选通道
             try:
                 orders = self.query_stock_orders(account_id) or []
                 trades = self.query_stock_trades(account_id) or []
@@ -4913,7 +4735,7 @@ class BigQmtXtTrader:
                     tid = str(getattr(trade, "trade_id", "") or "")
                     if tid:
                         seen_trades.add(tid)
-                self._event_ready.set()      # see the valkey path (#247)
+                self._event_ready.set()      # 见 valkey 路径（#247）
                 time.sleep(interval)
                 continue
             for order in orders:
@@ -4987,30 +4809,26 @@ class BigQmtXtTrader:
             time.sleep(interval)
 
     def _on_push_exec_event(self, topic, data):
-        """Push-channel callback. The payload is already a decoded dict, unlike
-        the Valkey path which hands over raw bytes."""
+        """推送通道回调。载荷已经是解码后的 dict，不像 Valkey 路径交来的是原始
+        bytes。"""
         try:
             self._dispatch_event(data)
         except Exception:
             pass
 
     def _event_loop(self):
-        """Receive exec events, mirroring the server's sink choice.
+        """接收执行事件，镜像服务端的 sink 选择。
 
-        The server publishes to Valkey FIRST whenever it can build a Valkey
-        client (its channels carry streams for short replay), even when the
-        RPC transport is zmq, and only falls to the quote push channel after
-        repeated Valkey publish failures (strategy _exec_event_sink, issue
-        #145).  This loop used to choose by transport instead -- zmq -> push
-        channel only -- so a zmq deployment with a working Valkey published
-        every order/trade event to Valkey while the client listened on the
-        push channel: callbacks never fired (issue #144; reproduced
-        2026-09-02, the day's events sat in the Valkey stream while a
-        zmq-transport listener saw nothing).
+        服务端只要能构造出 Valkey 客户端就 **优先** 发布到 Valkey（它的频道带
+        stream，可做短时回放），即使 RPC 传输是 zmq；只有在 Valkey 发布反复
+        失败之后才落到行情推送通道（策略 _exec_event_sink，问题 #145）。这个
+        循环过去却按传输来选——zmq 就只走推送通道——于是一个 Valkey 可用的 zmq
+        部署把每个委托/成交事件都发布到 Valkey，而客户端在推送通道上收听：回调
+        从不触发（问题 #144；2026-09-02 复现，当天的事件积在 Valkey stream 里，
+        而 zmq 传输的监听器什么也没看到）。
 
-        Re-select per reconnect round, so the client follows a server that
-        demotes Valkey mid-session (its Valkey publish failing usually means
-        our Valkey reads fail too).
+        每轮重连都重新选择，使客户端能跟随一个在盘中降级 Valkey 的服务端（它
+        的 Valkey 发布失败，通常也意味着我们的 Valkey 读取会失败）。
         """
         while self._event_running:
             valkey_client = self._exec_events_valkey_or_none()
@@ -5023,14 +4841,13 @@ class BigQmtXtTrader:
                 self._event_loop_poll()
 
     def _exec_events_valkey_or_none(self):
-        """A REACHABLE Valkey client for the exec-event channels, or None.
+        """执行事件频道可用的 Valkey 客户端，或 None。
 
-        _valkey() only builds the client object; the connection is lazy, so
-        an unreachable server would still return one. Ping it -- the channel
-        choice must reflect reachability, not configuration.
+        _valkey() 只构造客户端对象；连接是惰性的，所以不可达的服务端也会返回
+        一个。要 ping 它——频道选择必须反映可达性，而不是配置。
 
-        非 valkey 传输且没有显式 valkey 配置时整步跳过（不建 client、不
-        ping），避免连接未配置的 Valkey。
+        非 valkey 传输且没有显式 valkey 配置时整步跳过（不建 client、不 ping），
+        避免去连未配置的 Valkey。
         """
         transport_name = str(getattr(self.client, "transport_name", "valkey") or "valkey").lower()
         if (transport_name not in ("valkey", "", "default")
@@ -5046,8 +4863,8 @@ class BigQmtXtTrader:
             return None
 
     def _event_loop_valkey(self, valkey_client):
-        """One Valkey round: subscribe the per-account channels until the
-        account changes or the connection dies, then return for re-selection."""
+        """一轮 Valkey：订阅按账户划分的频道，直到账户变化或连接断开，然后
+        返回以便重新选择。"""
         from .exec_events import (
             order_channel,
             trade_channel,
@@ -5065,11 +4882,11 @@ class BigQmtXtTrader:
                 order_error_channel(account_id),
                 cancel_error_channel(account_id),
             )
-            # Subscribed for real -- release start()'s bounded wait (#247).
+            # 真正订阅上了——释放 start() 的有限等待（#247）。
             self._event_ready.set()
             while self._event_running:
                 if str(self.client.account_id or "") != account_id:
-                    return  # account changed -> reconnect and resubscribe
+                    return  # 账户变了 -> 重连并重新订阅
                 message = pubsub.get_message(timeout=1.0)
                 if not message or message.get("type") != "message":
                     continue
@@ -5084,10 +4901,10 @@ class BigQmtXtTrader:
                 pass
 
     def _dispatch_event(self, raw):
-        """Accepts raw bytes/str (Valkey pub/sub) or an already-decoded dict.
+        """接受原始 bytes/str（Valkey 发布/订阅）或已解码的 dict。
 
-        The push channel decodes msgpack/json itself, so it hands over a dict --
-        str(dict) is not valid JSON and would be silently dropped here.
+        推送通道自己完成 msgpack/json 解码，所以交过来的是 dict——str(dict)
+        不是合法 JSON，会在这里被静默丢弃。
         """
         callback = self.callback
         if callback is None:
@@ -5126,8 +4943,8 @@ class BigQmtXtTrader:
                 _sysid = str(event.get("order_sys_id") or "")
                 callback.on_order_error(
                     CompatObject(
-                        # xttype.XtOrderError names both, and account_id
-                        # was already resolved at the top of this method.
+                        # xttype.XtOrderError 同时点名两者，而 account_id 在本
+                        # 方法开头已经解析过了。
                         account_id=account_id,
                         account_type=self._account_type_value(event),
                         error_id=event.get("error_id"),
@@ -5184,9 +5001,8 @@ class BigQmtXtTrader:
             data = self.client.call("query_stock_asset", _with_account_type({"account_id": account_id}, account),
                                     account_id=account_id) or {}
         except Exception:
-            # #243: default is to let the failure through. Only an explicit
-            # account_cache_fallback, with a dated and fresh snapshot, answers
-            # from cache -- and it says so in the log when it does.
+            # #243：默认让失败透出。只有显式开启 account_cache_fallback，并且
+            # 快照带时间且足够新时，才从缓存作答——届时日志里会说明这一点。
             if self._account_cache_usable(account_id, "query_stock_asset") is None:
                 raise
             data = self._cached_asset(account_id)
@@ -5204,24 +5020,23 @@ class BigQmtXtTrader:
         frozen_cash = data.get("frozen_cash")
         market_value = data.get("market_value")
         if market_value is None and cash is not None and total_asset is not None:
-            # total_asset = cash(available) + frozen_cash + market_value. Older
-            # servers send neither frozen_cash nor market_value; deriving without
-            # frozen_cash overstates market value by the frozen amount, so
-            # subtract it whenever the server did report it.
+            # total_asset = cash(可用) + frozen_cash + market_value。旧服务端
+            # 既不发 frozen_cash 也不发 market_value；不扣 frozen_cash 去推导会
+            # 把市值高估一个冻结金额，所以只要服务端给了就减掉它。
             market_value = _safe_float(total_asset) - _safe_float(cash)
             if frozen_cash is not None:
                 market_value -= _safe_float(frozen_cash)
         return CompatObject(
             account_id=account_id,
-            # xttype.XtAsset carries it. #133 added account_type to
-            # order/trade/position; the asset object was missed.
+            # xttype.XtAsset 携带它。#133 给 order/trade/position 加了
+            # account_type；资产对象被漏掉了。
             account_type=self._account_type_value(),
             cash=_safe_float(cash, 0.0) if cash is not None else None,
             available_cash=_safe_float(cash, 0.0) if cash is not None else None,
             fetch_balance=fetch_balance,
             m_dFetchBalance=fetch_balance,
-            # MiniQMT's XtAsset always exposes frozen_cash, so default to 0.0
-            # rather than None: callers do arithmetic on it.
+            # MiniQMT 的 XtAsset 总是暴露 frozen_cash，所以默认 0.0 而不是
+            # None：调用方会拿它做算术。
             frozen_cash=_safe_float(frozen_cash, 0.0) if frozen_cash is not None else 0.0,
             total_asset=_safe_float(total_asset, 0.0) if total_asset is not None else None,
             market_value=_safe_float(market_value, 0.0) if market_value is not None else 0.0,
@@ -5317,10 +5132,10 @@ class BigQmtXtTrader:
         return [self._position_object(account_id, item) for item in self._position_items(data)]
 
     def query_position_statistics(self, account):
-        """Intraday position statistics (futures), mirroring MiniQMT ``query_position_statistics``.
+        """日内持仓统计（期货），对应 MiniQMT 的 ``query_position_statistics``。
 
-        Returns a list of :class:`XtPositionStatistics`-style :class:`CompatObject`.
-        The server queries via ``get_trade_detail_data(..., "POSITION_STATISTICS")``.
+        返回 :class:`XtPositionStatistics` 风格的 :class:`CompatObject` 列表。
+        服务端通过 ``get_trade_detail_data(..., "POSITION_STATISTICS")`` 查询。
         """
         account_id = _account_id(account, self.client.account_id)
         data = self.client.call(
@@ -5379,7 +5194,7 @@ class BigQmtXtTrader:
             close_profit=_safe_float(item.get("close_profit"), None),
             ft_product_name=str(item.get("ft_product_name") or ""),
             open_cost=_safe_float(item.get("open_cost"), None),
-            # ===== native xtquant field-name aliases (m_-prefixed access) =====
+            # ===== 原生 xtquant 字段名别名（m_ 前缀访问）=====
             m_strAccountID=account_id,
             m_strStockCode=str(item.get("stock_code") or ""),
             m_strExchangeID=str(item.get("exchange_id") or ""),
@@ -5490,12 +5305,11 @@ class BigQmtXtTrader:
         return [self._trade_from_dict(account_id, item) for item in _as_list(data)]
 
     def describe_trade_detail_fields(self, account, detail_types=None):
-        """Which attributes QMT's own ORDER / DEAL rows carry. Names only.
+        """QMT 自己的 ORDER / DEAL 行携带哪些属性。只有名字。
 
-        A debugging aid, not part of MiniQMT: when a field comes back empty,
-        this says whether the terminal is not providing it or the bridge is
-        not forwarding it. Those two look identical from the client and have
-        cost a deploy-and-restart each time (#113, #130, #133).
+        调试辅助，不属于 MiniQMT：当某个字段返回为空时，它说明是终端没提供，
+        还是桥接层没有转发。这两者从客户端看完全一样，而每次排查都要部署加重启
+        （#113、#130、#133）。
 
             xt_trader.describe_trade_detail_fields(account)
             -> {'ORDER': {'rows': 15, 'attributes': [...], 'error': ''}, ...}
@@ -5508,24 +5322,23 @@ class BigQmtXtTrader:
                                 account_id=account_id) or {}
 
     def reload_deployment(self, reason="", account=None):
-        """Re-import the deployed package and re-run init, without a restart.
+        """重新导入已部署的包并重跑 init，无需重启。
 
-        Returns as soon as the reload is SCHEDULED -- it runs on the next
-        adjust tick, because performing it stops the RPC service answering the
-        request. Poll reload_status() (or get_deployment_info()) for the
-        outcome.
+        重载 **排期** 完成就立即返回——它在下一个 adjust tick 执行，因为执行重载
+        会让 RPC 服务停止应答本请求。结果请轮询 reload_status()（或
+        get_deployment_info()）。
 
-        Refreshes everything under bigqmt_signal_trader/. It cannot refresh
-        bigqmt_signal_trader_strategy.py or the BIGQMT_VALKEY_DRYRUN entry --
-        QMT execs those, and a module cannot reload the one it is running in.
-        Changes there still need a strategy restart.
+        会刷新 bigqmt_signal_trader/ 下的所有内容。它无法刷新
+        bigqmt_signal_trader_strategy.py 或 BIGQMT_VALKEY_DRYRUN 入口——那些由
+        QMT 执行，而模块无法重载自己正在其中运行的那一个。那边的改动仍需重启
+        策略。
         """
         account_id = _account_id(account, self.client.account_id)
         return self.client.call("reload_deployment", {"reason": str(reason or "")},
                                 account_id=account_id) or {}
 
     def reload_status(self, account=None):
-        """Outcome of the last reload_deployment, or what is still pending."""
+        """最近一次 reload_deployment 的结果，或仍在等待中的部分。"""
         account_id = _account_id(account, self.client.account_id)
         return self.client.call("reload_status", {},
                                 account_id=account_id) or {}
@@ -5536,7 +5349,7 @@ class BigQmtXtTrader:
         order_strategy_name="bigqmt_signal_trader",
         trade_strategy_name="",
     ):
-        """Query orders and account-wide trades in one RPC round trip."""
+        """用一次 RPC 往返查询委托与账户级成交。"""
         account_id = _account_id(account, self.client.account_id)
         data = self.client.call(
             "query_execution_snapshot",
@@ -5576,12 +5389,11 @@ class BigQmtXtTrader:
         return self._order_id(data.get("order_sys_id"))
 
     def _order_id(self, order_sys_id):
-        """MiniQMT's return contract: a positive int, or -1 on failure.
+        """MiniQMT 的返回约定：正整数，失败时 -1。
 
-        Big QMT only has the broker's 合同编号 string, so an OrderId carries
-        both (issue #113). "-1" arrives as a *string* from the server when the
-        submit itself failed, and used to be returned as one -- truthy, and
-        never equal to -1, so a rejected order read as success.
+        大 QMT 只有券商的合同编号字符串，所以 OrderId 两者都带（问题 #113）。
+        提交本身失败时服务端发来的是 **字符串** "-1"，而它过去会被原样返回
+        ——为真、且永远不等于 -1，于是被拒的委托读成了成功。
         """
         text = str(order_sys_id or "").strip()
         if not text or text == "-1":
@@ -5591,10 +5403,9 @@ class BigQmtXtTrader:
         return order_id
 
     def _order_object_id(self, order_sys_id):
-        """``order_id`` for an XtOrder / XtTrade: int, empty stays empty.
+        """XtOrder / XtTrade 的 ``order_id``：int，空的保持为空。
 
-        Unlike the order_stock return there is no -1 here -- a query result
-        either has an id or does not.
+        与 order_stock 的返回值不同，这里没有 -1——查询结果要么有 id，要么没有。
         """
         text = str(order_sys_id or "").strip()
         if not text:
@@ -5604,21 +5415,21 @@ class BigQmtXtTrader:
         return order_id
 
     def _remember_order_id(self, order_id):
-        """Keep int -> 合同编号 so a cancel still works after a round trip.
+        """保留 int -> 合同编号，使往返一趟之后撤单仍可用。
 
-        A caller who stores the id in JSON or a database gets a plain int back,
-        losing the string half. Bounded: this is a convenience, not a ledger.
+        把 id 存进 JSON 或数据库的调用方拿回来的是纯 int，丢了字符串那一半。
+        有界：这是便利，不是账本。
         """
         sys_id = getattr(order_id, "order_sys_id", "")
         if not sys_id or str(int(order_id)) == sys_id:
-            return                       # nothing to remember: they agree
+            return                       # 无需记忆：两者一致
         table = self._order_sys_ids
         table[int(order_id)] = sys_id
         while len(table) > _ORDER_ID_MEMORY:
             table.popitem(last=False)
 
     def _resolve_order_sys_id(self, value):
-        """The broker string for whatever a caller passed to a cancel."""
+        """调用方传给撤单的那个东西对应的券商字符串。"""
         carried = getattr(value, "order_sys_id", None)
         if carried:
             return str(carried)
@@ -5632,12 +5443,11 @@ class BigQmtXtTrader:
         self, account, stock_code, order_type, order_volume, price_type,
         price, strategy_name, order_remark, wait_settlement=True,
     ):
-        """Submit one order over RPC.
+        """通过 RPC 提交一笔委托。
 
-        ``wait_settlement=False`` tells the server to reply as soon as passorder
-        returns instead of holding the reply until QMT assigns the order id.
-        The async path uses it; the id then arrives through order_callback
-        (issue #50).
+        ``wait_settlement=False`` 告诉服务端在 passorder 返回时就回复，而不是
+        压着回复等 QMT 分配订单号。异步路径用它；订单号随后通过 order_callback
+        到达（问题 #50）。
         """
         account_id = _account_id(account, self.client.account_id)
         user_order_id = str(order_remark or "").strip()
@@ -5657,13 +5467,12 @@ class BigQmtXtTrader:
             payload["wait_settlement"] = False
         tracked = getattr(self.client, "call_tracked", None)
         if tracked is None:
-            # A client that cannot name its request (a test double): the
-            # pre-#303 contract, where a timeout is honestly unknown.
+            # 无法自报请求的客户端（测试替身）：#303 之前的契约，超时确实未知。
             try:
                 return self.client.call("order_stock", payload, account_id=account_id) or {}
             except TimeoutError as exc:
                 raise TimeoutError(
-                    "order_stock rpc timeout; user_order_id=%s. Query orders/trades before retrying to avoid duplicate orders. %s"
+                    "order_stock RPC 超时；user_order_id=%s。重试前请先查询委托/成交，避免重复下单。%s"
                     % (user_order_id, exc)
                 )
         request_id = uuid.uuid4().hex
@@ -5673,30 +5482,26 @@ class BigQmtXtTrader:
         except TimeoutError as exc:
             return self._order_stock_after_timeout(request_id, account_id, user_order_id, exc)
 
-    # After a timed-out order_stock: how long to keep asking the server what
-    # became of it, and how often. Covers the server's own settlement wait
-    # (order_settle_timeout_seconds, 3s) with room to spare.
+    # order_stock 超时之后：继续向服务端追问结果的时长与频率。覆盖服务端自己的
+    # 结算等待（order_settle_timeout_seconds，3s）并留有余量。
     ORDER_TIMEOUT_FOLLOWUP_SECONDS = 5.0
     ORDER_TIMEOUT_FOLLOWUP_INTERVAL_SECONDS = 0.5
 
     def _order_stock_after_timeout(self, request_id, account_id, user_order_id, exc):
-        """Turn "timed out, state unknown" into an answer (#303).
+        """把“超时、状态未知”变成一个答案（#303）。
 
-        Under a burst the bridge runs orders one at a time, so a request can
-        outlive its caller's patience. The server keeps every order request's
-        outcome for ten minutes, and ``get_request_outcome`` reads it on the
-        listener thread -- reachable even while the adjust thread is busy.
+        突发时桥接层逐笔执行委托，所以一个请求可能超出调用方的耐心。服务端把每个
+        委托请求的结果保留十分钟，``get_request_outcome`` 在监听线程上读取它——
+        即使 adjust 线程忙也能到达。
 
-            settled     the reply we missed: return it as if it had arrived
-            refused     past its deadline before dispatch: NOT placed
-            unknown     never picked up: it will be refused when it is (it is
-                        past its deadline), so NOT placed either
-            dispatched  passorder ran, the id is still being looked up: keep
-                        asking for a few seconds, then say so
+            settled     我们错过的回复：当作它已到达一样返回
+            refused     分派前已过期：**没有** 下单
+            unknown     从未被取出：取出时会被拒绝（已过期），所以同样
+                        **没有** 下单
+            dispatched  passorder 已执行，订单号仍在查：再追问几秒，然后如实说明
 
-        A server without the method (older than #303) makes the query fail;
-        that falls through to the old message, which was honest about not
-        knowing.
+        没有该方法（早于 #303）的服务端会让查询失败；那就落到旧消息，它对
+        “不知道”是诚实的。
         """
         deadline = time.time() + float(self.ORDER_TIMEOUT_FOLLOWUP_SECONDS)
         last_state = None
@@ -5714,71 +5519,67 @@ class BigQmtXtTrader:
                 response = outcome.get("response") or {}
                 if not response.get("ok"):
                     raise RpcServerRepliedError(
-                        response.get("error") or "Big QMT RPC failed: order_stock")
+                        response.get("error") or "大 QMT RPC 调用失败: order_stock")
                 server_error = str(response.get("server_error") or "")
                 if server_error:
                     raise RpcServerRepliedError(
-                        "Big QMT order_stock server_error: %s" % server_error)
+                        "大 QMT order_stock server_error: %s" % server_error)
                 return _restore_jsonable(response.get("data")) or {}
             if last_state in ("refused", "unknown"):
                 raise TimeoutError(
-                    "order_stock rpc timeout; user_order_id=%s. The bridge did NOT place "
-                    "this order (%s before dispatch): safe to retry, ideally with less "
-                    "concurrency or a longer timeout -- orders run one at a time on the "
-                    "QMT strategy thread. %s"
+                    "order_stock RPC 超时；user_order_id=%s。桥接层未下出"
+                    "这笔委托（分派前%s）：可以安全重试，最好降低并发或加长超时"
+                    "——委托在 QMT 策略线程上逐笔执行。%s"
                     % (user_order_id,
-                       "refused as expired" if last_state == "refused" else "never picked up",
+                       "已过期被拒" if last_state == "refused" else "从未被取出",
                        exc))
             if time.time() >= deadline:
                 break
             time.sleep(self.ORDER_TIMEOUT_FOLLOWUP_INTERVAL_SECONDS)
         if last_state in ("dispatched", "dispatching"):
             raise TimeoutError(
-                "order_stock rpc timeout; user_order_id=%s. passorder DID run for this "
-                "order but QMT had not assigned its id when we stopped waiting: it is "
-                "live. Find it by remark before retrying, or a retry is a duplicate. %s"
+                "order_stock RPC 超时；user_order_id=%s。这笔委托的 passorder "
+                "已执行，但我们停止等待时 QMT 还没分配订单号：它是活的。"
+                "重试前请按备注找到它，否则重试就是重复下单。%s"
                 % (user_order_id, exc))
         raise TimeoutError(
-            "order_stock rpc timeout; user_order_id=%s. Query orders/trades before retrying to avoid duplicate orders. %s"
+            "order_stock RPC 超时；user_order_id=%s。重试前请先查询委托/成交，避免重复下单。%s"
             % (user_order_id, exc)
         )
 
     def _async_order_worker(self):
-        """Drain queued async orders; never fires user callbacks itself.
+        """排空已排队的异步委托；自身从不触发用户回调。
 
-        A single worker rather than a pool: the server handles order RPCs on
-        the QMT adjust thread serially anyway, so concurrency here buys little,
-        while serializing keeps outcome units enqueued in submission order.
-        Callbacks run on the callback worker, so a slow user callback -- or the
-        bounded wait for a late order id -- never holds up the next submit
-        (issue #181). For one order at a time that saves the callback's cost;
-        for a backlog the batch path below saves the round trips too.
+        单个工作线程而不是线程池：服务端本来就在 QMT 的 adjust 线程上串行处理
+        委托 RPC，这里的并发收益很小，而串行化能让结果单元按提交顺序入队。
+        回调在回调工作线程上运行，所以慢的用户回调——或等待迟到订单号的有限
+        等待——永远不会挡住下一次提交（问题 #181）。单笔委托时可省下回调的
+        成本；有积压时下面的批量路径还能省下往返。
         """
         while True:
             job = self._async_order_queue.get()
-            if job is None:          # shutdown sentinel
+            if job is None:          # 关闭哨兵
                 self._async_order_queue.task_done()
                 return
             jobs = [job]
             stopping = False
-            # Take whatever else is already waiting. One RPC for N orders
-            # instead of N: a backlog serializes on the round trip otherwise
-            # (issue #181). Nothing is waited for -- a queue with one job in
-            # it still goes down the single path.
+            # 把已经在等的都取走。N 笔委托一次 RPC 而不是 N 次：否则积压会在
+            # 往返上串行化（问题 #181）。这里不做任何等待——队列里只有一个任务
+            # 时仍走单笔路径。
             while len(jobs) < self.ASYNC_BATCH_MAX:
                 try:
                     extra = self._async_order_queue.get_nowait()
                 except _queue.Empty:
                     break
                 if extra is None:
-                    stopping = True      # honour it after this batch, not instead
+                    stopping = True      # 本批之后再停，而不是改为现在停
                     self._async_order_queue.task_done()
                     break
                 jobs.append(extra)
             try:
                 self._submit_async_jobs(jobs)
             except Exception:
-                # A worker that dies takes every later async order with it.
+                # 工作线程一死，之后所有异步委托都会跟着丢。
                 log.exception("异步委托提交失败 jobs=%d", len(jobs))
             finally:
                 for _ in jobs:
@@ -5787,22 +5588,21 @@ class BigQmtXtTrader:
                 return
 
     def _async_callback_worker(self):
-        """Fire outcome units in enqueue (= submission) order, serially.
+        """按入队（= 提交）顺序串行触发结果单元。
 
-        This thread, not the submit worker, is where user callbacks run. The
-        #51 barrier release rides along inside the same unit, so the ordering
-        contract -- a委托's async_response before its order/trade events --
-        holds exactly as when everything ran on one thread.
+        用户回调在这里运行，而不是在提交工作线程上。#51 的屏障释放在同一个单元
+        里随行，所以顺序契约——一笔委托的 async_response 先于它的 order/trade
+        事件——与全部在单线程上运行时完全一致。
         """
         while True:
             unit = self._async_callback_queue.get()
             try:
-                if unit is None:      # shutdown sentinel
+                if unit is None:      # 关闭哨兵
                     return
                 self._fire_async_outcome(unit)
             except Exception:
-                # The dispatcher dying would strand every later callback AND
-                # every armed barrier, so it must not.
+                # 分发线程若死掉，之后每个回调和每个已布防的屏障都会被搁浅，
+                # 所以它绝不能死。
                 log.exception("异步回调分发失败 seq=%s",
                               unit.get("seq") if isinstance(unit, dict) else "?")
             finally:
@@ -5825,9 +5625,8 @@ class BigQmtXtTrader:
             thread.start()
 
     def _register_exit_drain(self):
-        """atexit hook, registered once: a fire-and-forget script that exits
-        right after queueing must not drop the queued orders silently
-        (issue #156)."""
+        """atexit 钩子，只注册一次：一个入队后立刻退出的“发了就不管”脚本，
+        不能静默丢掉已排队的委托（问题 #156）。"""
         with self._async_order_lock:
             if getattr(self, "_exit_drain_registered", False):
                 return
@@ -5836,15 +5635,13 @@ class BigQmtXtTrader:
         atexit.register(self._drain_async_orders_on_exit)
 
     def _drain_async_orders_on_exit(self):
-        """Best-effort flush of queued async orders at stop()/process exit.
+        """在 stop()/进程退出时尽力冲刷已排队的异步委托。
 
-        The async worker is a daemon thread: a script that exits right after
-        queueing kills it mid-queue, and every order past the first is lost
-        without a word (issue #156: "循环下单只有第一条成功，加 sleep 才正常"
-        -- the sleep was keeping the process alive; reproduced live as 1/3 vs
-        3/3 orders reaching QMT). Drain the queue, then give armed barriers a
-        bounded moment so in-flight responses can fire their callbacks.
-        Never raises: this runs at interpreter exit and inside stop().
+        异步工作线程是守护线程：入队后立刻退出的脚本会把它在队列中途杀掉，第一
+        笔之后的所有委托无声丢失（问题 #156：“循环下单只有第一条成功，加 sleep
+        才正常”——sleep 的作用是让进程活着；实盘复现为 1/3 对 3/3 到达 QMT）。
+        先排空队列，再给已布防的屏障一个有界时刻，使在途回复能触发回调。
+        从不抛异常：它在解释器退出和 stop() 内部运行。
         """
         try:
             self.wait_async_orders(timeout=self.ASYNC_EXIT_DRAIN_SECONDS)
@@ -5864,14 +5661,13 @@ class BigQmtXtTrader:
             pass
 
     # ------------------------------------------------------------------
-    # Async cancel — worker-queue pattern mirroring async orders.
-    # cancel_order_stock_async used to block on the RPC for each cancel;
-    # now it enqueues and returns immediately.  The worker drains the
-    # queue and batches a backlog into one cancel_orders_batch RPC.
+    # 异步撤单——镜像异步委托的工作队列模式。
+    # cancel_order_stock_async 过去每笔撤单都阻塞在 RPC 上；现在它入队后立即
+    # 返回。工作线程排空队列，并把积压合并成一次 cancel_orders_batch RPC。
     # ------------------------------------------------------------------
 
     def _async_cancel_worker(self):
-        """Drain queued async cancels; batches when backlog allows."""
+        """排空已排队的异步撤单；有积压时合并成批。"""
         while True:
             job = self._async_cancel_queue.get()
             if job is None:
@@ -5917,7 +5713,7 @@ class BigQmtXtTrader:
             thread.start()
 
     def _submit_async_cancel_jobs(self, jobs):
-        """Submit cancels one-at-a-time or batched by account."""
+        """逐笔提交撤单，或按账户合并成批。"""
         if len(jobs) < self.ASYNC_CANCEL_BATCH_MIN:
             self._submit_async_cancel_single(jobs[0])
             return
@@ -5925,8 +5721,8 @@ class BigQmtXtTrader:
         for job in jobs:
             seq, args, kwargs = job
             account_id = _account_id(args[0], self.client.account_id)
-            # By id AND type: one stock account's STOCK and HUGANGTONG
-            # cancels are different books on the server.
+            # 按 id 和类型：同一股票账户下 STOCK 与 HUGANGTONG 的撤单在服务端
+            # 是两本不同的账。
             groups.setdefault((account_id, _account_type_param(args[0])), []).append(job)
         for (account_id, _type), group in groups.items():
             if len(group) < self.ASYNC_CANCEL_BATCH_MIN:
@@ -5936,7 +5732,7 @@ class BigQmtXtTrader:
                 self._submit_async_cancel_batch(account_id, group)
 
     def _submit_async_cancel_single(self, job):
-        """One cancel on the worker thread; enqueue its callback."""
+        """在工作线程上执行一次撤单；把它的回调入队。"""
         seq, args, kwargs = job
         account = args[0]
         order_id = args[1] if len(args) > 1 else kwargs.get("order_id", "")
@@ -5968,14 +5764,12 @@ class BigQmtXtTrader:
         })
 
     def _submit_async_cancel_batch(self, account_id, group):
-        """N cancels in one RPC; one callback per item.
+        """一次 RPC 撤 N 笔；每项一个回调。
 
-        Failure taxonomy mirrors the order batch (#195): a batch the server
-        REFUSED (answered with an error -- the handler raises before its
-        per-item loop, so nothing ran) or answered empty is safe to retry as
-        singles; a timeout/transport failure means the cancels may be running
-        and retrying would double-cancel -- report unknown-outcome per item
-        instead."""
+        失败分类与委托批量相同（#195）：服务端 **拒绝** 的批量（以错误作答——
+        处理器在逐项循环之前就抛异常，所以什么都没跑）或答空的批量，可以安全
+        地退回逐笔重试；超时/传输失败意味着撤单可能正在执行，重试会造成重复
+        撤单——此时按项报告“结果未知”。"""
         payload = []
         account = group[0][1][0] if group and group[0][1] else None
         for seq, args, kwargs in group:
@@ -6018,9 +5812,8 @@ class BigQmtXtTrader:
                 })
             return
         if not results:
-            # The server appends one result per item, so nothing back means the
-            # batch never ran -- not that every cancel failed. Fall back to
-            # singles, which is what would have happened anyway.
+            # 服务端为每项追加一条结果，所以什么都没回来意味着批量从未执行
+            # ——而不是每笔撤单都失败了。退回逐笔，那本来也是会发生的结果。
             log.warning("批量撤销 %d 笔未返回结果；正在逐笔提交", len(group))
             for job in group:
                 try:
@@ -6053,11 +5846,10 @@ class BigQmtXtTrader:
                 })
 
     def cancel_order_stock_batch(self, account, cancels, timeout_seconds=None):
-        """Cancel N orders in one RPC.
+        """一次 RPC 撤 N 笔委托。
 
-        Each item in *cancels* is a dict with ``order_sysid`` (or
-        ``order_sys_id`` / ``order_id``) and optional ``market``.
-        Returns a list of per-item result dicts.
+        *cancels* 里每一项是带 ``order_sysid``（或 ``order_sys_id`` /
+        ``order_id``）以及可选 ``market`` 的 dict。返回逐项结果 dict 的列表。
         """
         account_id = _account_id(account, self.client.account_id)
         payload = []
@@ -6096,19 +5888,18 @@ class BigQmtXtTrader:
     # 原样发 response（order_id 回落 remark），不拖住回调。
     ASYNC_SYSID_WAIT_SECONDS = 2.0
 
-    # Batch what is ALREADY queued when the worker wakes (issue #181). Never
-    # waits to fill a batch: a lone order must not get slower so a busy one
-    # can get faster. 2 is the smallest backlog where one round trip beats
-    # two, and 500 is the server's own limit on submit_orders_batch.
+    # 工作线程醒来时，只合并 **已经** 排队的任务（问题 #181）。绝不为凑批而等：
+    # 单独一笔不能因为别的业务繁忙而变慢。2 是一次往返优于两次的最小积压量，
+    # 500 是服务端对 submit_orders_batch 自己的上限。
     ASYNC_BATCH_MIN = 2
     ASYNC_BATCH_MAX = 500
     # stop()/进程退出时：等队列里已排队的 async 委托发完的上限，以及给
     # 在途 response 触发回调的宽限（issue #156）。
     ASYNC_EXIT_DRAIN_SECONDS = 5.0
     ASYNC_EXIT_CALLBACK_GRACE_SECONDS = 3.0
-    # Async cancel: same queue-and-batch pattern as async orders (issue #50
-    # applied to cancel_order_stock_async).  A batch of N cancels in one RPC
-    # instead of N round trips: 15 cancels drop from ~30s to ~2s.
+    # 异步撤单：与异步委托相同的入队并合批模式（问题 #50 应用于
+    # cancel_order_stock_async）。一次 RPC 撤 N 笔而不是 N 次往返：15 笔撤单
+    # 从约 30s 降到约 2s。
     ASYNC_CANCEL_BATCH_MIN = 2
     ASYNC_CANCEL_BATCH_MAX = 500
 
@@ -6199,10 +5990,10 @@ class BigQmtXtTrader:
 
     @staticmethod
     def _async_job_fields(args, kwargs):
-        """(account, stock_code, ...) from either calling convention.
+        """从两种调用约定之一取出 (account, stock_code, ...)。
 
-        order_stock_async forwards *args/**kwargs untouched, so a job may carry
-        either. The batch payload needs them named.
+        order_stock_async 原样转发 *args/**kwargs，所以一个任务可能带其中任一种。
+        批量载荷需要把它们具名。
         """
         names = ("account", "stock_code", "order_type", "order_volume",
                  "price_type", "price", "strategy_name", "order_remark")
@@ -6215,21 +6006,19 @@ class BigQmtXtTrader:
         return out
 
     def _submit_async_jobs(self, jobs):
-        """Submit one job, or a queued backlog, keeping seq order per account."""
+        """提交单个任务或已排队的积压，按账户保持 seq 顺序。"""
         if len(jobs) < self.ASYNC_BATCH_MIN:
             seq, args, kwargs = jobs[0]
             self._submit_async_single(seq, args, kwargs)
             return
-        # order_stock_batch takes ONE account_id, so a mixed backlog splits by
-        # account -- submitting the rest under the first job's account would
-        # place orders on the wrong account. Within an account seq order is
-        # kept; across accounts the order was never a contract.
+        # order_stock_batch 只接受一个 account_id，所以混合积压按账户拆开——把
+        # 其余任务用第一个任务的账户提交，会把委托下到错误的账户上。账户内保持
+        # seq 顺序；跨账户的顺序从来不是契约。
         groups = {}
         for job in jobs:
             fields = self._async_job_fields(job[1], job[2])
             account_id = _account_id(fields.get("account"), self.client.account_id)
-            # By id AND type (港股通 orders on a stock account id are a
-            # different book on the server).
+            # 按 id 和类型（股票账户 id 上的港股通委托在服务端是另一本账）。
             key = (account_id, _account_type_param(fields.get("account")))
             groups.setdefault(key, []).append((job, fields))
         for (account_id, _type), group in groups.items():
@@ -6240,45 +6029,37 @@ class BigQmtXtTrader:
                 self._submit_async_batch(account_id, group)
 
     def _submit_async_batch(self, account_id, group):
-        """Submit a same-account backlog in one RPC, one outcome per job.
+        """用一次 RPC 提交同一账户的积压，每个任务一个结果。
 
-        wait_settlement=False on every item, deliberately. It is what the async
-        contract already asks for (#69), and it also sidesteps a latent bug in
-        the batch handler: _handle_submit_order defaults the flag to True and
-        parks each item's settlement in the single _pending_settlement slot, so
-        only the last item of a batch would ever get its order id backfilled.
+        每个任务都有意置 wait_settlement=False。这本来就是异步契约要求的
+        （#69），同时也绕开批量处理器里一个潜在 bug：_handle_submit_order 把该
+        标志默认为 True，并把每项的结算寄存在唯一的 _pending_settlement 槽位里，
+        于是批量中只有最后一项能拿回它的订单号。
 
-        Fallbacks, and when they are allowed: a batch whose outcome is UNKNOWN
-        (timeout, connection drop) must NOT be resubmitted -- the server may
-        still be running it, and the resubmit doubles the orders (live: a
-        100-item batch outlived the 30s timeout, the fallback resubmitted, and
-        200 orders landed). Only two failure shapes may fall back to
-        one-at-a-time: the server REPLIED with an error (the handler raises
-        before its per-item loop, so nothing ran), and an empty result list
-        (the handler appends one entry per item, so empty means it never ran).
+        回退，以及何时允许回退：结果为 **未知** 的批量（超时、连接断开）绝不能
+        重新提交——服务端可能仍在执行它，重交会让委托翻倍（实盘：100 项的批量
+        超过了 30s 超时，回退重交，最终落地 200 笔）。只有两种失败形态可以退回
+        逐笔：服务端 **以错误作答**（处理器在逐项循环之前抛异常，所以什么都没
+        跑）以及结果列表为空（处理器为每项追加一条，所以空意味着它从未执行）。
         """
         payload = []
         for (seq, args, kwargs), fields in group:
             item = {name: value for name, value in fields.items()
                     if name != "account" and value is not None}
             item["wait_settlement"] = False
-            # A unique per-item signal_id, for the same reason the single path
-            # invents one (#190). It also makes the no-remark case safe against
-            # a server that predates the idempotent flag: the batch tag falls
-            # back to signal_id, so distinct ids cannot collide into a dedup.
-            # An explicit order_remark still wins, and still reaches QMT as the
-            # user wrote it.
-            #
-            # "rpc-<hex>", character for character what _handle_submit_order
-            # invents, so the remark QMT shows for a no-remark async order is
-            # the same "bqrpc:rpc-<hex>" it was on 0.3.20 -- that string is
-            # visible in 备注 and is what the settlement lookup matches on
-            # (#152), so its shape is not free to drift.
+            # 每项唯一的 signal_id，理由与单笔路径自行造一个相同（#190）。它
+            # 还让“无备注”情形对早于幂等标志的服务端安全：批量标签回退到
+            # signal_id，因此不同 id 不会在去重中相撞。显式 order_remark 仍然
+            # 优先，并且仍以用户写的样子到达 QMT。
+            # "rpc-<hex>"，字符级与 _handle_submit_order 造的一致，所以无备注的
+            # 异步委托在 QMT 上显示的备注仍是 0.3.20 时的 "bqrpc:rpc-<hex>"——
+            # 那个字符串在备注里可见，也是结算查找所匹配的东西（#152），因此它
+            # 的形状不能随意漂移。
             item.setdefault("signal_id", "rpc-%s" % uuid.uuid4().hex)
             payload.append(item)
         try:
-            # The first job's StockAccount, not the bare id: order_stock_batch
-            # sends its declared type along (港股通).
+            # 用第一个任务的 StockAccount，而不是裸 id：order_stock_batch 会把
+            # 它声明的类型一起发过去（港股通）。
             batch_account = (group[0][1] or {}).get("account") or account_id
             results = self.order_stock_batch(batch_account, payload,
                                              idempotent=False) or []
@@ -6287,10 +6068,9 @@ class BigQmtXtTrader:
                         len(group), exc)
             results = None
         except Exception as exc:
-            # Timeout / transport failure: the batch's fate is unknown. Do NOT
-            # resubmit -- report each item as unknown-outcome instead. The
-            # message must say the orders may be live, because they may be:
-            # a caller that retries on failure double-orders.
+            # 超时 / 传输失败：批量去向未知。**不要** 重新提交——改为把每项报告
+            # 为结果未知。消息必须说明委托可能是活的，因为它们确实可能是：失败
+            # 就重试的调用方会重复下单。
             log.exception("异步批量委托 %d 笔的结果未知；不会重新提交",
                           len(group))
             for (seq, args, kwargs), fields in group:
@@ -6303,10 +6083,9 @@ class BigQmtXtTrader:
             return
         if not results:
             if results is not None:
-                # The server appends one result per item, so nothing back means
-                # the batch never ran -- not that every order failed. Reporting
-                # N failures here would be the dangerous reading: a caller that
-                # retries on failure would place them all a second time.
+                # 服务端为每项追加一条结果，所以什么都没回来意味着批量从未执行
+                # ——而不是每笔都失败了。在这里报告 N 个失败是最危险的读法：失败
+                # 就重试的调用方会把它们全部再下一次。
                 log.warning("异步批量委托 %d 笔未返回结果；正在逐笔提交",
                             len(group))
             for (seq, args, kwargs), _fields in group:
@@ -6323,13 +6102,12 @@ class BigQmtXtTrader:
             self._enqueue_batch_outcome(seq, fields, by_index.get(index))
 
     def _enqueue_batch_outcome(self, seq, fields, entry):
-        """Translate one item of a batch result into that job's outcome unit.
+        """把批量结果中的一项转换成该任务的结果单元。
 
-        The per-order wait for a late order id is NOT done for batch items.
-        Serially waiting up to ASYNC_SYSID_WAIT_SECONDS on each of N items
-        would undo the batch: 300 orders would spend 600s waiting instead of
-        0.6s submitting. Items whose id is not back yet answer with the remark,
-        and the real id still arrives on the order_callback push like any other.
+        批量项 **不做** 等待迟到订单号。对 N 项逐个串行等
+        ASYNC_SYSID_WAIT_SECONDS 会抵消批量的意义：300 笔委托将花 600s 等待，
+        而不是 0.6s 提交。订单号还没回来的项用备注作答，真正的 id 仍会像其它
+        情况一样通过 order_callback 推送到达。
         """
         remark = str(fields.get("order_remark") or "")
         stock_code = str(fields.get("stock_code") or "")
@@ -6357,16 +6135,16 @@ class BigQmtXtTrader:
         })
 
     def _has_push_channel(self):
-        """Whether exec events can reach this client at all (#345).
+        """执行事件到底能否到达本客户端（#345）。
 
-        Valkey carries them on pub/sub; transports without a push path cannot
-        deliver events emitted after the reply.
+        Valkey 通过发布/订阅承载它们；没有推送路径的传输无法送达回复之后产生的
+        事件。
         """
         transport_name = str(getattr(self.client, "transport_name", "valkey") or "valkey").lower()
         return transport_name in ("valkey", "", "default")
 
     def _submit_async_single(self, seq, args, kwargs):
-        """Submit one job and enqueue its outcome. Runs on the order worker."""
+        """提交一个任务并把结果入队。在委托工作线程上运行。"""
         stock_code = str(kwargs.get("stock_code") or (args[1] if len(args) > 1 else ""))
         remark = self._async_remark(args, kwargs)
         order_remark = str(kwargs.get("order_remark") or (args[7] if len(args) > 7 else "") or "")
@@ -6397,9 +6175,9 @@ class BigQmtXtTrader:
         elif result is not None:
             order_sys_id = str(result)
 
-        # order_stock returns -1 when the submit itself failed. The server also
-        # pushes an order_error for a 废单; the two carry different information
-        # (RPC submit failure vs QMT rejection detail), so both stay available.
+        # 提交本身失败时 order_stock 返回 -1。服务端还会为废单推一条
+        # order_error；两者携带的信息不同（RPC 提交失败 vs QMT 拒单细节），所以
+        # 都保留可用。
         if order_sys_id == "-1" or result == -1:
             self._enqueue_async_outcome({
                 "kind": "error", "seq": seq, "remark": remark,
@@ -6423,11 +6201,11 @@ class BigQmtXtTrader:
         self._async_callback_queue.put(unit)
 
     def _fire_async_outcome(self, unit):
-        """One job's callback, on the dispatcher thread.
+        """单个任务的回调，在分发线程上。
 
-        The barrier release rides in the same unit AFTER the user callback, so
-        the #51 contract -- a委托's async_response before its held order/trade
-        events -- is unchanged from when everything ran on one thread.
+        屏障释放在同一个单元里、位于用户回调 **之后**，所以 #51 契约——一笔委托
+        的 async_response 先于被它扣住的 order/trade 事件——与全部在单线程上
+        运行时保持不变。
         """
         kind = unit.get("kind", "")
         if kind in ("cancel_response", "cancel_error"):
@@ -6455,8 +6233,8 @@ class BigQmtXtTrader:
                         )
                     )
             elif callback is not None:
-                # Native XtOrderResponse shape: one argument carrying
-                # account_id/order_id/seq/error_msg.
+                # 原生 XtOrderResponse 形状：一个参数携带
+                # account_id/order_id/seq/error_msg。
                 #
                 # 委托号异步分配（#50）：服务端应答时通常还没有。触发 response 前
                 # 先等屏障从暂存的委托事件里学到委托号（事件推送一般比 RPC 应答
@@ -6497,7 +6275,7 @@ class BigQmtXtTrader:
             self._release_order_barrier(remark, seq)
 
     def _fire_async_cancel_outcome(self, unit):
-        """Fire on_cancel_order_stock_async_response / on_cancel_error."""
+        """触发 on_cancel_order_stock_async_response / on_cancel_error。"""
         callback = self.callback
         seq = unit["seq"]
         order_id = unit.get("order_id", "")
@@ -6508,14 +6286,13 @@ class BigQmtXtTrader:
                         CompatObject(
                             account_id=self.client.account_id,
                             account_type=self._account_type_value(),
-                            # No code reaches this path (stock_code is ""
-                            # just below), so the market is unknown.
+                            # 没有任何代码会走到这条路径（stock_code 就在下方
+                            # 设为 ""），所以市场未知。
                             market=-1,
                             error_id=unit["error_id"],
                             error_msg=unit["error_msg"],
-                            # seq was missing here while the response path had
-                            # it -- an uncorrelatable error is how "which
-                            # cancel failed?" goes unanswered.
+                            # 这里曾缺 seq，而响应路径有——一个无法关联的错误，
+                            # 正是“哪一笔撤单失败了？”无从回答的原因。
                             seq=seq,
                             order_sysid=str(order_id or ""),
                             order_sys_id=str(order_id or ""),
@@ -6532,12 +6309,10 @@ class BigQmtXtTrader:
                         seq=seq,
                         success=bool(ok),
                         cancel_result=0 if ok else -1,
-                        # The native cancel return answers "the request went
-                        # out", not "the order is cancelled" -- it has been
-                        # false while the cancel landed (#148) and true for a
-                        # nonexistent order (#151). Never word it as a
-                        # rejection; the order-status push (54) or a query is
-                        # the confirmation.
+                        # 原生撤单返回值表达的是“请求已发出”，不是“委托已撤销”
+                        # ——它在撤单已落地时曾为假（#148），在处理不存在的委托时
+                        # 为真（#151）。绝不能把它说成拒单；委托状态推送（54）或
+                        # 一次查询才是确认。
                         error_msg="" if ok else (
                             "cancel not confirmed by the counter; the order may "
                             "still get cancelled -- check the order-status push "
@@ -6554,22 +6329,18 @@ class BigQmtXtTrader:
             )
 
     def order_stock_async(self, *args, **kwargs):
-        """Queue an order and return its seq immediately (MiniQMT semantics).
+        """把委托入队并立刻返回其 seq（MiniQMT 语义）。
 
-        This used to call order_stock inline, so it blocked for the full RPC
-        round trip plus -- after the issue #44 change -- however long the server
-        waited for QMT to assign an order id. That is 0.5-1s per order, which
-        defeats the point of an async API (issue #50).
+        过去这里就地调用 order_stock，于是它要阻塞整个 RPC 往返，外加——#44 那次
+        改动之后——服务端等 QMT 分配订单号的全部时间。每笔 0.5-1s，正好抵消了
+        异步 API 的意义（问题 #50）。
 
-        Now the submit runs on a worker thread and the outcome arrives through
-        on_order_stock_async_response / on_order_error, both carrying the seq so
-        callers can correlate. Returns the seq without touching the network.
+        现在提交在工作线程上运行，结果通过 on_order_stock_async_response /
+        on_order_error 到达，两者都带 seq 以便调用方关联。返回 seq 而不碰网络。
 
-        The worker is a daemon thread: a script whose main thread exits right
-        after queueing kills it mid-queue, losing every order not yet
-        submitted (issue #156). stop() and an atexit hook both drain the queue
-        (bounded); callbacks still require the process to be alive -- they
-        cannot arrive after it is gone. Long-running strategies are unaffected.
+        工作线程是守护线程：主线程在入队后立刻退出的脚本会在队列中途杀掉它，
+        丢掉每一笔还没提交的委托（问题 #156）。stop() 和 atexit 钩子都会排空队列
+        （有界）；回调仍要求进程活着——进程没了它们无法到达。长跑策略不受影响。
         """
         seq = self._next_async_seq()
         # 屏障要在入队之前设好: 委托可能在本函数返回之前就被推送出来。
@@ -6580,13 +6351,11 @@ class BigQmtXtTrader:
         return seq
 
     def wait_async_orders(self, timeout=10.0):
-        """Block until every queued async order has been submitted AND its
-        callback fired.
+        """阻塞直到所有已排队的异步委托都已提交 **且** 其回调已触发。
 
-        For tests and for shutdown; the API itself is fire-and-forget. Returns
-        False on timeout rather than hanging. Uses task_done bookkeeping on both
-        queues, so it covers the in-flight submit and the in-flight callback,
-        not merely the drained queues.
+        用于测试和关闭流程；API 本身是“发了就不管”。超时时返回 False 而不是
+        挂住。两个队列都用 task_done 记账，所以它覆盖在途提交和在途回调，而不
+        只是排空的队列。
         """
         deadline = time.time() + float(timeout)
         for name in ("_async_order_queue", "_async_cancel_queue",
@@ -6602,18 +6371,16 @@ class BigQmtXtTrader:
 
     def order_stock_batch(self, account, orders, batch_id="", idempotent=True,
                           timeout_seconds=None):
-        """Submit N orders in one RPC.
+        """用一次 RPC 提交 N 笔委托。
 
-        ``idempotent`` (default True, unchanged) is the batch contract: every
-        item needs a tag, and a tag already submitted answers success without
-        placing again, so a retried batch cannot double-order. Pass False for
-        callers that never agreed to that -- order_stock_async routes its
-        backlog through here (#181) and lost orders to it (#190).
+        ``idempotent``（默认 True，未改变）是批量契约：每一项都需要标签，已经
+        提交过的标签会答成功而不再下单，因此重试的批量不会重复下单。对从未同意
+        这一点的调用方请传 False——order_stock_async 把积压路由到这里（#181）
+        曾因此丢单（#190）。
 
-        The wait scales with N when not given: the server runs items serially
-        and per-item cost swings from ~ms (market hours) to ~300ms (counter
-        disconnected), so a flat default turns a slow-but-alive batch into a
-        client-side timeout -- and a retried batch doubles orders.
+        未指定时等待时间随 N 放大：服务端逐项串行执行，而每项成本从毫秒级
+        （盘中）摆动到约 300ms（柜台断连），所以固定默认值会把一个慢但活着的
+        批量变成客户端超时——而重试的批量会让委托翻倍。
         """
         account_id = _account_id(account, self.client.account_id)
         payload = []
@@ -6643,25 +6410,23 @@ class BigQmtXtTrader:
     def passorder(self, op_type, order_type, account, order_code, price_type,
                   price, volume, strategy_name="", quick_trade=None,
                   user_order_id="", dry_run=False):
-        """Call QMT's native passorder straight through (route 2).
+        """原样直通 QMT 的原生 passorder（路线 2）。
 
-        The argument order matches QMT's own signature -- opType, orderType,
-        accountid, orderCode, prType, price, volume, strategyName, quickTrade,
-        userOrderId -- with ContextInfo supplied server-side (it only exists
-        inside QMT). Unlike order_stock this exposes orderType and quickTrade,
-        and runs NONE of order_stock's safety nets: no opType validation, no
-        code case-normalization (#95), no settlement read-back. You own the
-        native contract.
+        参数顺序与 QMT 自己的签名一致——opType、orderType、accountid、
+        orderCode、prType、price、volume、strategyName、quickTrade、
+        userOrderId——ContextInfo 由服务端提供（它只存在于 QMT 内部）。与
+        order_stock 不同，它暴露 orderType 和 quickTrade，并且 **不跑**
+        order_stock 的任何安全网：不做 opType 校验、不做代码大小写归一（#95）、
+        不做结算回读。原生契约由你自己负责。
 
-        order_type / quick_trade default to the server config (1101 / 2) when
-        left None, so the common case still reads like order_stock.
+        order_type / quick_trade 留空时取服务端配置（1101 / 2），所以常见情形
+        读起来仍像 order_stock。
 
-        passorder is async and returns no order id (QMT assigns the 合同编号
-        later on the order_callback push), same as order_stock_async. This
-        returns the server's ack dict.
+        passorder 是异步的，不返回订单号（QMT 稍后在 order_callback 推送里分配
+        合同编号），与 order_stock_async 相同。本方法返回服务端的 ack dict。
 
-        dry_run=True returns the exact 11-tuple the server WOULD pass to
-        passorder without placing an order -- use it to check your mapping.
+        dry_run=True 返回服务端 **将要** 传给 passorder 的 11 元组而不下单——
+        用它核对你的映射。
         """
         account_id = _account_id(account, self.client.account_id)
         params = _with_account_type({
@@ -6683,12 +6448,11 @@ class BigQmtXtTrader:
         return self.client.call("passorder", params, account_id=account_id)
 
     def cancel_order_stock_sysid(self, account, market, order_sysid):
-        """MiniQMT contract: 0 on success, -1 on failure (issue #113).
+        """MiniQMT 契约：成功返回 0，失败返回 -1（问题 #113）。
 
-        This returned a bool, which is worse than a type mismatch -- it inverts
-        the meaning. ``if trader.cancel_order_stock(...) == 0`` is how MiniQMT
-        code checks success, and ``False == 0`` is True, so a *failed* cancel
-        read as a successful one while a successful one read as failed.
+        这里过去返回 bool，那比类型不匹配更糟——它把含义反了过来。
+        ``if trader.cancel_order_stock(...) == 0`` 是 MiniQMT 代码检查成功的方式，
+        而 ``False == 0`` 为真，于是 *失败* 的撤单读成成功，成功读成失败。
         """
         account_id = _account_id(account, self.client.account_id)
         data = self.client.call(
@@ -6696,7 +6460,7 @@ class BigQmtXtTrader:
             _with_account_type({
                 "account_id": account_id,
                 "market": market,
-                # Send the broker's own 合同编号, not the int we derived from it.
+                # 发送券商自己的合同编号，而不是我们由它推导出的 int。
                 "order_sysid": self._resolve_order_sys_id(order_sysid),
             }, account),
             account_id=account_id,
@@ -6725,9 +6489,8 @@ class BigQmtXtTrader:
                                     account_id=account_id) or []
         except Exception:
             return []
-        # MiniQMT answers these by attribute (see CompatRow). The server
-        # already relays the terminal's own m_ names, so only the
-        # container was wrong.
+        # MiniQMT 用属性访问这些（见 CompatRow）。服务端已经转发了终端自己的
+        # m_ 名字，所以错的只是容器。
         if isinstance(rows, list):
             return [_as_compat_row(row) for row in rows]
         return _as_compat_row(rows)
@@ -6818,11 +6581,10 @@ class BigQmtXtTrader:
         if max_age_seconds is not None:
             params["max_age_seconds"] = float(max_age_seconds)
         answer = self.client.call("query_credit_account", params, account_id=account_id)
-        # The envelope stays a dict; its rows are the same native credit rows
-        # query_credit_detail returns, and #271 made those attribute-readable
-        # (CompatRow). This path bypassed _query_account_list and was missed,
-        # so ``r["rows"][0].m_dAssureAsset`` raised where the detail path
-        # answered. Same container change, same reason.
+        # 信封仍是 dict；它的行就是 query_credit_detail 返回的同一种原生两融行，
+        # 而 #271 让那些行可属性访问（CompatRow）。这条路径绕过了
+        # _query_account_list 因此被漏掉，于是 ``r["rows"][0].m_dAssureAsset``
+        # 会抛异常，而详情路径能作答。同样的容器改动，同样的理由。
         if isinstance(answer, dict) and isinstance(answer.get("rows"), list):
             answer = dict(answer)
             answer["rows"] = [_as_compat_row(row) for row in answer["rows"]]
@@ -6871,15 +6633,14 @@ class BigQmtXtTrader:
                 {"type": stock_type},
                 account_id=account_id,
             )
-            # get_ipo_data answers with a dict keyed by subscription code.
+            # get_ipo_data 以申购代码为键的 dict 作答。
             if isinstance(data, dict):
                 return data
             if data:
-                # Non-empty and not a dict: an older server is still routing
-                # this through the detail-row normaliser, which iterates the
-                # dict by key and discards every value -- real IPOs arrive as
-                # [{}, {}]. Coercing that to {} silently reports "no IPOs
-                # today", so say so instead of swallowing it.
+                # 非空且不是 dict：旧服务端仍在把它交给明细行规范化器，而那个
+                # 规范化器按键遍历 dict 并丢弃每个值——真实的新股以 [{}, {}]
+                # 形式到达。把它强转成 {} 会静默报告“今天没有新股”，所以这里
+                # 直接说明，而不是吞掉。
                 log.warning(
                     "query_ipo_data：服务端返回 %s，而不是映射对象；"
                     "QMT 端桥接版本过旧，无法保持 get_ipo_data 的返回结构，"
@@ -6908,23 +6669,20 @@ class BigQmtXtTrader:
     def ipo_subscribe_all(self, account=None, stock_type="STOCK",
                           markets=("SH", "SZ"), dry_run=False,
                           strategy_name="ipo"):
-        """Subscribe to today's IPOs. Nothing here runs on a timer.
+        """订阅今天的新股。这里没有任何东西跑在定时器上。
 
-        This is deliberately a call you make, not a behaviour the bridge takes
-        on: it places real orders, so it must be something the operator asked
-        for on that day. It also goes through order_stock, which means it obeys
-        rpc_allow_order_methods and inherits the gateway's passorder settings
-        (orderType 1101, prType 11 指定价, quickTrade 2 -- 2 being the value the
-        API reference requires for a non-bar context).
+        这有意是一个你去发起的调用，而不是桥接层自己承担的行为：它下真实委托，
+        所以必须是操作者在那天要求的。它还会走 order_stock，因此遵守
+        rpc_allow_order_methods 并继承网关的 passorder 设置（orderType 1101、
+        prType 11 指定价、quickTrade 2——2 是 API 参考对非 K 线上下文要求的值）。
 
-        markets: exchanges to subscribe on. SH/SZ subscriptions are backed by
-            market value and freeze no cash; BJ freezes cash, so it is excluded
-            by default. A code whose market cannot be identified is SKIPPED,
-            never subscribed on a guess.
-        dry_run: return the plan without placing anything.
+        markets: 要订阅的交易所。SH/SZ 申购由市值支撑、不冻结资金；北交所冻结
+            资金，所以默认排除。无法识别所属市场的代码会被 **跳过**，绝不在猜测
+            下订阅。
+        dry_run: 只返回计划，不下任何单。
 
-        Returns one dict per candidate: stock_code, name, price, volume,
-        action ("subscribed" / "skipped" / "failed") and reason.
+        每个候选返回一个 dict：stock_code、name、price、volume、
+        action（"subscribed" / "skipped" / "failed"）和 reason。
         """
         allowed = set(str(m).upper() for m in (markets or ()))
         results = []
@@ -6984,13 +6742,12 @@ class BigQmtXtTrader:
         return BigQmtXtTrader._async_seq
 
     def _async_query(self, sync_call, account, callback, *args, **kwargs):
-        """Shared async query helper.
+        """共享的异步查询辅助函数。
 
-        MiniQMT's *_async query methods take a callback and hand the result to
-        it (they return None). We accept an OPTIONAL callback for compat: when
-        given, we call callback(result) synchronously (our RPC is already
-        synchronous) and return None like MiniQMT; when omitted, we keep our
-        seq-returning extension so existing callers don't break.
+        MiniQMT 的 *_async 查询方法接受一个回调并把结果交给它（返回 None）。为
+        兼容起见我们接受一个 **可选** 回调：给了就同步调用 callback(result)
+        （我们的 RPC 本来就是同步的）并像 MiniQMT 一样返回 None；没给就保留我们
+        返回 seq 的扩展，使既有调用方不受影响。
         """
         result = sync_call(account, *args, **kwargs)
         if callback is not None:
@@ -7075,15 +6832,14 @@ class BigQmtXtTrader:
         return self._async_query(self.query_appointment_info, account, callback)
 
     def cancel_order_stock_async(self, account, order_id):
-        """Queue a cancel and return its seq immediately (non-blocking).
+        """把撤单入队并立刻返回其 seq（不阻塞）。
 
-        Used to call cancel_order_stock inline, blocking for the full RPC
-        round trip per cancel.  15 cancels serialised at ~2s each = 30s.
-        Now the cancel runs on a worker thread and a backlog is batched
-        into one RPC (cancel_orders_batch), so 15 cancels take ~2s total.
+        过去这里就地调用 cancel_order_stock，每笔撤单都要阻塞整个 RPC 往返。
+        15 笔撤单各约 2s 串行 = 30s。现在撤单在工作线程上运行，积压会合并成
+        一次 RPC（cancel_orders_batch），所以 15 笔撤单总共约 2s。
 
-        The outcome arrives through on_cancel_order_stock_async_response
-        or on_cancel_error on the callback worker thread.
+        结果通过 on_cancel_order_stock_async_response 或 on_cancel_error 在回调
+        工作线程上到达。
         """
         seq = self._next_async_seq()
         self._ensure_async_cancel_worker()
@@ -7092,7 +6848,7 @@ class BigQmtXtTrader:
         return seq
 
     def cancel_order_stock_sysid_async(self, account, market, order_sysid):
-        """Queue a cancel-by-sysid and return its seq immediately."""
+        """按 sysid 撤单入队并立刻返回其 seq。"""
         seq = self._next_async_seq()
         self._ensure_async_cancel_worker()
         self._register_exit_drain()
@@ -7112,12 +6868,11 @@ class BigQmtXtTrader:
         return -1
 
     def _account_type_value(self, item=None):
-        """account_type for an XtOrder / XtTrade / XtPosition, as an int.
+        """XtOrder / XtTrade / XtPosition 的 account_type，int 形式。
 
-        Server first (it is the one that knows what this deployment trades
-        as -- #103), then what the caller declared, then SECURITY_ACCOUNT so
-        the field is never absent. Positions used to hardcode 2 and orders and
-        trades did not carry it at all (#133).
+        先问服务端（它才知道这个部署交易的是什么类型——#103），其次是调用方
+        声明的，最后是 SECURITY_ACCOUNT，使该字段永不缺失。持仓过去硬编码为 2，
+        而委托和成交则完全不带它（#133）。
         """
         code = _account_type_code((item or {}).get("account_type"))
         if code:
@@ -7159,8 +6914,8 @@ class BigQmtXtTrader:
                 item.get("trade_amount", item.get("m_dTradeAmount"))
             ),
             order_sysid=order_sysid,
-            # MiniQMT: order_id is the int 委托编号, order_sysid the string
-            # 柜台编号. Both, from one 合同编号 (issue #113).
+            # MiniQMT 里 order_id 是 int 形式的委托编号，order_sysid 是字符串
+            # 形式的柜台编号。两者都由同一个合同编号得到（问题 #113）。
             order_id=self._order_object_id(
                 order_sysid or str(item.get("user_order_id") or "")),
             strategy_name=str(item.get("strategy_name") or ""),

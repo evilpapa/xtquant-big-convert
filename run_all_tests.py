@@ -1,14 +1,11 @@
 # coding: utf-8
-"""Run the full test suite from a single entry point.
+"""按模块执行测试并输出汇总。默认跳过需要运行 QMT 和 Valkey 的在线测试。
 
-Groups tests by area and prints a clear per-group + total report. Optional
-live/API tests (need a running QMT + valkey) are skipped by default.
-
-Usage:
-    python run_all_tests.py              # all offline tests (default)
-    python run_all_tests.py -v           # verbose
-    python run_all_tests.py --live       # also run live RPC tests (needs QMT running)
-    python run_all_tests.py --group signal_trader   # only one group
+用法
+    python run_all_tests.py              # 所有离线测试（默认）
+    python run_all_tests.py -v           # 详细输出
+    python run_all_tests.py --live       # 同时运行在线 RPC 测试
+    python run_all_tests.py --group signal_trader   # 只运行指定组
     python run_all_tests.py --group backtest
 """
 import argparse
@@ -20,7 +17,7 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(ROOT, "src")
 
-# Test groups: (name, paths, requires_live)
+# 测试分组（组名、路径、是否需要在线服务）
 GROUPS = [
     ("signal_trader", [os.path.join("tests", "bigqmt_signal_trader")], False),
     ("backtest", [os.path.join("tests", "bigqmt_backtest")], False),
@@ -29,13 +26,13 @@ LIVE_GROUP = ("live_api", ["test_all_apis.py"], True)
 
 
 def run_group(name, paths, verbose):
-    """Run a pytest group, return (passed, failed, skipped, seconds)."""
+    """运行一组 pytest 测试，返回结果计数、耗时、输出和退出码。"""
     cmd = [sys.executable, "-m", "pytest"] + paths + ["-q" if not verbose else "-v"]
     t0 = time.time()
     proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     elapsed = time.time() - t0
     out = (proc.stdout or "") + (proc.stderr or "")
-    # Parse pytest summary like "290 passed in 8.5s" / "1 failed, 289 passed, 3 skipped"
+    # 解析 pytest 的英文汇总，例如 "290 passed in 8.5s" / "1 failed, 289 passed, 3 skipped"
     passed = failed = skipped = 0
     for line in out.splitlines():
         line = line.strip()
@@ -55,10 +52,10 @@ def run_group(name, paths, verbose):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run all bigqmt tests")
+    parser = argparse.ArgumentParser(description="运行大 QMT 桥接测试")
     parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("--live", action="store_true", help="also run live RPC tests (needs QMT)")
-    parser.add_argument("--group", help="run only this group (signal_trader/backtest/live_api)")
+    parser.add_argument("--live", action="store_true", help="同时运行在线 RPC 测试（需启动 QMT）")
+    parser.add_argument("--group", help="只运行指定组（signal_trader/backtest/live_api）")
     args = parser.parse_args()
 
     groups = list(GROUPS)
@@ -67,11 +64,11 @@ def main():
     if args.group:
         groups = [g for g in groups if g[0] == args.group]
         if not groups:
-            print("Unknown group: %s (available: %s)" % (args.group, ", ".join(g[0] for g in GROUPS + [LIVE_GROUP])))
+            print("未知分组 %s（可选：%s）" % (args.group, ", ".join(g[0] for g in GROUPS + [LIVE_GROUP])))
             return 1
 
     print("=" * 70)
-    print("Big QMT Bridge - 全量测试")
+    print("大 QMT 桥接全量测试")
     print("=" * 70)
 
     total_passed = total_failed = total_skipped = 0
@@ -84,12 +81,12 @@ def main():
         total_failed += failed
         total_skipped += skipped
         total_time += elapsed
-        status = "PASS" if failed == 0 and rc == 0 else "FAIL"
-        print("  %s: %d passed, %d failed, %d skipped (%.1fs)" % (status, passed, failed, skipped, elapsed))
+        status = "通过" if failed == 0 and rc == 0 else "失败"
+        print("  %s: %d 项通过，%d 项失败，%d 项跳过（%.1f 秒）" % (status, passed, failed, skipped, elapsed))
         if failed or rc != 0:
             failed_groups.append(name)
             if not args.verbose:
-                # print the failing part of the output for visibility
+                # 输出末尾的失败详情。
                 tail = "\n".join(out.splitlines()[-20:])
                 print(tail)
 

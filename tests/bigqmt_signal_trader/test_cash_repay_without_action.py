@@ -199,7 +199,7 @@ class AmountSlotTest(unittest.TestCase):
                 "order_volume": 0, "price_type": xtconstant.FIX_PRICE, "price": 8077.0})
         message = str(caught.exception)
         self.assertIn("order_volume", message)
-        self.assertIn("price is ignored", message)
+        self.assertIn("price 被忽略", message)
         self.assertIn("8077.0", message)
 
     def test_a_fractional_cash_balance_as_volume_is_the_same_mistake(self):
@@ -209,7 +209,7 @@ class AmountSlotTest(unittest.TestCase):
             handlers.handle("order_stock", {
                 "stock_code": "600000.SH", "order_type": xtconstant.CREDIT_DIRECT_CASH_REPAY,
                 "order_volume": 0.85, "price_type": xtconstant.FIX_PRICE, "price": 8077.0})
-        self.assertIn("integer yuan", str(caught.exception))
+        self.assertIn("以整数元计", str(caught.exception))
 
     def test_the_amount_in_volume_goes_through_and_price_is_dropped(self):
         passorder = _Passorder()
@@ -225,4 +225,4 @@ class AmountSlotTest(unittest.TestCase):
             handlers.handle("order_stock", {
                 "stock_code": "600000.SH", "order_type": xtconstant.STOCK_BUY,
                 "order_volume": 0, "price_type": xtconstant.FIX_PRICE, "price": 10.0})
-        self.assertEqual("volume must be positive", str(caught.exception))
+        self.assertEqual("volume 必须为正", str(caught.exception))

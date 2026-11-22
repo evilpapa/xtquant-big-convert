@@ -1,17 +1,16 @@
-"""Real-time order/trade (execution) event push over Valkey.
+"""通过 Valkey 实时推送委托/成交（执行）事件。
 
-Big QMT fires ``order_callback(ContextInfo, orderInfo)`` and
-``deal_callback(ContextInfo, dealInfo)`` inside the strategy process. We normalize
-the QMT order/deal object (ThinkTrader ``m_*`` fields) into a plain dict and
-publish it to a Valkey channel, so clients receive ``on_stock_order`` /
-``on_stock_trade`` callbacks in real time (MiniQMT style) instead of polling.
+Big QMT 在策略进程中触发 ``order_callback(ContextInfo, orderInfo)`` 和
+``deal_callback(ContextInfo, dealInfo)``。我们将 QMT 委托/成交对象（ThinkTrader
+的 ``m_*`` 字段）标准化为普通字典，并发布到 Valkey 频道，使客户端能够实时收到
+``on_stock_order`` / ``on_stock_trade`` 回调（MiniQMT 风格），无需轮询。
 
-Channels (also used as capped streams for short replay, xadd + publish):
+频道（同时作为带容量上限的短期重放流使用，采用 xadd + publish）：
 - ``bigqmt:order_events:{account_id}``
 - ``bigqmt:trade_events:{account_id}``
 
-The normalized field names match ``BigQmtXtTrader._order_from_dict`` /
-``_trade_from_dict`` so the client can shape them straight into MiniQMT objects.
+标准化后的字段名与 ``BigQmtXtTrader._order_from_dict`` /
+``_trade_from_dict`` 匹配，因此客户端可以直接将其构造为 MiniQMT 对象。
 """
 
 import json

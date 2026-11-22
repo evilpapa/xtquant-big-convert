@@ -28,6 +28,8 @@ pip install ".[valkey]"
 
 本项目要求 **Python 3.12 或更高版本**，适用于客户端、QMT 策略和独立串口桥接。直连 Valkey 的 QMT 策略需在实际运行的解释器中安装 `valkey`。客户端和策略可连接同一个现有 Valkey 服务。部署步骤见[使用指南](docs/USER_GUIDE.md)。
 
+外部客户端、CLI 和串口桥接会读取启动目录中的 `.env`。可参照 [`.env.example`](.env.example) 设置 `BIGQMT_ACCOUNT_ID` 和 Valkey 连接参数。显式传入的参数优先，其次是 `.env`，再按各入口原有顺序读取其他配置。QMT 策略沿用部署配置和进程环境，`bigqmt-init` 可在 QMT 外读取 `.env` 的账号和 Valkey 分项值，作为生成部署配置的默认值。
+
 ## 文档在哪里
 
 - [使用指南](docs/USER_GUIDE.md)：功能、配置与排错

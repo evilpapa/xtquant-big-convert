@@ -1228,7 +1228,7 @@ class ValkeyRpcTest(unittest.TestCase):
 
         response = json.loads(valkey_client.kv["bigqmt:rpc:resp:other:req-2"])
         self.assertFalse(response["ok"])
-        self.assertIn("account_id mismatch", response["error"])
+        self.assertIn("account_id 不匹配", response["error"])
 
     def test_order_rpc_is_disabled_by_default(self):
         valkey_client, service = _service()
@@ -1499,7 +1499,7 @@ class DownloadHistoryDataTest(unittest.TestCase):
                 "start_time": "20230101",
                 "end_time": "",
             })
-        self.assertIn("no download channel", str(caught.exception))
+        self.assertIn("没有下载通道", str(caught.exception))
         self.assertIn("probe_capabilities", str(caught.exception))
 
     def test_download_history_data2_false_native_return_raises(self):

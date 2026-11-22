@@ -1,9 +1,7 @@
-"""Valkey Pub/Sub RPC for the Big QMT runtime.
+"""大 QMT 的 RPC 请求分发和应答。
 
-By default, the service can process selected requests directly in the Valkey
-listener thread. The in-memory queue and ``drain_pending`` are kept as a
-runtime fallback for environments where a QMT API must run from a strategy
-callback thread.
+服务可在监听线程直接处理指定请求。依赖策略上下文的 QMT API 通过
+内存队列交给策略线程，由 drain_pending 执行。
 """
 
 import base64
@@ -23,8 +21,7 @@ from . import exec_events as _exec_events
 from .models import AccountSnapshot, OrderRef, OrderRequest
 
 
-# time.monotonic: unaffected by wall-clock jumps, so a settle deadline
-# survives an NTP correction mid-session. Python 3.3+, fine on QMT's 3.6.
+# 用单调时钟计算确认期限，避免系统校时影响。
 _monotonic = time.monotonic
 
 
@@ -119,15 +116,12 @@ ORDER_METHODS = {
     "submit_orders_batch",
     "cancel_order",
     "cancel_orders_batch",
-    # Raw native-passorder passthrough (route 2). Gated behind
-    # allow_order_methods like every other write, and deferred to the adjust
-    # thread by virtue of not being in READ_METHODS.
+    # 直接透传原生 passorder，受 allow_order_methods 控制，由 adjust 执行。
     "passorder",
 }
 
-# Whole-quote push subscription control methods. These drive a server-side
-# QuoteSubscriptionManager (reference-counted ContextInfo.subscribe_whole_quote)
-# rather than a market_data read; the data itself flows over the push channel.
+# 全推订阅控制方法交给 QuoteSubscriptionManager 按引用计数管理。
+# 行情数据通过独立推送通道发送。
 QUOTE_SUBSCRIPTION_METHODS = {
     "subscribe_whole_quote",
     "unsubscribe_whole_quote",
@@ -138,11 +132,8 @@ QUOTE_SUBSCRIPTION_METHODS = {
 
 LISTENER_DEFERRED_METHODS = {
     "sync_positions",
-    # Trade-context queries route through QMT's get_trade_detail_data, which
-    # returns EMPTY when called from the background RPC thread (it needs the main
-    # strategy thread's context). Defer them so the adjust drain runs them on the
-    # main thread -- costs up to one adjust interval (~500ms) but returns real
-    # data. Asset queries use the same QMT detail API and must follow this rule.
+    # get_trade_detail_data 在后台线程返回空结果，资产和其他交易查询
+    # 都交给主策略线程的 adjust 执行。
     "get_asset",
     "get_positions",
     "get_position_statistics",
@@ -185,18 +176,8 @@ LISTENER_DEFERRED_METHODS = {
     "get_history_trade_detail_data",
 }
 
-# Trade-context queries route through QMT's get_trade_detail_data, which
-# returns EMPTY when called from the background RPC thread (it needs the main
-# strategy thread's context). Defer them so the adjust drain runs them on the
-# main thread -- costs up to one adjust interval (~500ms) but returns real
-# data. Asset queries use the same QMT detail API and must follow this rule.
-#
-# NOTE: do NOT blanket-defer all READ_METHODS here. Market-data reads
-# (get_full_tick, get_market_data, ...) are thread-safe in the embedded
-# terminal and must stay inline for low latency; the ZMQ transport has no
-# adjust-driven drain for pending requests (its drain_request_queue is a
-# no-op when the router thread exists), so deferring everything would stall
-# them forever. Only the trade-context methods listed above go through drain.
+# READ_METHODS 中的行情查询可以在监听线程执行。仅将上列依赖交易上下文的
+# 查询交给策略线程，以免缺少队列轮询的传输方式无法处理普通查询。
 
 
 METHOD_ALIASES = {
@@ -222,11 +203,8 @@ SELL_ORDER_TYPES = {"24", "STOCK_SELL", "SELL", "S"}
 CANCELABLE_ORDER_STATUSES = {"50", "55"}
 CANCELED_ORDER_STATUSES = {"53", "54"}
 
-# Default 投资备注 / strategy name on an order the caller did not name.
-# QMT shows it in the 委托 list's 报单来源 column (issue #154), so it is
-# visible to anyone reading that screen. Override per call with
-# strategy_name=, or once with rpc_default_strategy_name in the config;
-# "" leaves the column blank the way a hand-placed order does.
+# 默认投资备注显示在 QMT 委托列表的「报单来源」列（#154）。
+# 可通过单次调用的 strategy_name 或配置 rpc_default_strategy_name 覆盖，空字符串留空。
 DEFAULT_ORDER_STRATEGY_NAME = "bigqmt_rpc"
 # query_credit_account 是查柜台的，官方参考 6.13 原话：「本函数只能有一个查询，
 # 如果前面的查询正在进行中，后面的查询将会提前返回。本函数从服务器查询数据，
@@ -263,10 +241,9 @@ CREDIT_ACCOUNT_MAX_AGE_SECONDS = 120.0
 CREDIT_ACCOUNT_DEFAULT_WAIT_SECONDS = 0.0
 CREDIT_ACCOUNT_MAX_WAIT_SECONDS = 10.0
 TERMINAL_NON_CANCEL_ORDER_STATUSES = {"56", "57"}
-# 51 已报待撤 / 52 部成待撤: the exchange has ACCEPTED the cancel and it is
-# on its way. Neither cancelled nor failed -- keep waiting, and at the
-# deadline report the acceptance instead of a "still status 51" failure
-# (issue #151; the narrow-window twin of the #148 false negative).
+# 51 已报待撤 / 52 部成待撤：交易所已 **接受** 撤单、正在途中。既不是已撤也
+# 不是失败——继续等待，到截止时间时报“已受理”，而不是报“仍为状态 51”的失败
+# （问题 #151；#148 假阴性的窄窗口孪生）。
 CANCEL_IN_FLIGHT_STATUSES = {"51", "52"}
 SAFE_B64_PREFIX = "b64s:"
 SAFE_B64_DIGIT_ENCODE = str.maketrans("0123456789", "!#$%&()*~?")
@@ -333,7 +310,7 @@ MARKET_DATA_METHODS = {
     "get_hkt_statistics",
     "get_hkt_details",
     # 自定义板块（写）。issue #143：这一族以前只有 create_sector，而它在大 QMT
-    # 上是静默空操作；其余几个在白名单里有名字却没实现，调用报 not implemented。
+    # 上是静默空操作；其余几个在白名单里有名字却没实现，调用报「未实现」。
     "create_sector",
     "create_sector_folder",
     "add_stock_to_sector",
@@ -378,36 +355,33 @@ MARKET_DATA_METHODS = {
     "timetag_to_datetime",
 }
 
-# Keep READ_METHODS in sync with MARKET_DATA_METHODS: every market-data method
-# forwarded to the adapter is also callable over RPC. (create_sector is a write
-# op — creates/updates a custom sector — but it is harmless to expose; trading
-# order writes stay gated behind ORDER_METHODS + allow_order_methods.)
+# 保持 READ_METHODS 与 MARKET_DATA_METHODS 同步：每个转发给适配器的行情方法
+# 也都能通过 RPC 调用。（create_sector 是写操作——创建/更新自定义板块——但暴露
+# 它无害；交易类写操作仍受 ORDER_METHODS + allow_order_methods 约束。）
 READ_METHODS |= MARKET_DATA_METHODS
 READ_METHODS |= QUOTE_SUBSCRIPTION_METHODS
 
-# Reads that are heavy whatever their arguments (#351): a financial read is
-# 0.8s hot and minutes cold (#104), formula evaluation and factor generation
-# run to completion. In the adjust drain (rpc_background_threads False) every
-# one of these runs ON the strategy thread, and a 1.8s get_market_data_ex is
-# the strategy's own tick_app stopped for 1.8s -- the reason #321 took the
-# LPOP off the adjust thread. Heavy reads instead go to one worker thread:
-# their reply pays the cross-thread GIL handoff (~1 tick per acquisition).
+# 无论参数如何都很重的读取（#351）：财务读取热态 0.8s、冷态数分钟（#104），
+# 公式求值和因子生成会跑到结束。在 adjust 排空（rpc_background_threads False）
+# 时，这些每一个都在 **策略线程** 上跑，而一次 1.8s 的 get_market_data_ex 就是
+# 策略自己的 tick_app 停 1.8s——这正是 #321 把 LPOP 移出 adjust 线程的原因。
+# 重读取改为交给一个工作线程：它们的回复要付跨线程 GIL 交接成本（每次获取约
+# 一 tick）。
 #
-# What the worker buys depends on how much of the call QMT runs with the GIL
-# released. Measured live (2026-09-22, 100ms tick, each read hammered back to
-# back on the worker, 'adjust cadence' avg / max over 10s windows):
+# 工作线程能带来多少收益，取决于 QMT 在这次调用中有多少时间释放了 GIL。
+# 实盘实测（2026-09-22，100ms tick，每次读取都反复打回工作线程，「adjust
+# 节奏」为 10s 窗口内的均值 / 最大值）：
 #
-#     get_full_tick ["SH","SZ"]   read ~200ms   cadence 0.100 / 0.25-0.33s
-#     get_market_data_ex 3 x 4mo 1m  ~500ms     cadence 0.100 / 0.27-0.29s
-#     get_financial_data 10 x 3 tables ~2.1s    cadence 0.100 / ~0.5s
-#     download_history_data2 5 codes ~1.2s      cadence 0.56-0.63 / 1.3-1.5s
+#     get_full_tick ["SH","SZ"]      读取 ~200ms      节奏 0.100 / 0.25-0.33s
+#     get_market_data_ex 3 x 4mo 1m   ~500ms          节奏 0.100 / 0.27-0.29s
+#     get_financial_data 10 x 3 表    ~2.1s           节奏 0.100 / ~0.5s
+#     download_history_data2 5 代码   ~1.2s           节奏 0.56-0.63 / 1.3-1.5s
 #
-# The first three release the GIL for most of the read: the tick keeps its
-# average and its worst case shrinks from the whole read to a fraction. A
-# download holds the GIL for its whole duration -- the worker changes
-# nothing for the tick and adds a tick or two to the reply -- so download_*
-# stays inline. Trade-context methods (LISTENER_DEFERRED_METHODS) are never
-# in this set: get_trade_detail_data answers empty off the main thread.
+# 前三个在读取的大部分时间里释放 GIL：tick 保持其均值，最坏情况从整次读取
+# 缩短到其中一部分。下载在全程持有 GIL——工作线程对 tick 没有任何改善，还要给
+# 回复增加一两个 tick——所以 download_* 保持就地执行。交易上下文方法
+# （LISTENER_DEFERRED_METHODS）永远不在这个集合里：get_trade_detail_data 在
+# 非主线程上答空。
 HEAVY_READ_METHODS = frozenset([
     "get_financial_data",
     "get_raw_financial_data",
@@ -421,10 +395,10 @@ HEAVY_READ_METHODS = frozenset([
     "get_longhubang",
 ])
 
-# Reads that are heavy by SIZE: one code is milliseconds, a market token or a
-# long list is seconds (get_full_tick: 0.29ms per instrument, 1.1s for "SH",
-# 7.4s for all of it; get_market_data_ex: tick period 3.9s per code, a date
-# window of 1m bars 0.3-1.4s). _heavy_by_size decides per request.
+# 因 **规模** 而重的读取：一个代码是毫秒级，市场标记或长名单是秒级
+# （get_full_tick：每标的 0.29ms，"SH" 要 1.1s，
+# 全部读要 7.4s；get_market_data_ex 每个代码 tick 周期 3.9s，1m K 线的日期
+# 窗口 0.3-1.4s）。由 _heavy_by_size 按请求判定。
 HEAVY_READ_CODE_METHODS = frozenset([
     "get_ticks",            # get_full_tick
     "get_market_data",
@@ -453,16 +427,14 @@ def _is_valkey_timeout(exc):
 
 
 def to_jsonable(value):
-    # Fast path for the shapes that dominate a market payload. A whole-market
-    # snapshot is 1.9M nodes, and every one of them used to walk the full
-    # type-probing chain below -- starting with a getattr(value, "item") that
-    # misses on every plain float. Measured on 51285 instruments: 628.7ms ->
-    # 328.0ms, byte-identical output.
+    # 行情载荷里占主导的几种形状的快路径。全市场快照有 190 万个节点，过去每个
+    # 都要走下面完整的类型探测链——从对每个普通 float 都落空的
+    # getattr(value, "item") 开始。在 51285 个标的上实测：628.7ms -> 328.0ms，
+    # 输出字节完全相同。
     #
-    # Checked by exact type, not isinstance, on purpose: numpy's float64 is a
-    # subclass of float, so identity checks let it fall through to the full
-    # path where _maybe_scalar still unwraps it. Being fast here must not
-    # change what anything serialises to.
+    # 有意按精确类型而不是 isinstance 判断：numpy 的 float64 是 float 的子类，
+    # 用身份检查能让它落到完整路径、由 _maybe_scalar 解包。这里的提速不能改变
+    # 任何东西序列化后的结果。
     kind = type(value)
     if kind is float:
         return None if (math.isnan(value) or math.isinf(value)) else value
@@ -489,16 +461,14 @@ def to_jsonable(value):
         try:
             columns = value.columns
             if getattr(columns, "nlevels", 1) > 1:
-                # Python 3.12 QMT terminals answer the multi-stock forms of
-                # get_financial_data / get_top10_share_holder / get_market_data
-                # with a MultiIndex DataFrame where pandas.Panel used to be
-                # (pandas removed Panel in 1.0; the 3.12 runtime ships 3.0).
-                # reset_index()/to_dict below would flatten the tuple column
-                # labels into strings -- "('000002.SZ', 'close')" -- and the
-                # client would rebuild a frame it cannot index by code. Slice
-                # by the first level instead and reuse the Panel envelope,
-                # whose client rebuild is {code: DataFrame}: the same
-                # df[code] sub-table shape both pandas generations serve.
+                # Python 3.12 的 QMT 终端对 get_financial_data /
+                # get_top10_share_holder / get_market_data 的多股票形式用
+                # MultiIndex DataFrame 作答，而那里过去是 pandas.Panel（pandas
+                # 1.0 移除了 Panel；3.12 运行时自带 3.0）。下面的
+                # reset_index()/to_dict 会把元组列标签压平成字符串——
+                # "('000002.SZ', 'close')"——客户端就会重建一个无法按代码索引的
+                # frame。改为按第一层切片并复用 Panel 信封，它的客户端重建结果是
+                # {code: DataFrame}：两代 pandas 都提供的同一个 df[code] 子表形状。
                 codes = list(columns.get_level_values(0).unique())
                 return {
                     "__bigqmt_type__": "Panel",
@@ -525,16 +495,14 @@ def to_jsonable(value):
             }
         except Exception:
             return str(value)
-    # pandas Panel (3-D). QMT ships pandas 0.22, where get_financial_data with
-    # several stocks AND several dates still returns one. A Panel has no
-    # .columns and no .index, so it falls past the DataFrame and Series
-    # branches all the way to the __dict__ fallback -- and vars(panel) is
-    # {'_data': ..., 'is_copy': None}, which the underscore filter reduces to
-    # {'is_copy': None}. That is exactly what callers got back (issue #115):
-    # not an error, just the one public attribute the object happened to have.
-    #
-    # pandas removed Panel in 1.0, so the client cannot rebuild one even if we
-    # sent the axes. Send a DataFrame per item instead; it arrives as a dict.
+    # pandas Panel（三维）。QMT 自带 pandas 0.22，其中 get_financial_data 在多
+    # 股票且多日期时仍返回一个。Panel 没有 .columns 也没有 .index，于是它越过
+    # DataFrame 和 Series 分支一路落到 __dict__ 兜底——而 vars(panel) 是
+    # {'_data': ..., 'is_copy': None}，经下划线过滤后只剩 {'is_copy': None}。
+    # 这正是调用方当时拿到的（问题 #115）：不是错误，只是该对象恰好有的那个
+    # 公开属性。
+    # pandas 1.0 移除了 Panel，所以即使把轴发过去客户端也重建不出来。改为每项
+    # 发一个 DataFrame；它到达时是 dict。
     if (hasattr(value, "major_axis") and hasattr(value, "minor_axis")
             and hasattr(value, "items") and not isinstance(value, dict)):
         try:
@@ -570,16 +538,13 @@ def to_jsonable(value):
 
 
 def _rows_for_this_submit(orders, remark, stock_code, action, submitted_at):
-    """The order rows that can be THIS submit's, earliest first.
+    """可能是本次提交的委托行，最早的在前。
 
-    Remark match is necessary but not sufficient (#299): the caller may have
-    reused it. A row also has to be the same stock and, when the row states
-    a side, the same side; and when the row carries an insert time it must
-    not be earlier than the second this submit happened in. Rows are then
-    ordered by insert time, earliest first, so a later reuse of the same
-    remark on the same stock (a grid's next rung, placed while this one was
-    still settling) does not shadow this one. Rows without an insert time
-    keep the terminal's order and come after the timed ones.
+    备注匹配是必要条件而非充分条件（#299）：调用方可能复用了它。一行还必须是
+    同一只股票，且当该行给出方向时方向也要相同；当该行带插入时间时，它不能早于
+    本次提交所在的秒。随后按插入时间升序排列，使同一股票上稍后对同一备注的复用
+    （网格的下一档，在本笔还在结算时下的）不会遮蔽本笔。没有插入时间的行保留
+    终端顺序，并排在有时间的行之后。
     """
     want_remark = str(remark or "").strip()
     stock_code = normalize_stock_code(stock_code)
@@ -607,17 +572,14 @@ def _rows_for_this_submit(orders, remark, stock_code, action, submitted_at):
 
 
 class OrderSettlement(object):
-    """One order awaiting its order_sys_id.
+    """一笔等待 order_sys_id 的委托。
 
-    Why this cannot simply run on a background thread: get_trade_detail_data
-    returns EMPTY off the main strategy thread (see LISTENER_DEFERRED_METHODS),
-    so a background poll would find nothing and report every order as silently
-    rejected. The retries have to happen on the adjust thread -- just without
-    holding it.
+    为什么不能简单地放到后台线程：get_trade_detail_data 在非主策略线程上返回空
+    （见 LISTENER_DEFERRED_METHODS），所以后台轮询什么也找不到，并把每笔委托都
+    报成静默拒单。重试必须发生在 adjust 线程上——只是不要占着它。
 
-    server_error is carried here rather than on handlers._last_server_error:
-    that slot belongs to whichever request is in flight, and settling writes to
-    it long after this request left the handler (issue #43).
+    server_error 放在这里，而不是 handlers._last_server_error：那个槽位属于当时
+    在途的任意请求，而结算写它的时候本请求早已离开处理器（问题 #43）。
     """
 
     __slots__ = ("order_request", "result", "deadline", "attempts", "server_error",
@@ -631,31 +593,26 @@ class OrderSettlement(object):
         self.server_error = ""
         self.request = None
         self.response = None
-        # A shadow settlement (#345) belongs to an order whose reply already
-        # went out (order_stock_async, wait_settlement=False). It is not
-        # answered; it only watches for the order to show up, and when the
-        # deadline passes without it, pushes an order_error so the caller's
-        # on_order_error fires for a refusal the terminal made before creating
-        # any order record (insufficient funds: a dialog on the QMT screen,
-        # no callback, nothing on the wire).
+        # 影子结算（#345）属于回复已经发出去的那种委托（order_stock_async，
+        # wait_settlement=False）。它不会被作答；它只盯住这笔委托是否出现，并在
+        # 截止时间已过仍无踪影时推一条 order_error，使调用方的 on_order_error 因
+        # 终端在创建任何委托记录之前就做的拒单而触发（资金不足：QMT 屏幕上弹窗、
+        # 无回调、链路上什么都没有）。
         self.shadow = bool(shadow)
-        # Wall-clock instant taken BEFORE passorder ran (#299). Anything the
-        # lookup finds that was recorded before this instant -- a watch-table
-        # entry, an order row -- belongs to an earlier order that happened to
-        # carry the same remark, never to this one.
+        # 在 passorder 执行 **之前** 取的墙钟时刻（#299）。查找发现的、记录时间
+        # 早于此刻的任何东西——盯盘表条目、委托行——都属于恰好带同一备注的上一笔
+        # 委托，绝不属于本笔。
         self.submitted_at = time.time() if submitted_at is None else float(submitted_at)
 
 
 class CancelSettlement(object):
-    """One native cancel result awaiting the order's actual status.
+    """一份等待委托实际状态的原生撤单结果。
 
-    Full QMT's injected ``cancel`` return is not reliable across terminal
-    builds -- in either direction.  On Guojin 2.1.19.0 it returned falsey
-    even though the broker acknowledged the request and the order moved to
-    status 54 within 67 ms (issue #148), and truthy for orders that do not
-    exist at all (issue #151).  Like order-id settlement, status readback
-    must stay on the adjust thread because get_trade_detail_data is empty on
-    worker threads.
+    大 QMT 注入的 ``cancel`` 返回值在不同终端构建之间都不可靠——两个方向都是。
+    在国金 2.1.19.0 上，即使券商已确认请求、委托在 67ms 内进入状态 54，它也返回
+    假（问题 #148）；而对根本不存在的委托却返回真（问题 #151）。与订单号结算
+    一样，状态回读必须留在 adjust 线程上，因为 get_trade_detail_data 在工作线程
+    上为空。
     """
 
     __slots__ = ("order_ref", "account_id", "result", "deadline", "attempts",
@@ -663,7 +620,7 @@ class CancelSettlement(object):
 
     def __init__(self, order_ref, account_id, result, deadline, account_type=None):
         self.order_ref = order_ref
-        # The type the cancel request named (港股通), read back under it.
+        # 撤单请求声明的类型（港股通），在该类型下回读。
         self.account_type = account_type
         self.account_id = account_id
         self.result = result
@@ -674,7 +631,7 @@ class CancelSettlement(object):
 
 
 class BigQmtRpcHandlers:
-    """Whitelisted RPC method handlers backed by replaceable adapters."""
+    """白名单 RPC 方法处理器，由可替换的适配器支撑。"""
 
     def __init__(
         self,
@@ -691,13 +648,11 @@ class BigQmtRpcHandlers:
         quote_subscription_manager=None,
         default_strategy_name=None,
     ):
-        # What an order carries when the caller names no strategy. It is not
-        # internal: QMT puts it in the 委托 list's 报单来源 column, so every
-        # order announces "bigqmt_rpc" to anyone reading that screen, and a
-        # reporter asked to be rid of it (issue #154). Per-call
-        # strategy_name= always won; there was just no way to set the default
-        # once. Empty string is a real answer here -- it leaves the column
-        # blank, the way a hand-placed order does.
+        # 调用方没有指定策略时，委托携带的内容。它不是内部的：QMT 把它显示在
+        # 委托列表的「报单来源」列里，所以每笔委托都在向看那个界面的人宣告
+        # "bigqmt_rpc"，有位报告者要求去掉它（问题 #154）。逐次调用的
+        # strategy_name= 一直优先；只是没有办法一次性设定默认值。这里空字符串是
+        # 一个真实答案——它让该列留空，就像手工下的单一样。
         self.default_strategy_name = (
             DEFAULT_ORDER_STRATEGY_NAME if default_strategy_name is None
             else str(default_strategy_name))
@@ -708,38 +663,32 @@ class BigQmtRpcHandlers:
         self.position_sync_sink = position_sync_sink
         self.allow_order_methods = bool(allow_order_methods)
         self.quote_subscription_manager = quote_subscription_manager
-        # QMT runtime-injected global functions (passorder/get_trade_detail_data/
+        # QMT 运行时注入的全局函数（passorder/get_trade_detail_data/
         # 融资融券查询等)。由 strategy._build_config 解析注入。
         self.qmt_api = dict(qmt_api or {})
         self._submit_journal = {}
-        # In-process order-identity journal: remark -> strategy_name, written
-        # at submit time and read back at query time. The Valkey identity store
-        # covers restarts and other processes; this covers deployments with no
-        # Valkey at all (zmq single-file), where attribution used to silently
-        # read "" forever (issue #156 follow-up to #133). The runtime enables
-        # a disk journal for Valkey-free deployments before serving requests.
-        # Bounded FIFO, same seven-day TTL as the Valkey store.
+        # 进程内订单身份日志：remark -> strategy_name，提交时写入、查询时回读。
+        # Valkey 身份库覆盖重启和其它进程；这个覆盖完全没有 Valkey 的部署（zmq
+        # 单文件），那里归属过去会永远读到 ""（问题 #156，接 #133）。运行时会在
+        # 开始服务请求之前，为无 Valkey 的部署启用磁盘日志。有界 FIFO，与 Valkey
+        # 存储相同的七天 TTL。
         self._order_identity_local = collections.OrderedDict()
-        # Settled-id journal (#299 follow-up): remark -> OrderedDict of the
-        # order_sys_ids already handed out for it, insertion-ordered. The
-        # stock/side/not_before guards compare ARRIVAL times -- of a callback
-        # event, of an order row -- and arrival is not ownership: measured
-        # live 2026-09-14, order 1 settled through the poll while its
-        # order_callback landed a few ms later, i.e. AFTER order 2 (same
-        # remark, same stock, submitted serially) had begun; the fresh
-        # arrival timestamp passed order 2's not_before guard and order 1's
-        # already-returned id answered order 2's settlement. An id this
-        # bridge returned for a remark is that order's forever, and must
-        # never be offered to a later same-remark settlement again.
+        # 已结算 id 日志（#299 后续）：remark -> 已发出的 order_sys_ids 的
+        # OrderedDict，按插入顺序。股票/方向/not_before 守卫比较的是 **到达**
+        # 时间——回调事件的、委托行的——而到达不等于归属：2026-09-14 实盘测得，
+        # 委托 1 通过轮询结算完成，而它的 order_callback 晚几毫秒才到，即晚于
+        # 委托 2（同备注、同股票、串行提交）开始之后；新鲜的到达时间通过了委托 2
+        # 的 not_before 守卫，而委托 1 已返回的 id 却去回答了委托 2 的结算。桥接层
+        # 为某个备注返回的 id，永远属于那笔委托，绝不能再次提供给后来同备注的
+        # 结算。
         self._settled_sysids_by_remark = collections.OrderedDict()
-        # Order settlement. Async by default: blocking here holds the QMT main
-        # strategy thread, which serializes every other request behind it and
-        # caps throughput at ~2 orders/sec (issue #44).
+        # 委托结算。默认异步：在这里阻塞会占住 QMT 主策略线程，把其它所有请求
+        # 串行排在后面，并把吞吐上限压到约 2 笔/秒（问题 #44）。
         self._pending_settlement = None
         self.settle_orders_inline = bool(settle_orders_inline)
         self.order_settle_timeout_seconds = float(order_settle_timeout_seconds)
-        # Server-side diagnostic for silent failures (e.g. passorder submitted
-        # but order not found in system). Surfaced to client via server_error.
+        # 对静默失败的服务端诊断（例如 passorder 已提交但委托不在系统里）。通过
+        # server_error 送到客户端。
         self._last_server_error = ""
         # 上一次 hollow 告警的时间戳。节流是必须的：一个跑错线程的部署会让
         # **每一次**交易类查询都 hollow，不节流的话日志会被刷爆（#139 就是
@@ -790,11 +739,10 @@ class BigQmtRpcHandlers:
         requested_method = str(method or "").strip()
         method = self._canonical_method(requested_method)
         params = dict(params or {})
-        # Clear the diagnostic slot per request. It is instance state read by
-        # EVERY response (see _build_response), so without this a single failed
-        # submit_order stamps its server_error onto every later ping/query until
-        # the next order runs -- reporting a stale failure on requests that
-        # succeeded (issue #43).
+        # 每个请求清空诊断槽位。它是被 **每个** 响应读取的实例状态（见
+        # _build_response），所以没有这一句，一次失败的 submit_order 会把它的
+        # server_error 盖到之后每次 ping/查询上，直到下一笔委托运行为止——在成功
+        # 的请求上报告过期的失败（问题 #43）。
         self._last_server_error = ""
         self._pending_settlement = None
         if not requested_method:
@@ -803,17 +751,15 @@ class BigQmtRpcHandlers:
             raise ValueError("rpc method is not allowed: %s" % requested_method)
         if method in ORDER_METHODS and not self.allow_order_methods:
             raise PermissionError("order rpc methods are disabled")
-        # query_stock_positions is list-shaped in MiniQMT.  It remains an
-        # alias of get_positions for permission and adjust-thread routing, but
-        # needs its own handler so same-contract long/short rows are not
-        # collapsed by the provider's legacy mapping contract.
+        # query_stock_positions 在 MiniQMT 里是列表形状。它在权限和 adjust 线程
+        # 路由上仍是 get_positions 的别名，但需要自己的处理器，以免同合约的多空
+        # 行被 provider 的旧映射契约合并。
         if requested_method == "query_stock_positions":
             handler = self._handle_query_stock_positions
         else:
             handler = getattr(self, "_handle_%s" % method, None)
-        # The account type the caller's StockAccount named, scoped to this
-        # request on this thread: a 港股通 query on a stock account id reads
-        # HUGANGTONG rows instead of STOCK ones (account_type_map).
+        # 调用方 StockAccount 声明的账户类型，限定在本线程的本次请求上：股票账户
+        # id 上的港股通查询读的是 HUGANGTONG 行而不是 STOCK 行（account_type_map）。
         from .account_type_map import request_account_type
 
         with request_account_type(params.get("account_type")):
@@ -832,9 +778,9 @@ class BigQmtRpcHandlers:
             "version": _deployed_version(),
             "account_type": self._reported_account_type(
                 params.get("account_id") or self.account_id),
-            # Every type this account may be addressed as (港股通 on a stock
-            # account: ["STOCK", "HUGANGTONG", "SHENGANGTONG"]); the client's
-            # mismatch warning checks its StockAccount type against this list.
+            # 本账户可能被当作的所有类型（股票账户上的港股通：["STOCK",
+            # "HUGANGTONG", "SHENGANGTONG"]）；客户端的不匹配告警会拿它的
+            # StockAccount 类型对照这个列表。
             "account_types": self._reported_account_types(
                 params.get("account_id") or self.account_id),
             "server_time": _dt.datetime.now(),
@@ -851,17 +797,15 @@ class BigQmtRpcHandlers:
             return []
 
     def _reported_account_type(self, account_id=None):
-        """What this deployment will actually trade as.
+        """这个部署实际会以什么类型交易。
 
-        The client's StockAccount(..., "CREDIT") never reaches the server --
-        the type comes from BIGQMT_ACCOUNT_TYPE in the QMT-side config -- so a
-        caller declaring CREDIT against a STOCK deployment has no way to see
-        the mismatch. It shows up as an all-zero credit asset row instead
-        (issue #92). Empty when there is no gateway to ask.
+        客户端的 StockAccount(..., "CREDIT") 永远不会到达服务端——类型来自 QMT 侧
+        配置的 BIGQMT_ACCOUNT_TYPE——所以在一个 STOCK 部署上声明 CREDIT 的调用方
+        无从看到不一致。它呈现为一行为全零的两融资产（问题 #92）。没有网关可问
+        时为空。
 
-        When account_id is given and the gateway supports per-request
-        resolution, the map-aware type is returned (same #92 class of bug
-        for multi-account deployments where a FUTURE account sees "STOCK").
+        给了 account_id 且网关支持按请求解析时，返回按映射解析后的类型（多账户
+        部署下 FUTURE 账户看到 "STOCK" 是同一类 #92 bug）。
         """
         gateway = self.order_gateway
         if gateway is None:
@@ -871,14 +815,12 @@ class BigQmtRpcHandlers:
         return str(getattr(gateway, "account_type", "") or "").strip().upper()
 
     def _handle_get_deployment_info(self, params):
-        """Where this bridge is running from, and which build it is.
+        """这个桥接层从哪儿运行，以及是哪个构建。
 
-        Deploying into QMT is a file copy, and QMT keeps modules in sys.modules
-        across strategy re-runs -- so "the copy never happened" and "the copy
-        landed but was not picked up" are indistinguishable from the client
-        side. This lets the client ask instead of guessing, and gives a sync
-        tool somewhere to copy to without the trading process rewriting its own
-        code.
+        部署到 QMT 只是拷文件，而 QMT 在策略重跑之间把模块留在 sys.modules 里——
+        所以“拷贝根本没发生”和“拷贝落地了但没被加载”从客户端看无法区分。这让
+        客户端可以去问，而不是猜测，也给同步工具提供了拷贝目标，而无需交易进程
+        重写自己的代码。
         """
         import os
         import sys as _sys
@@ -897,14 +839,14 @@ class BigQmtRpcHandlers:
         except Exception:
             pass
         try:
-            # Submodule: the QMT sandbox never execs the root package.
+            # 子模块：QMT 沙箱从不执行根包。
             from bigqmt_signal_trader.version import deployment_report
 
             version, package_dir = deployment_report()
             info["version"] = version
             info["package_dir"] = package_dir
-            # The QMT python directory is the package's parent: that is where a
-            # sync tool writes, and where the top-level modules live.
+            # QMT 的 python 目录是包的父目录：同步工具往那里写，顶层模块也住在
+            # 那里。
             info["qmt_python_dir"] = os.path.dirname(package_dir)
         except Exception as exc:
             info["error"] = "%s: %s" % (exc.__class__.__name__, exc)
@@ -1075,10 +1017,9 @@ class BigQmtRpcHandlers:
         return True
 
     def _issue_credit_account_query(self, account_id):
-        """Fire query_credit_account once, honouring the counter's rate limit.
+        """触发一次 query_credit_account，遵守柜台的频率限制。
 
-        Returns (issued, reason). Not issuing is a normal outcome, not a
-        failure: the cached answer is still served.
+        返回 (issued, reason)。不发起是正常结果而非失败：缓存答案仍会照常提供。
         """
         func = self.qmt_api.get("query_credit_account")
         if not callable(func):
@@ -1297,7 +1238,7 @@ class BigQmtRpcHandlers:
                 except Exception as exc:
                     sample[name] = "unknown: %s" % exc.__class__.__name__
             report["sample"] = sample
-        # #351: in the adjust drain, heavy reads go to the worker thread.
+        # #351：在 adjust 排空时，重读取交给工作线程。
         heavy_thread = getattr(service, "_heavy_thread", None)
         report["background_threads"] = bool(getattr(service, "background_threads", True))
         report["heavy_offload"] = bool(getattr(service, "heavy_offload", False))
@@ -1322,12 +1263,11 @@ class BigQmtRpcHandlers:
         return report
 
     def _probe_credit_account_object(self):
-        """Read-only probe of the credit account object behind query_credit_detail.
+        """对 query_credit_detail 背后两融账户对象的只读探测。
 
-        Reports the row count and, when there is a row, m_nBrokerType (3 =
-        信用) plus whether the credit-only fields came through -- so an empty
-        answer can be told apart from a non-credit account, which the bare
-        [] the reporter saw could not (#201).
+        报告行数，以及有行时报告 m_nBrokerType（3 = 信用）和两融专属字段是否
+        真的带回来了——这样才能把空答案和非两融账户区分开，而报告者看到的裸
+        [] 无法区分（#201）。
         """
         # getattr 而不是属性直取：不是每种 gateway 都有这个属性（dry-run 的就
         # 没有），而 probe_capabilities 是诊断接口，它自己崩掉是最坏的结果。
@@ -1354,11 +1294,10 @@ class BigQmtRpcHandlers:
         return report
 
     def _probe_reply_residency(self):
-        """How long finished replies wait for the transport to send them.
+        """已完成的回复等 transport 发送它们要等多久。
 
-        Handlers run on the adjust thread, so on zmq every reply is queued for
-        the router thread and only leaves at the top of its loop. This says
-        whether that wait is where the round trip goes (#104).
+        处理器在 adjust 线程上运行，所以在 zmq 上每个回复都排给 router 线程，
+        只在该循环顶部才会离开。这能说明往返时间是否花在那种等待上（#104）。
         """
         transport = getattr(self, "rpc_transport", None)
         stats = getattr(transport, "reply_residency_stats", None)
@@ -1373,15 +1312,14 @@ class BigQmtRpcHandlers:
         return report
 
     def _probe_order_watch(self):
-        """Is the callback-fed settlement table live here (issue #164)?
+        """回调驱动的结算表在这里是活的吗（问题 #164）？
 
-        The table is wired onto the handlers by bigqmt_signal_trader_strategy,
-        a top-level file QMT execs -- reload_deployment cannot refresh it. So a
-        deployment can carry every line of the #164 code and still be running
-        the old poll loop until someone restarts the strategy, with nothing to
-        tell the two apart. This says which one is running.
+        这张表由 bigqmt_signal_trader_strategy 挂到 handlers 上，而那是 QMT 执行
+        的顶层文件——reload_deployment 刷新不了它。于是一个部署可以带着 #164 的
+        每一行代码，却仍在跑旧的轮询循环，直到有人重启策略，而没有任何东西能把
+        两者区分开。这里就是告诉你跑的是哪一个。
 
-        Counts only: remarks and order ids identify orders.
+        只报计数：备注和订单号会暴露具体委托。
         """
         table = getattr(self, "order_watch_table", None)
         if table is None:
@@ -1437,7 +1375,7 @@ class BigQmtRpcHandlers:
         }
 
         native = None
-        # Skip native SDK probing when explicitly disabled.
+        # 显式禁用时跳过原生 SDK 探测。
         if getattr(self.market_data, "native_xtdata_enabled", True) is False:
             report["native_xtdata_loaded"] = False
             report["native_xtdata_skipped"] = "native_xtdata_enabled=False"
@@ -1510,7 +1448,7 @@ class BigQmtRpcHandlers:
     def _require_quote_manager(self):
         manager = self.quote_subscription_manager
         if manager is None:
-            raise RuntimeError("whole-quote push subscription is not configured on this server")
+            raise RuntimeError("本服务端没有配置全推推送订阅")
         return manager
 
     @staticmethod
@@ -1519,12 +1457,12 @@ class BigQmtRpcHandlers:
         client_id = str(params.get("client_id") or "").strip()
         sub_id = str(params.get("sub_id") or "").strip()
         if not client_id:
-            raise ValueError("client_id is required")
+            raise ValueError("client_id 是必需的")
         if not sub_id:
-            raise ValueError("sub_id is required")
+            raise ValueError("sub_id 是必需的")
         codes = [str(c) for c in (params.get("codes") or []) if str(c or "").strip()]
         if require_codes and not codes:
-            raise ValueError("codes is required")
+            raise ValueError("codes 是必需的")
         return client_id, sub_id, codes
 
     def _handle_subscribe_whole_quote(self, params):
@@ -1539,8 +1477,8 @@ class BigQmtRpcHandlers:
         return {}
 
     def _handle_unsubscribe_whole_quote_batch(self, params):
-        """Release many sub_ids in one RPC (#418): per-item release cost N
-        RPCs plus N push-subscriber rebuilds on the client."""
+        """用一次 RPC 释放多个 sub_id（#418）：逐项释放的代价是 N 次 RPC，
+        外加客户端 N 次推送订阅者重建。"""
         manager = self._require_quote_manager()
         client_id = str(params.get("client_id") or "")
         sub_ids = params.get("sub_ids") or params.get("sub_id") or []
@@ -1555,35 +1493,30 @@ class BigQmtRpcHandlers:
         return {}
 
     def _handle_quote_subscription_status(self, params):
-        """Read-only: what is subscribed, by how many clients, and how stale.
+        """只读：订阅了什么、有多少客户端、陈旧程度如何。
 
-        The answer to "I lost my seq and something is still pushing": a combo
-        that stays fresh has a LIVE keepalive feeding it (a leftover client
-        process, not a leak); one going silent past the heartbeat timeout is
-        about to be reaped.
+        “我丢了 seq 但还有东西在推”的答案：一直新鲜的组合有 LIVE keepalive 在
+        喂它（是遗留的客户端进程，不是泄漏）；超过心跳超时后静默的即将被回收。
         """
         return self._require_quote_manager().status()
 
     def _handle_quote_unsubscribe_all(self, params):
-        """Operator kill switch: tear every combo down without needing a seq.
+        """运维急停：不需要 seq 就能拆掉所有组合。
 
-        keepalive is a no-op on unknown sub_ids, so a force-cleared combo
-        stays down until someone subscribes again.
+        keepalive 对未知 sub_id 是空操作，所以被强制清掉的组合会一直静默，直到
+        有人重新订阅。
         """
         manager = self._require_quote_manager()
         return {"unsubscribed": manager.unsubscribe_all()}
 
     def _identity_valkey(self):
-        """Valkey for the order-identity store, or None.
+        """订单身份库用的 Valkey，或 None。
 
-        Deliberately its own attribute rather than reusing the download-job
-        client. Only a valkey TRANSPORT builds that one, so on a zmq deployment
-        it is None -- which silently meant orders were never remembered at
-        submit time and so could never be attributed on query (issue #133).
-        The strategy wires this one from the valkey config whatever the
-        transport, and falls back to the download-job client for deployments
-        that predate it. Everything here treats None as "no attribution",
-        never as an error: naming an order is a nicety, the order is not.
+        有意用独立属性，而不是复用下载任务的客户端。只有 valkey **传输** 会构造
+        那个，所以在 zmq 部署上它是 None——于是委托在提交时从没被记住，查询时
+        也就永远无法归属（问题 #133）。策略无论什么传输都按 valkey 配置把这个
+        接好，并对早于它的部署回退到下载任务客户端。这里的一切都把 None 当作
+        “无归属”，而不是错误：给委托起名字是锦上添花，委托本身不是。
         """
         return (getattr(self, "order_identity_valkey_client", None)
                 or getattr(self, "download_job_valkey_client", None))
@@ -1591,31 +1524,26 @@ class BigQmtRpcHandlers:
     def _download_job_valkey(self):
         valkey_client = getattr(self, "download_job_valkey_client", None)
         if valkey_client is None:
-            raise RuntimeError("download jobs require a Valkey client")
+            raise RuntimeError("下载任务需要 Valkey 客户端")
         return valkey_client
 
     def _require_download_worker(self):
-        """Refuse to queue work nothing is going to pick up.
+        """拒绝把没人会取的工作排进队列。
 
-        The worker is _pump_download_jobs on the adjust tick, and it is OFF by
-        default on Big QMT for the reason the runtime records: the terminal's
-        embedded xtdata SDK has no reachable data service, so a download would
-        raise 无法连接行情服务 anyway. Same root cause as the download_* methods
-        in #130.
+        工作线程是 adjust tick 上的 _pump_download_jobs，而它在大 QMT 上默认关闭，
+        原因见运行时的记录：终端内嵌的 xtdata SDK 没有可达的数据服务，所以下载
+        本来就会抛「无法连接行情服务」。与 #130 里 download_* 方法同一根因。
 
-        Accepting a job into a queue no one drains looks like success and never
-        completes -- worse than the refusal it replaces. So say no, and say
-        which switch turns it on.
+        把任务接受进一个无人排空的队列，看起来像成功却永不完成——比它替代的拒绝
+        更糟。所以直接说不，并说明哪个开关能打开它。
         """
         if not getattr(self, "download_jobs_enabled", False):
             raise RuntimeError(
-                "async download jobs are disabled on this deployment, so a "
-                "submitted job would sit in the queue forever: nothing runs it. "
-                "Big QMT's embedded xtdata SDK has no reachable data service to "
-                "download through. Supplement history from the terminal's "
-                "数据管理/补充数据 UI and read it back with get_market_data_ex / "
-                "get_local_data. Set download_jobs_enabled=True in the local "
-                "config only where a MiniQMT/xtdata data service is reachable.")
+                "本部署已禁用异步下载任务，提交的任务会永远留在队列里：没有东西"
+                "去执行它。大 QMT 内嵌的 xtdata SDK 没有可达的数据服务可供下载。"
+                "请在终端的 数据管理/补充数据 界面补充历史数据，再用 "
+                "get_market_data_ex / get_local_data 读回。只有在 MiniQMT/xtdata "
+                "数据服务可达的环境下，才在本地配置里设 download_jobs_enabled=True。")
 
     def _handle_submit_download_history_data2(self, params):
         self._require_download_worker()
@@ -1648,10 +1576,10 @@ class BigQmtRpcHandlers:
 
         job_id = params.get("job_id")
         if not job_id:
-            raise ValueError("job_id is required")
+            raise ValueError("job_id 是必需的")
         status = read_download_status(self._download_job_valkey(), self.account_id, job_id)
         if status is None:
-            raise KeyError("download job not found or expired: %s" % job_id)
+            raise KeyError("下载任务不存在或已过期: %s" % job_id)
         return status
 
     def _handle_wait_download(self, params):
@@ -1659,7 +1587,7 @@ class BigQmtRpcHandlers:
 
         job_id = params.get("job_id")
         if not job_id:
-            raise ValueError("job_id is required")
+            raise ValueError("job_id 是必需的")
         return wait_download_job(
             self._download_job_valkey(),
             self.account_id,
@@ -1677,26 +1605,26 @@ class BigQmtRpcHandlers:
             code = params.get("code")
             codes = [code] if code else []
         if not codes:
-            raise ValueError("codes or code is required")
+            raise ValueError("codes 或 code 是必需的")
         types = params.get("types")
         if isinstance(types, str):
             types = [types]
         if not types:
-            # Pass one argument when nothing was asked for, so a market-data
-            # provider whose get_ticks takes only `codes` keeps working.
+            # 什么都没要求时只传一个参数，使 get_ticks 只接受 `codes` 的行情
+            # provider 仍能工作。
             return self.market_data.get_ticks(codes)
         return self.market_data.get_ticks(codes, types=list(types))
 
     def _handle_get_instrument(self, params):
         code = params.get("code")
         if not code:
-            raise ValueError("code is required")
+            raise ValueError("code 是必需的")
         return self.market_data.get_instrument(code)
 
     def _handle_market_data_method(self, method, params):
         handler = getattr(self.market_data, method, None)
         if handler is None:
-            raise NotImplementedError("market data method is not available: %s" % method)
+            raise NotImplementedError("行情方法不可用: %s" % method)
         return handler(**dict(params or {}))
 
     def _handle_get_positions(self, params):
@@ -1718,7 +1646,7 @@ class BigQmtRpcHandlers:
     def _handle_query_stock_position(self, params):
         stock_code = str(params.get("stock_code") or params.get("code") or "").strip()
         if not stock_code:
-            raise ValueError("stock_code is required")
+            raise ValueError("stock_code 是必需的")
         normalized_code = normalize_stock_code(stock_code)
         positions = self.position_provider.get_positions(self._request_account_id(params))
         return positions.get(normalized_code)
@@ -1728,11 +1656,10 @@ class BigQmtRpcHandlers:
 
     def _handle_query_orders(self, params):
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
-        # strategy_name filters orders by the name used in passorder. An empty
-        # string returns ALL orders for the account (verified via diagnostic:
-        # st="" -> 9 orders, st="bigqmt_signal_trader" -> 0). Default to ""
-        # so callers see every order unless they explicitly filter.
+            raise RuntimeError("order_gateway 未配置")
+        # strategy_name 按 passorder 里用的名字过滤委托。空字符串返回该账户的
+        # **全部** 委托（诊断确认过：st="" -> 9 笔，st="bigqmt_signal_trader" ->
+        # 0 笔）。默认 ""，使调用方看到每一笔委托，除非显式过滤。
         orders = self.order_gateway.query_orders(
             self._request_account_id(params),
             str(params.get("strategy_name") or ""),
@@ -1749,9 +1676,9 @@ class BigQmtRpcHandlers:
 
     def _handle_query_trades(self, params):
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
-        # Empty strategy_name returns ALL deals for the account (see query_orders
-        # note). Default "" so callers see every trade unless they filter.
+            raise RuntimeError("order_gateway 未配置")
+        # 空 strategy_name 返回该账户的 **全部** 成交（见 query_orders 的说明）。
+        # 默认 ""，使调用方看到每笔成交，除非显式过滤。
         strategy_name = params.get("strategy_name")
         if strategy_name is None:
             strategy_name = ""
@@ -1769,21 +1696,17 @@ class BigQmtRpcHandlers:
             _exec_events.ORDER_IDENTITY_TTL_SECONDS)
 
     def _attribute_to_strategies(self, account_id, snapshots):
-        """Put the caller's strategy name on rows this bridge submitted.
+        """把调用方的策略名写到本桥接层提交的行上。
 
-        Neither the ORDER nor the DEAL rows get_trade_detail_data returns carry
-        m_strStrategyName -- checked by listing every attribute on a live
-        terminal. What the row DOES carry (m_strSource) is the QMT-side
-        strategy's registered name -- this bridge process's name, e.g.
-        BIGQMT_VALKEY_DRYRUN -- not the strategy_name the caller passed at order
-        time (#216: placed as 'DaBanStrategy', reported as '大QMT桥接器').
-        #174 misread that field as "passorder's strategyName coming back".
+        get_trade_detail_data 返回的 ORDER 和 DEAL 行都不带 m_strStrategyName
+        ——在实盘终端上列举每一个属性验证过。行确实带的（m_strSource）是 QMT 侧
+        策略的注册名——本桥接进程的名字，例如 BIGQMT_VALKEY_DRYRUN——而不是调用
+        方下单时传的 strategy_name（#216：以 'DaBanStrategy' 下单，回报成
+        '大QMT桥接器'）。#174 把那个字段误读为“passorder 的 strategyName 回来了”。
 
-        Orders this bridge submitted are remembered at submit time, keyed by
-        the user_order_id that rides out as the order remark, and that record
-        is authoritative -- it WINS over the row's field whenever it has a
-        name. Rows without a remark (hand-placed orders) or without an
-        identity record (another process's orders) keep the row's value.
+        本桥接层提交的委托在提交时就被记住，以作为备注发出去的 user_order_id 为
+        键，而那条记录是权威的——只要它有名字，就 **胜过** 行上的字段。没有备注
+        的行（手工下单）或没有身份记录的行（别的进程下的单）保留行上的值。
         """
         self._load_order_identity_journal(account_id)
         rows = list(snapshots or [])
@@ -1806,9 +1729,9 @@ class BigQmtRpcHandlers:
                         row.strategy_name = str(identity.get("strategy_name") or "")
             except Exception:
                 pass
-        # No-Valkey deployments still name what THIS process submitted: the
-        # in-process journal written at submit time (issue #156). It runs
-        # after the valkey store so this process's own record wins a collision.
+        # 无 Valkey 的部署仍能命名 **本** 进程提交的东西：提交时写入的进程内
+        # 日志（问题 #156）。它在 valkey 存储之后运行，因此本进程自己的记录在
+        # 冲突时胜出。
         journal = getattr(self, "_order_identity_local", None)
         if journal:
             now = time.time()
@@ -1824,13 +1747,12 @@ class BigQmtRpcHandlers:
         return rows
 
     _ORDER_IDENTITY_LOCAL_LIMIT = 5000
-    # 7 days, matching exec_events.ORDER_IDENTITY_TTL_SECONDS: orders stay
-    # queryable across days, and a next-day re-read used to come back
-    # renamed under the bridge process (#393).
+    # 7 天，与 exec_events.ORDER_IDENTITY_TTL_SECONDS 一致：委托要跨日可查，
+    # 而过去次日重读会以桥接进程名返回（#393）。
     _ORDER_IDENTITY_LOCAL_TTL_SECONDS = 7 * 86400.0
 
     def enable_order_identity_persistence(self, directory=None, account_types=None):
-        """Restore attribution for standalone callers with filesystem access."""
+        """为有文件系统访问权限的独立调用方恢复归属。"""
         from .account_type_map import get_account_type_map, primary_account_type
 
         self._order_identity_journals = {}
@@ -1877,8 +1799,8 @@ class BigQmtRpcHandlers:
             store = self._load_order_identity_journal(account_id)
             journal = getattr(self, "_order_identity_local", None)
             if journal is None:
-                # Tests (and the QMT sandbox) build handlers via __new__ and
-                # skip __init__ -- create on first use.
+                # 测试（以及 QMT 沙箱）用 __new__ 构造 handlers 并跳过 __init__
+                # ——首次使用时再创建。
                 journal = self._order_identity_local = collections.OrderedDict()
             name = str(strategy_name or "")
             existing = journal.get(key)
@@ -1886,11 +1808,9 @@ class BigQmtRpcHandlers:
             if existing is not None and now - existing[0] <= self._ORDER_IDENTITY_LOCAL_TTL_SECONDS:
                 existing_name = existing[1]
                 if existing_name and existing_name != name:
-                    # First NAMED record wins (#393): a reused remark must
-                    # not rename rows already reported -- an unconditional
-                    # overwrite flipped them to the latest same-remark
-                    # submit's name, or erased it entirely when that submit
-                    # passed "" and rows fell back to the QMT process name.
+                    # 第一条 **具名** 记录胜出（#393）：被复用的备注不能给已经
+                    # 上报过的行改名——无条件覆盖会把它们翻成最近一次同备注提交
+                    # 的名字，或者当那次提交传了 "" 时彻底抹掉，让行退回 QMT 进程名。
                     if name:
                         print("[bigqmt_rpc] 委托备注 %r 已被多个策略复用："
                               "保留 %r，忽略 %r（#393）。"
@@ -1908,20 +1828,18 @@ class BigQmtRpcHandlers:
             pass
 
     def _handle_describe_trade_detail_fields(self, params):
-        """Report which attributes QMT's ORDER / DEAL rows carry. Names only.
+        """报告 QMT 的 ORDER / DEAL 行携带哪些属性。只有名字。
 
-        Answers "why is field X empty / missing" without another
-        deploy-and-restart round trip -- see BigQmtOrderGateway
-        .describe_detail_fields. Deferred to the main thread with the other
-        trade-context queries: get_trade_detail_data returns EMPTY off it.
+        无需再来一轮“部署加重启”就能回答“字段 X 为什么是空的/缺失”——见
+        BigQmtOrderGateway.describe_detail_fields。与其它交易上下文查询一样延后到
+        主线程：get_trade_detail_data 在其它线程上返回空。
         """
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
+            raise RuntimeError("order_gateway 未配置")
         describe = getattr(self.order_gateway, "describe_detail_fields", None)
         if describe is None:
             raise RuntimeError(
-                "this deployment predates describe_trade_detail_fields; "
-                "sync and restart the strategy")
+                "本部署早于 describe_trade_detail_fields；请同步并重启策略")
         detail_types = params.get("detail_types") or params.get("detail_type")
         if isinstance(detail_types, str):
             detail_types = [detail_types]
@@ -1934,33 +1852,30 @@ class BigQmtRpcHandlers:
         return describe(self._request_account_id(params), detail_types)
 
     def _handle_reload_deployment(self, params):
-        """Re-import the package and re-run init, without a strategy restart.
+        """重新导入包并重跑 init，无需重启策略。
 
-        Only schedules it: the reload calls reset_app(), which stops the RPC
-        service answering this very request, so the reply has to go out first.
-        It runs on the next adjust tick -- poll reload_status.
+        只是排期：重载会调用 reset_app()，它会停掉正在应答本请求的 RPC 服务，所以
+        回复必须先发出去。它在下一个 adjust tick 执行——请轮询 reload_status。
 
-        Refreshes everything under bigqmt_signal_trader/. Cannot refresh the
-        strategy file or the entry script: QMT execs those, and a module cannot
-        reload the one it is running in. Those still need a restart.
+        会刷新 bigqmt_signal_trader/ 下的所有内容。无法刷新策略文件或入口脚本：
+        QMT 执行那些，而模块无法重载自己正在其中运行的那一个。那些仍需重启。
         """
         hook = getattr(self, "reload_hook", None)
         if hook is None:
             raise RuntimeError(
-                "this deployment cannot reload itself (it predates "
-                "reload_deployment); sync and restart the strategy once, after "
-                "which reloads no longer need a restart")
+                "本部署无法自我重载（早于 reload_deployment）；请同步并重启一次"
+                "策略，之后重载就不需要重启了")
         return hook(str((params or {}).get("reason") or ""))
 
     def _handle_reload_status(self, params):
         status_hook = getattr(self, "reload_status_hook", None)
         if status_hook is None:
-            raise RuntimeError("this deployment predates reload_deployment")
+            raise RuntimeError("本部署早于 reload_deployment")
         return status_hook()
 
     def _handle_query_execution_snapshot(self, params):
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
+            raise RuntimeError("order_gateway 未配置")
         account_id = self._request_account_id(params)
         order_name = params.get("order_strategy_name")
         if order_name is None:
@@ -1970,8 +1885,8 @@ class BigQmtRpcHandlers:
             trade_name = ""
         orders = self.order_gateway.query_orders(account_id, str(order_name))
         trades = self.order_gateway.query_trades(account_id, str(trade_name))
-        # Observe both native sets before filling ANY blanks. A DEAL can reveal
-        # a missing association, or invalidate one an earlier ORDER would use.
+        # 在填补任何空白之前，先观察两套原生数据。一笔 DEAL 可能揭示一个缺失的
+        # 关联，也可能作废某个更早的 ORDER 会使用的那条关联。
         rows = self._recover_order_remarks(account_id, list(orders) + list(trades))
         return {
             "account_id": account_id,
@@ -2040,18 +1955,17 @@ class BigQmtRpcHandlers:
                 "QMT 交易上下文查询在非主策略线程上会返回这种结果；"
                 "调用并未失败，只是数据不在该线程可见。"
                 "请检查 probe_capabilities 的 thread_routing（#204）。",
-                source, len(rows), thread_name)
+                source, thread_name, len(rows))
         except Exception:
             pass
         return rows
 
     def _call_qmt_global(self, func_name, *args, **kwargs):
-        """Call a QMT runtime-injected global function, returning [] on failure.
+        """调用 QMT 运行时注入的全局函数，失败时返回 []。
 
-        These functions (get_assure_contract / get_unclosed_compacts / ...)
-        are injected by QMT into the process global namespace, same as
-        passorder. When unavailable (no margin account, function not bound)
-        we degrade to [] rather than crashing the RPC.
+        这些函数（get_assure_contract / get_unclosed_compacts / ...）由 QMT 注入
+        到进程全局命名空间，与 passorder 相同。不可用时（无两融账户、函数未绑定）
+        我们降级为 []，而不是让 RPC 崩掉。
         """
         func = self.qmt_api.get(func_name)
         if func is None:
@@ -2063,16 +1977,14 @@ class BigQmtRpcHandlers:
             return []
 
     def _call_qmt_scalar(self, func_name, *args, **kwargs):
-        """Same as _call_qmt_global, for the QMT globals that answer with a
-        plain scalar rather than detail rows -- get_last_order_id returns the
-        委托号 as a str.
+        """与 _call_qmt_global 相同，用于那些以普通标量而不是明细行作答的 QMT
+        全局函数——get_last_order_id 返回字符串形式的委托号。
 
-        The row normaliser iterates whatever it is handed, so a string goes in
-        and a list of one empty dict PER CHARACTER comes out: the real order id
-        '635005110' became [{}, {}, {}, {}, {}, {}, {}, {}, {}] and '-1'
-        (QMT's "not found") became [{}, {}]. An int raises TypeError inside the
-        normaliser and is swallowed to []. Same shape as #96, where get_ipo_data
-        was destroyed the same way (#207).
+        行规范化器会遍历交给它的任何东西，所以传进一个字符串，出来的是“每个字符
+        一个空 dict”的列表：真实委托号 '635005110' 变成一串 [{}, {}, ...]，而
+        '-1'（QMT 的“未找到”）变成 [{}, {}]。传 int 会在规范化器内部抛
+        TypeError 并被吞成 []。与 #96 同一形态，那里 get_ipo_data 也是这样被毁掉
+        的（#207）。
         """
         func = self.qmt_api.get(func_name)
         if func is None:
@@ -2083,13 +1995,11 @@ class BigQmtRpcHandlers:
             return None
 
     def _call_qmt_object(self, func_name, *args, **kwargs):
-        """Same as _call_qmt_global, for the QMT globals that answer with ONE
-        object rather than a list of them -- get_value_by_order_id returns a
-        single 委托/成交 object.
+        """与 _call_qmt_global 相同，用于那些以一个对象（而不是对象列表）作答的
+        QMT 全局函数——get_value_by_order_id 返回单个委托/成交对象。
 
-        Handing that straight to the row normaliser iterates the object itself,
-        which raises TypeError and gets swallowed to [] -- the call looks like
-        "no such order" when it actually worked (#207).
+        直接把它交给行规范化器会遍历该对象本身，抛 TypeError 并被吞成 []——调用
+        看起来像“没有这笔委托”，而它实际上成功了（#207）。
         """
         func = self.qmt_api.get(func_name)
         if func is None:
@@ -2107,12 +2017,11 @@ class BigQmtRpcHandlers:
         return rows[0] if rows else {}
 
     def _call_qmt_mapping(self, func_name, *args, **kwargs):
-        """Same as _call_qmt_global, for the QMT globals that answer with a
-        mapping rather than a row list -- get_ipo_data, get_new_purchase_limit.
+        """与 _call_qmt_global 相同，用于那些以映射而不是行列表作答的 QMT 全局
+        函数——get_ipo_data、get_new_purchase_limit。
 
-        The row normaliser would iterate such a dict by key and throw the values
-        away, so these keep their shape and only have their values made
-        JSON-safe.
+        行规范化器会按键遍历这种 dict 并丢掉值，所以这些保持原形状，只把值处理成
+        JSON 安全。
         """
         func = self.qmt_api.get(func_name)
         if func is None:
@@ -2124,21 +2033,19 @@ class BigQmtRpcHandlers:
         if isinstance(data, dict):
             return dict((str(key), _normalize_mapping_value(value))
                         for key, value in data.items())
-        # Some brokers hand back rows even here; normalise rather than drop.
+        # 有些券商连这里也回行；做规范化而不是丢掉。
         return _normalize_detail_rows(data)
 
     def _configured_account_type(self, account_id=None):
-        """The account type this deployment will trade as, per-request aware.
+        """这个部署会以什么账户类型交易，且按请求感知。
 
-        When the gateway supports per-request account_type resolution (i.e.
-        has ``_resolve_account_type`` from BIGQMT_ACCOUNT_TYPE_MAP), this
-        returns the map-aware type for the given account_id.  When no map
-        is configured, returns the gateway's own ``account_type`` unchanged.
+        当网关支持按请求解析 account_type（即带 BIGQMT_ACCOUNT_TYPE_MAP 的
+        ``_resolve_account_type``）时，返回给定 account_id 对应的映射类型。没配
+        映射时，原样返回网关自己的 ``account_type``。
 
-        The *account_id* parameter is explicit (not read from instance state)
-        because zmq deployments have a background listener thread calling
-        market-data methods concurrently with the adjust thread calling trade
-        methods -- storing params on ``self`` would race (issue #43, #164).
+        *account_id* 参数是显式的（不从实例状态读），因为 zmq 部署有后台监听线程
+        在调用行情方法，与调用交易方法的 adjust 线程并发——把参数存在 ``self`` 上
+        会竞态（问题 #43、#164）。
         """
         gateway = self.order_gateway
         if gateway is not None and hasattr(gateway, "_resolve_account_type"):
@@ -2154,17 +2061,15 @@ class BigQmtRpcHandlers:
 
     def _query_trade_detail(self, params, detail_type, strategy_name="",
                             account_type=None):
-        """get_trade_detail_data with one of the 6 official detail types.
+        """用 6 种官方明细类型之一调用 get_trade_detail_data。
 
-        Official strDatatype values: ACCOUNT / POSITION / POSITION_STATISTICS /
-        ORDER / DEAL / TASK. Other strings are NOT supported as *detail types* —
-        use the dedicated functions below for the margin contract queries.
+        官方 strDatatype 取值：ACCOUNT / POSITION / POSITION_STATISTICS /
+        ORDER / DEAL / TASK。其它字符串 **不** 作为明细类型支持——两融合约查询
+        请用下面专门的函数。
 
-        *account_type* overrides the deployment's configured type for this one
-        call. That is the ACCOUNT-TYPE axis, not the detail-type axis: the
-        credit account object is `(accId, 'CREDIT', 'ACCOUNT')`, which the
-        caller asks for explicitly regardless of what this deployment trades
-        as (#201).
+        *account_type* 只对本次调用覆盖部署配置的类型。那是账户类型轴，不是明细
+        类型轴：两融账户对象是 `(accId, 'CREDIT', 'ACCOUNT')`，调用方无论本部署
+        交易什么类型都显式这样索取（#201）。
         """
         account_id = self._request_account_id(params)
         gateway = self.order_gateway
@@ -2267,7 +2172,7 @@ class BigQmtRpcHandlers:
 
     def _handle_smt_appointment(self, params):
         # SMB/预约打新属于交易类，需要下单通道；当前不支持。
-        raise NotImplementedError("smt_appointment is not supported via Big QMT RPC")
+        raise NotImplementedError("大 QMT RPC 不支持 smt_appointment")
 
     # 官方交易查询函数（直接暴露）
     def _handle_get_value_by_order_id(self, params):
@@ -2277,7 +2182,7 @@ class BigQmtRpcHandlers:
         # 空，从客户端看就是「查不到这笔委托」（#207）。
         order_id = str(params.get("order_id") or params.get("order_sysid") or "")
         if not order_id:
-            raise ValueError("order_id is required")
+            raise ValueError("order_id 是必需的")
         account_id = self._request_account_id(params)
         detail_type = str(params.get("detail_type")
                           or params.get("datatype") or "ORDER").strip().upper()
@@ -2308,18 +2213,17 @@ class BigQmtRpcHandlers:
         return self._call_qmt_scalar("get_last_order_id", *args)
 
     def _handle_get_ipo_data(self, params):
-        # get_ipo_data answers with a dict KEYED BY SUBSCRIPTION CODE, not with
-        # detail rows. Sending it through _normalize_detail_rows iterates the
-        # dict, i.e. its keys, and attribute-scrapes each code string -- so
-        # {"730001": {...}, "001234": {...}} came out as [{}, {}]: codes, issue
-        # prices and quantities all gone. #96 fixed the `type` argument but the
-        # response was still being destroyed here.
+        # get_ipo_data 以申购代码为键的 dict 作答，而不是明细行。把它交给
+        # _normalize_detail_rows 会遍历该 dict（也就是它的键），并对每个代码
+        # 字符串做属性抓取——于是 {"730001": {...}, "001234": {...}} 变成
+        # [{}, {}]：代码、发行价和数量全没了。#96 修好了 `type` 参数，但响应仍
+        # 在这里被毁掉。
         return self._call_qmt_mapping(
             "get_ipo_data", str(params.get("type") or params.get("stock_type") or ""))
 
     def _handle_get_new_purchase_limit(self, params):
-        # Documented as returning a dict of 板块 -> 额度, so it has the same
-        # shape problem get_ipo_data had (6.10 in the API reference).
+        # 文档说返回 板块 -> 额度 的 dict，所以它有与 get_ipo_data 相同的形状
+        # 问题（API 参考 6.10）。
         return self._call_qmt_mapping(
             "get_new_purchase_limit", self._request_account_id(params))
 
@@ -2333,19 +2237,16 @@ class BigQmtRpcHandlers:
         # 于是 detail_type 被塞进了账户类型的位置 —— 少一个参数、还错位，
         # 和 #96 里 get_ipo_data 把 account_id 当 type 传是同一个形状（#207）。
         #
-        # NOT _call_qmt_global (#395): that helper's "unavailable -> []" and
-        # exception-swallowing are right for the credit lookups, but here they
-        # made three different worlds indistinguishable -- function not bound,
-        # native raise, and a genuinely empty history all answered
-        # ok=True data=[]. History is a record of facts: unavailable must be
-        # an error, and a native failure must propagate.
+        # 不用 _call_qmt_global（#395）：那个辅助函数的“不可用 -> []”和吞异常对
+        # 两融查询是对的，但在这里它们让三种完全不同的情况无法区分——函数未绑定、
+        # 原生抛异常、以及真正空的历史，全都答成 ok=True data=[]。历史是事实记录：
+        # 不可用必须是错误，原生失败必须传播。
         func = self.qmt_api.get("get_history_trade_detail_data")
         if func is None:
             raise RuntimeError(
-                "get_history_trade_detail_data is not bound on this terminal "
-                "(probe_capabilities.qmt_globals shows it false). An empty "
-                "answer here would read as 'no history', which is not the "
-                "same thing (#395)")
+                "get_history_trade_detail_data 在本终端上未绑定"
+                "（probe_capabilities.qmt_globals 显示为 false）。在这里答空会被"
+                "读成“没有历史”，而那不是同一回事（#395）")
         raw = func(account_id, self._configured_account_type(account_id),
                    detail_type, start_date, end_date)
         return _normalize_grouped_detail_rows(raw)
@@ -2390,15 +2291,14 @@ class BigQmtRpcHandlers:
             "get_hkt_exchange_rate", self._request_account_id(params), account_type)
 
     def _handle_download_history_data(self, params):
-        """download_history_data is a QMT global function (issue #32).
+        """download_history_data 是 QMT 的全局函数（问题 #32）。
 
-        It is NOT a ContextInfo method — the adapter's _call_context path
-        always raised NotImplementedError. Now route through qmt_api (the
-        injected global), falling back to the adapter (which tries native
-        xtdata SDK then ContextInfo).
+        它不是 ContextInfo 方法——适配器的 _call_context 路径总是抛
+        NotImplementedError。现在改走 qmt_api（注入的全局函数），失败时回退到
+        适配器（先试原生 xtdata SDK，再试 ContextInfo）。
         """
         func = self.qmt_api.get("download_history_data")
-        # Some QMT builds only expose down_history_data (same signature, 4 args).
+        # 某些 QMT 构建只暴露 down_history_data（签名相同，4 个参数）。
         if func is None:
             func = self.qmt_api.get("down_history_data")
         if func is not None:
@@ -2410,35 +2310,33 @@ class BigQmtRpcHandlers:
                 result = func(stock_code, period, start_time, end_time)
                 if result is not None and not result:
                     raise RuntimeError(
-                        "download_history_data: terminal rejected the task "
-                        "(native return %r) code=%s period=%s"
+                        "download_history_data：终端拒绝了这个任务"
+                        "（原生返回 %r）code=%s period=%s"
                         % (result, stock_code, period))
                 return True
             except Exception as exc:
-                raise RuntimeError("download_history_data failed: %s" % exc)
-        # Fallback: adapter tries native xtdata SDK then ContextInfo.
-        # #339: no channel at all must raise (the #47 contract: failure is
-        # loud), not return False — a silent False became the client's fake
-        # finished==total progress over zero landed rows.
+                raise RuntimeError("download_history_data 失败: %s" % exc)
+        # 回退：适配器先试原生 xtdata SDK，再试 ContextInfo。
+        # #339：完全没有下载通道必须抛异常（#47 契约：失败要响），而不是返回
+        # False——静默的 False 变成了客户端虚假的 finished==total 进度，实际零行
+        # 落地。
         try:
             return self._handle_market_data_method("download_history_data", params)
         except (NotImplementedError, AttributeError):
             raise RuntimeError(
-                "download_history_data: no download channel on this terminal "
-                "(download_history_data/down_history_data unbound, ContextInfo "
-                "has no download method) -- check probe_capabilities qmt_globals")
+                "download_history_data：本终端没有下载通道（"
+                "download_history_data/down_history_data 未绑定，ContextInfo "
+                "也没有下载方法）——请检查 probe_capabilities 的 qmt_globals")
 
     def _handle_download_history_data2(self, params):
-        """download_history_data2 is a QMT global function (issue #32).
+        """download_history_data2 是 QMT 的全局函数（问题 #32）。
 
-        Native signature includes an optional callback for progress; the QMT
-        global may require it, so pass a no-op when the client didn't.
+        原生签名包含一个可选的进度回调；QMT 的全局函数可能要求它，所以客户端
+        没给时传一个空函数。
 
-        Some QMT builds expose only the single-stock download globals
-        (``download_history_data`` / ``down_history_data``) — fall back to a
-        per-code loop with those. Without this the RPC returned False and
-        nothing was downloaded, so reads only ever saw the latest day
-        (issue #54).
+        某些 QMT 构建只暴露单股票下载的全局函数（``download_history_data`` /
+        ``down_history_data``）——那就用它们逐代码循环回退。没有这一步，RPC 返回
+        False 且什么都没下载，读取只能永远看到最近一天（问题 #54）。
         """
         stock_list = list(params.get("stock_list") or [])
         period = str(params.get("period") or "1d")
@@ -2447,19 +2345,19 @@ class BigQmtRpcHandlers:
         func = self.qmt_api.get("download_history_data2")
         if func is not None:
             try:
-                # Try with a no-op callback first (some QMT builds require it);
-                # fall back to 4-arg call if that raises TypeError.
+                # 先带一个空回调试（某些 QMT 构建要求它）；若抛 TypeError 再退回
+                # 4 参数调用。
                 try:
                     result = func(stock_list, period, start_time, end_time, lambda data: None)
                 except TypeError:
                     result = func(stock_list, period, start_time, end_time)
                 if result is not None and not result:
                     raise RuntimeError(
-                        "terminal rejected the download task (native return %r) "
+                        "终端拒绝了这个下载任务（原生返回 %r）"
                         "codes=%d period=%s" % (result, len(stock_list), period))
                 return True
             except Exception as exc:
-                raise RuntimeError("download_history_data2 failed: %s" % exc)
+                raise RuntimeError("download_history_data2 失败: %s" % exc)
         single = self.qmt_api.get("download_history_data") or self.qmt_api.get("down_history_data")
         if single is not None:
             rejected = []
@@ -2474,31 +2372,28 @@ class BigQmtRpcHandlers:
                     rejected.append(code)
             if errors or rejected:
                 raise RuntimeError(
-                    "download_history_data2 per-code fallback failed "
-                    "(rejected=%s errors=%s)" % (",".join(rejected) or "-",
+                    "download_history_data2 的逐代码回退失败"
+                    "（rejected=%s errors=%s）" % (",".join(rejected) or "-",
                                                  "; ".join(errors) or "-"))
             return True
-        # #339: was `return False` — a constant False with no channel is the
-        # exact shape that became the client's fake finished==total progress.
-        # Failure must raise (the #47 contract).
+        # #339：这里曾是 `return False`——没有通道时的常量 False，正是变成客户端
+        # 虚假 finished==total 进度的那个形状。失败必须抛异常（#47 契约）。
         try:
             return self._handle_market_data_method("download_history_data2", params)
         except (NotImplementedError, AttributeError):
             raise RuntimeError(
-                "download_history_data2: no download channel on this terminal "
-                "(download_history_data2/download_history_data/down_history_data "
-                "all unbound; ContextInfo has no download method) -- check "
-                "probe_capabilities qmt_globals")
+                "download_history_data2：本终端没有下载通道"
+                "（download_history_data2/download_history_data/"
+                "down_history_data 全部未绑定；ContextInfo 也没有下载方法）——"
+                "请检查 probe_capabilities 的 qmt_globals")
 
     def _handle_probe_order_identity(self, params):
-        """Diagnose the strategy_name backfill chain, one link at a time.
+        """逐环节诊断 strategy_name 回填链。
 
-        #156's reporter: the identity record exists in Valkey, the key matches,
-        and the query still reads strategy_name="". Nothing along the chain
-        can say which link dropped it from the outside -- this answers that
-        from the inside: is the identity Valkey wired at all, does the key
-        exist under THIS account, is the local journal covering it (#156's
-        in-process fallback), and does the raw lookup raise.
+        #156 的报告者：身份记录在 Valkey 里存在、键也对得上，而查询读到的仍是
+        strategy_name=""。从外面看，链上没有任何一节能说明是哪一节把它丢了——
+        这里从内部回答：身份 Valkey 到底接上了吗、键是否在 **本** 账户下存在、
+        本地日志是否覆盖了它（#156 的进程内回退）、以及原始查找是否会抛异常。
         """
         account_id = self._request_account_id(params)
         remark = str(params.get("remark") or params.get("user_order_id") or "").strip()
@@ -2540,11 +2435,10 @@ class BigQmtRpcHandlers:
         return out
 
     def _handle_download_holiday_data(self, params):
-        # MiniQMT downloads a holiday table from the xtdata service. Big QMT's
-        # terminal maintains the trading calendar itself (refreshed at login
-        # and by its own data updater), so there is nothing to download and no
-        # ContextInfo method to call -- the old generic path answered with
-        # NotImplementedError (issue #163). A clear no-op instead.
+        # MiniQMT 从 xtdata 服务下载节假日表。大 QMT 的终端自己维护交易日历
+        # （登录时以及由它自己的数据更新器刷新），所以没有东西可下载，也没有
+        # ContextInfo 方法可调——旧的通用路径答的是 NotImplementedError（问题
+        # #163）。改为明确的空操作。
         return {
             "ok": True,
             "downloaded": False,
@@ -2554,8 +2448,8 @@ class BigQmtRpcHandlers:
         }
 
     def _handle_download_his_st_data(self, params):
-        # Same shape as download_holiday_data: ST history lives in the
-        # terminal's own data on Big QMT (issue #163).
+        # 与 download_holiday_data 同一形态：ST 历史在大 QMT 上就在终端自己的
+        # 数据里（问题 #163）。
         return {
             "ok": True,
             "downloaded": False,
@@ -2573,20 +2467,18 @@ class BigQmtRpcHandlers:
             return "BUY"
         if order_type in SELL_ORDER_TYPES:
             return "SELL"
-        # Credit operations carry their side in the type itself (issue #103).
-        # 直接还款 (32/45) moves cash rather than securities and has no side.
-        # It used to demand an explicit action -- but MiniQMT's order_stock
-        # has no action parameter, so the compat caller could never supply
-        # one and 归还融资 was simply unusable (#314). The side is bookkeeping
-        # only: passorder gets the raw opType, and the settlement lookup does
-        # not filter sideless types by side.
+        # 两融操作的买卖方向编码在类型本身里（问题 #103）。直接还款 (32/45)
+        # 移动的是资金而不是证券，没有方向。过去要求显式 action——但 MiniQMT 的
+        # order_stock 没有 action 参数，所以兼容层调用方永远给不出来，归还融资
+        # 就完全不可用（#314）。方向只是记账用：passorder 拿到的是原始 opType，
+        # 而结算查找不会对无方向的类型按方向过滤。
         credit = _credit_action_of(raw)
         if credit:
             return credit
         if _credit_optype_of(raw) is not None:
             return _sideless_default_action()
-        # Futures (0-15) and ETF option (50-59) opTypes carry the side in the
-        # type itself. 行权/锁定 (56-59) do not; same treatment as 直接还款.
+        # 期货 (0-15) 和 ETF 期权 (50-59) 的 opType 把方向编码在类型里。
+        # 行权/锁定 (56-59) 没有；与直接还款同样处理。
         passthrough = _passthrough_action_of(raw)
         if passthrough:
             return passthrough
@@ -2596,15 +2488,13 @@ class BigQmtRpcHandlers:
         if _convertible_optype_of(raw) is not None:
             return _sideless_default_action()
         if raw in (None, ""):
-            raise ValueError("action or order_type is required")
-        # An order_type WAS supplied and was not recognised. Saying "required"
-        # here sent a reporter looking at their own call for twenty minutes
-        # (issue #92): the real answer is almost always that the package
-        # deployed inside QMT predates the type they are using, and a
-        # client-side pip upgrade cannot fix that -- this code runs in QMT.
+            raise ValueError("action 或 order_type 是必需的")
+        # 传了 order_type 却没被识别。在这里说“必需”，会让报告者盯着自己的调用
+        # 看二十分钟（问题 #92）：真正的答案几乎总是部署在 QMT 里的包早于他所用的
+        # 类型，而客户端 pip 升级修不了这一点——这段代码运行在 QMT 里。
         raise ValueError(
-            # ASCII only: this text is written to QMT's own log, which drops
-            # non-ASCII characters (a Chinese install path came back mangled).
+            # 仅限 ASCII：这段文本要写进 QMT 自己的日志，而它会丢掉非 ASCII
+            # 字符（一个中文安装路径回来时就是乱码）。
             "order_type %r is not recognised by the package deployed in QMT "
             "(%s). Credit order types (27-32, and 40-45 special) need 0.3.1 "
             "or newer HERE, in the QMT python directory -- upgrading the "
@@ -2614,7 +2504,7 @@ class BigQmtRpcHandlers:
 
     @staticmethod
     def _deployed_version():
-        """Never raises: this only ever runs while building an error message."""
+        """从不抛异常：它只在构造错误消息时运行。"""
         try:
             from bigqmt_signal_trader.version import __version__
 
@@ -2623,13 +2513,12 @@ class BigQmtRpcHandlers:
             return "unknown version"
 
     def _forwarded_order_type(self, params):
-        """The order_type to forward untouched to passorder, or None.
+        """原样转发给 passorder 的 order_type，或 None。
 
-        Credit (27-32/40-45/70-75) and futures/option (0-15/50-59) opTypes both
-        encode more than a side, so submit() needs the raw value. Read straight
-        from params -- no state is carried between calls, so this does not
-        depend on the order OrderRequest's keyword arguments happen to be
-        evaluated in.
+        两融 (27-32/40-45/70-75) 和期货/期权 (0-15/50-59) 的 opType 都编码了
+        比方向更多的信息，所以 submit() 需要原始值。直接从 params 读取——调用
+        之间不携带状态，所以这不依赖 OrderRequest 的关键字参数恰好以什么顺序
+        求值。
         """
         raw = params.get("order_type")
         if _credit_optype_of(raw) is not None:
@@ -2644,12 +2533,11 @@ class BigQmtRpcHandlers:
     _credit_order_type_from_params = _forwarded_order_type
 
     def _resolve_strategy_name(self, *candidates):
-        """First supplied candidate wins; "" is a real answer, not "unset".
+        """第一个给出的候选胜出；"" 是真实答案，不是“未设置”。
 
-        ``or`` chains used to swallow an explicit empty string back into
-        ``default_strategy_name``. Blank is exactly how a caller asks for an
-        empty 报单来源 column, the way a hand-placed order looks (#154), so
-        only a missing value (``None``) may fall through to the default.
+        过去 ``or`` 链会把显式的空字符串吞回 ``default_strategy_name``。空白正是
+        调用方要求「报单来源」列为空的方式，就像手工下的单（#154），所以只有
+        缺失值（``None``）才可以落到默认值。
         """
         for candidate in candidates:
             if candidate is not None:
@@ -2658,7 +2546,7 @@ class BigQmtRpcHandlers:
 
     def _handle_submit_order(self, params):
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
+            raise RuntimeError("order_gateway 未配置")
         price = params.get("price")
         signal_id = str(params.get("signal_id") or "rpc-%s" % uuid.uuid4().hex)
         order_tag = str(params.get("remark") or params.get("order_remark") or "").strip()
@@ -2679,23 +2567,22 @@ class BigQmtRpcHandlers:
             account_type=self._configured_account_type(self._request_account_id(params)),
         )
         if request.action not in ("BUY", "SELL"):
-            raise ValueError("action must be BUY or SELL")
+            raise ValueError("action 必须是 BUY 或 SELL")
         if not request.stock_code:
-            raise ValueError("stock_code is required")
+            raise ValueError("stock_code 是必需的")
         if request.volume <= 0:
             if _is_cash_repay_order_type(request.order_type):
-                # #330: the caller put the amount in price. Big QMT's
-                # passorder carries 直接还款's amount in the VOLUME slot
-                # (integer yuan) and ignores price; MiniQMT's signature
-                # has no other slot for it either.
+                # #330：调用方把金额放进了 price。大 QMT 的 passorder 把直接还款
+                # 的金额放在 VOLUME 槽位（整数元）并忽略 price；MiniQMT 的签名也
+                # 没有其它槽位可以放它。
                 raise ValueError(
-                    "直接还款 (order_type %s): the repayment amount goes in "
-                    "order_volume as integer yuan, price is ignored -- got "
-                    "order_volume=%r price=%r. Example: order_stock(acc, code, "
-                    "CREDIT_DIRECT_CASH_REPAY, 10000, FIX_PRICE, 0, ...)"
+                    "直接还款 (order_type %s)：还款金额放在 order_volume 里，"
+                    "以整数元计，price 被忽略——收到 order_volume=%r price=%r。"
+                    "示例：order_stock(acc, code, CREDIT_DIRECT_CASH_REPAY, "
+                    "10000, FIX_PRICE, 0, ...)"
                     % (request.order_type, params.get("volume", params.get("order_volume")),
                        params.get("price")))
-            raise ValueError("volume must be positive")
+            raise ValueError("volume 必须为正")
         if _is_cash_repay_order_type(request.order_type) and request.price > 0:
             print("%s 直接还款：金额=%d（取自 order_volume）；passorder 会忽略价格=%r"
                   "（#330）" % ("[bigqmt_rpc]", request.volume, request.price))
@@ -2711,22 +2598,20 @@ class BigQmtRpcHandlers:
                 stock_code=request.stock_code,
             )
             if identity is None and identity_valkey is not None:
-                # A repeated remark retained an existing record. A fresh
-                # process must cache THAT name, or its new local journal
-                # would override Valkey and rename the old order again.
+                # 重复的备注复用了既有记录。新进程必须缓存 **那个** 名字，否则
+                # 它新的本地日志会覆盖 Valkey 并再次把旧委托改名。
                 identity = _exec_events._read_order_identity(
                     identity_valkey, request.account_id, request.remark)
         except Exception as exc:
             _exec_events._warn_order_identity(exc)
-        # Always journal locally too -- cheap, and the only attribution a
-        # no-Valkey deployment has (issue #156).
+        # 始终也写本地日志——成本低，而且是无 Valkey 部署唯一的归属来源
+        # （问题 #156）。
         self._remember_order_identity_local(
             request.account_id, request.remark,
             (identity or {}).get("strategy_name") or request.strategy_name)
 
-        # Taken before passorder so every callback / row this order produces
-        # is at or after it; an entry from an earlier same-remark order is
-        # strictly before it (#299).
+        # 在 passorder 之前取，使这笔委托产生的每个回调/行都在它之后；来自更早
+        # 同备注委托的条目则严格早于它（#299）。
         submitted_at = time.time()
         result = self.order_gateway.submit(request)
 
@@ -2738,18 +2623,15 @@ class BigQmtRpcHandlers:
         # 「已提交但暂无委托号」误判为下单失败（issue #38）。
         self._last_server_error = ""
 
-        # Async callers opt out of waiting for the order id. MiniQMT's
-        # order_stock_async returns a seq immediately and delivers the id through
-        # order_callback, so holding the reply until settlement is exactly the
-        # latency the async API exists to avoid (issue #50). The order_callback
-        # push already carries order_sys_id, so nothing is lost -- only the
-        # post-submit "did it land?" check is skipped, and a silent rejection
-        # surfaces as the absence of that push rather than as server_error.
+        # 异步调用方选择不等待订单号。MiniQMT 的 order_stock_async 立刻返回 seq
+        # 并通过 order_callback 交付 id，所以把回复压到结算才发，正是异步 API 存在
+        # 的意义所要避免的延迟（问题 #50）。order_callback 推送本来就带
+        # order_sys_id，所以什么都不丢——只是跳过提交后的“落地了吗”检查，而静默
+        # 拒单会表现为那条推送的缺失，而不是 server_error。
         if not _bool_value(params.get("wait_settlement"), True):
-            # Reply now, but keep watching (#345): a refusal before any order
-            # record exists is otherwise invisible to an async caller. Kept
-            # apart from the single reply slot, so a batch (#181) can shadow
-            # every item and the reply is never held.
+            # 立即回复，但继续盯着（#345）：在任何委托记录存在之前的拒单，否则
+            # 对异步调用方不可见。它与单一回复槽位分开存放，使批量（#181）可以给
+            # 每一项都挂上影子，而回复从不被压住。
             if not self.settle_orders_inline:
                 shadows = getattr(self, "_pending_shadow_settlements", None)
                 if shadows is None:
@@ -2760,8 +2642,8 @@ class BigQmtRpcHandlers:
             return result
 
         if self.settle_orders_inline:
-            # Opt-out: block here the way this used to. Kept only for runtimes
-            # with no adjust drain to retry on.
+            # 选择退出：像过去那样在这里阻塞。只保留给没有 adjust 排空可重试的
+            # 运行时。
             try:
                 import time as _time
                 _time.sleep(self.order_settle_timeout_seconds)
@@ -2771,9 +2653,8 @@ class BigQmtRpcHandlers:
             except Exception:
                 pass
             return result
-        # Hand the settlement to the caller rather than raising: handle() stays
-        # a plain function for anyone driving handlers directly, and only the
-        # service defers its reply.
+        # 把结算交给调用方，而不是抛异常：对直接驱动 handlers 的人，handle() 仍
+        # 是一个普通函数，只有 service 会延后它的回复。
         self._pending_settlement = OrderSettlement(
             request, result, _monotonic() + self.order_settle_timeout_seconds,
             submitted_at=submitted_at,
@@ -2781,8 +2662,8 @@ class BigQmtRpcHandlers:
         return result
 
     def _exec_event_sink(self):
-        """Where an exec event this handler emits goes: valkey, else the quote
-        push channel, else None."""
+        """本处理器发出的执行事件投向何处：Valkey，其次行情推送通道，
+        最后 None。"""
         transport = getattr(self, "rpc_transport", None)
         if getattr(transport, "name", None) == "serial":
             return transport if getattr(self, "exec_events_enabled", True) else None
@@ -2799,7 +2680,7 @@ class BigQmtRpcHandlers:
         return None
 
     def publish_order_error(self, request, error_msg):
-        """Push on_order_error for an order refused before any record (#345)."""
+        """对在任何记录之前就被拒的委托推送 on_order_error（#345）。"""
         sink = self._exec_event_sink()
         if sink is None:
             return False
@@ -2824,24 +2705,24 @@ class BigQmtRpcHandlers:
         return True
 
     def take_shadow_settlements(self):
-        """Pop the shadow settlements the last request registered (#345)."""
+        """弹出上一次请求登记的影子结算（#345）。"""
         shadows = getattr(self, "_pending_shadow_settlements", None) or []
         self._pending_shadow_settlements = []
         return shadows
 
     def take_pending_settlement(self):
-        """Pop the settlement the last submit_order registered, if any."""
+        """弹出上一次 submit_order 登记的结算，若有。"""
         settlement = self._pending_settlement
         self._pending_settlement = None
         return settlement
 
-    # Bounded like the watch table: a remark reused all day (a grid's rungs)
-    # accumulates one entry per settled order.
+    # 与盯盘表一样有界：一个备注被整天复用（网格的各档）时，每结算一笔委托就
+    # 追加一条。
     _SETTLED_MAX_REMARKS = 2000
     _SETTLED_MAX_PER_REMARK = 1000
 
     def _remember_settled_sysid(self, remark, sysid):
-        """An id handed out for ``remark`` is spent; never offer it again."""
+        """为 ``remark`` 发出的 id 已用掉；绝不再提供一次。"""
         remark = str(remark or "").strip()
         sysid = str(sysid or "").strip()
         if not remark or not sysid:
@@ -2867,18 +2748,16 @@ class BigQmtRpcHandlers:
         return bool(ids) and sysid in ids
 
     def _apply_order_lookup(self, settlement, final=False, inline=False, orders_cache=None):
-        """Look the order up by remark. True when settled, False to retry.
+        """按备注查找委托。已结算返回 True，需重试返回 False。
 
-        MUST run on the main strategy thread -- get_trade_detail_data returns
-        empty anywhere else.
+        必须在主策略线程上运行——get_trade_detail_data 在其它任何地方都返回空。
 
-        ``orders_cache`` ((account_id, account_type) -> rows) lets one settle
-        pass share a single ORDER snapshot across every pending settlement
-        (#303). A final lookup always reads fresh: its verdict is "not in the
-        system", and that must not rest on a list fetched for someone else.
+        ``orders_cache``（(account_id, account_type) -> rows）让一次结算遍历在
+        所有待结算委托之间共用同一份 ORDER 快照（#303）。最终查找总是重新读取：
+        它的结论是“不在系统里”，而那不能建立在为别人取的列表上。
 
-        Runs under the type the order was placed as: a 港股通 order on a stock
-        account is in the HUGANGTONG list, not the STOCK one.
+        按下单时的类型运行：股票账户上的港股通委托在 HUGANGTONG 列表里，不在
+        STOCK 里。
         """
         from .account_type_map import request_account_type
 
@@ -2890,26 +2769,20 @@ class BigQmtRpcHandlers:
                                          orders_cache=None):
         request = settlement.order_request
         settlement.attempts += 1
-        # Fast path: QMT's order_callback already pushed the answer
-        # (issue #164). A miss means nothing -- fall through to the poll.
-        # Remarks are not unique. The auto-generated "bqrpc:<uuid>" is, but a
-        # caller-supplied one is reused freely -- grid strategies, serial
-        # scripts ("串行买入600股" across three stocks and two batches, #299).
-        # Matching on the remark alone returned the most recent OTHER order
-        # that carried it, and the caller then filtered every real callback
-        # out by that wrong id and treated three fills as unplaced. So every
-        # candidate must also be this request's stock and side, must not
-        # predate this submit, AND must not be an id this bridge already
-        # settled for this remark -- a callback's arrival time says nothing
-        # about which order it belongs to, so the previous order's callback
-        # can land after this submit began and still carry an id that is
-        # spent (live ICBC repro, 2026-09-14, seconds after #300 shipped).
+        # 快路径：QMT 的 order_callback 已经把答案推过来了（问题 #164）。未命中
+        # 不算什么——继续走轮询。备注并不唯一。自动生成的 "bqrpc:<uuid>" 唯一，
+        # 但调用方给的是可以随意复用的——网格策略、串行脚本（「串行买入600股」跨
+        # 三只股票两批，见 #299）。只按备注匹配会返回最近一笔携带它的 **别的**
+        # 委托，调用方随后用那个错 id 过滤掉每个真实回调，把三笔成交当成没下单。
+        # 所以每个候选还必须是本请求的股票和方向、不能早于本次提交，**而且** 不能
+        # 是本桥接层已经为该备注结算过的 id——回调的到达时间并不能说明它属于哪笔
+        # 委托，上一笔委托的回调可以晚于本次提交开始才落地，并携带一个已用掉的
+        # id（2026-09-14 工行实盘复现，#300 上线几秒后）。
         want_code = normalize_stock_code(request.stock_code)
         want_action = str(request.action or "").upper()
         if _is_sideless_order_type(getattr(request, "order_type", None)):
-            # 直接还款 / 行权 / 锁定 have no side (#314): the recorded action
-            # is a bookkeeping default, and whatever side the terminal's row
-            # reports must not disqualify it.
+            # 直接还款 / 行权 / 锁定 没有方向（#314）：记录下来的 action 只是记账
+            # 默认值，终端行上报的任何方向都不应使候选被排除。
             want_action = ""
         watch = getattr(self, "order_watch_table", None)
         if watch is not None:
@@ -2921,7 +2794,7 @@ class BigQmtRpcHandlers:
                 watched_sysid = None
             if watched_sysid and self._sysid_already_settled(
                     request.remark, watched_sysid):
-                watched_sysid = None  # spent id -- fall through to the poll
+                watched_sysid = None  # 已用掉的 id——继续走轮询
             if watched_sysid:
                 try:
                     settlement.result.order_sys_id = watched_sysid
@@ -2953,13 +2826,11 @@ class BigQmtRpcHandlers:
                         pass
                     self._remember_settled_sysid(request.remark, sysid)
                     return True
-                # The row is there but m_strOrderSysID is not populated yet.
-                # Settling here publishes order_sys_id=None, the client turns
-                # that into -1, and a LIVE order is reported as ORDER_REJECTED
-                # -- a caller who retries on rejection double-orders. Measured
-                # on Guojin 2.1.19.0: the id was present on an immediate manual
-                # readback right after the -1 (issue #152). So keep waiting;
-                # the row already proves the order reached the broker.
+                # 行在，但 m_strOrderSysID 还没填。此时结算会发布
+                # order_sys_id=None，客户端把它转成 -1，而一笔 **活着的** 委托就
+                # 被报成 ORDER_REJECTED——在拒单上重试的调用方会重复下单。国金
+                # 2.1.19.0 实测：紧接着 -1 之后手工回读时 id 已经在了（问题
+                # #152）。所以继续等；行本身已证明委托到了券商。
                 if not final:
                     return False
                 message = (
@@ -2977,37 +2848,29 @@ class BigQmtRpcHandlers:
                     self._last_server_error = message
                 return True
             if not final:
-                # Not there yet. QMT assigns the id asynchronously, so an early
-                # miss is normal -- only a miss at the deadline is a real one.
+                # 还没出现。QMT 异步分配 id，所以早期未命中是正常的——只有到
+                # 截止时间的未命中才是真未命中。
                 return False
             if _is_cash_repay_order_type(getattr(request, "order_type", None)):
-                # 直接还款 (#330): the repayment went through and no row with
-                # this remark ever showed in the ORDER list (a partial repay
-                # measured live: 100 of 1000 repaid, then "not found in
-                # system" raised at the caller). A cash repayment is not a
-                # securities order; the terminal keeps no order record the
-                # bridge can settle against. No id, no error: order_stock
-                # answers -1 without raising, and the caller verifies via
-                # query_credit_detail.
+                # 直接还款（#330）：还款已经过账，而带此备注的行从未出现在
+                # ORDER 列表里（实盘测得一次部分还款：1000 还了 100，随后在调用方
+                # 抛出“not found in system”）。现金还款不是证券委托；终端不保留
+                # 桥接层可用于结算的委托记录。没有 id、没有错误：order_stock 返回
+                # -1 且不抛，调用方用 query_credit_detail 核对。
                 try:
                     settlement.result.message = (
-                        "直接还款 submitted; the terminal keeps no order row for a "
-                        "cash repayment, so no order_sys_id -- verify with "
-                        "query_credit_detail")
+                        "直接还款已提交；终端不为现金还款保留委托行，所以没有 "
+                        "order_sys_id —— 请用 query_credit_detail 核对")
                 except Exception:
                     pass
                 return True
-            # Deadline reached with no remark match. Do NOT fall back to
-            # matching stock_code+action (issue #41). But a deadline miss is
-            # NOT proof of refusal either: on a live terminal the ORDER row /
-            # order_callback can arrive seconds after ANY fixed window
-            # (measured +4.1s during market hours, issue #360 — the order was
-            # live and filled while the caller was told "not found"). So the
-            # synchronous verdict is "unconfirmed", not "failed": answer ok
-            # with no id and keep watching as a shadow settlement on an
-            # extended deadline. Only a miss at the END of that extended window
-            # is reported as a refusal. (inline mode has no drain loop to keep
-            # watching on, so it keeps the old immediate verdict.)
+            # 到截止时间仍无备注匹配。**不要** 退回到匹配 stock_code+action
+            # （问题 #41）。但截止未命中也不等于拒单：在实盘终端上 ORDER 行 /
+            # order_callback 可以在任意固定窗口之后数秒才到（盘中实测 +4.1s，
+            # 问题 #360——委托活着并已成交，而调用方被告知“未找到”）。所以同步
+            # 结论是“未确认”，不是“失败”：答 ok 但不带 id，并在延长后的截止时间
+            # 上作为影子结算继续盯。只有延长窗口 **结束** 时的未命中才报为拒单。
+            # （inline 模式没有排空循环可继续盯，所以保留旧的即时结论。）
             if not settlement.shadow and not inline:
                 settlement.shadow = True
                 settlement.deadline = _monotonic() + max(
@@ -3023,9 +2886,8 @@ class BigQmtRpcHandlers:
                 except Exception:
                     pass
                 return True
-            # Extended-window (or inline) miss -> now it is a refusal. The first
-            # thing to check is still the strategy's run mode (#122), but the
-            # late-callback cause is real too (#360).
+            # 延长窗口（或 inline）未命中 -> 现在才算拒单。首先要查的仍是策略的
+            # 运行模式（#122），但迟到回调这个成因也真实存在（#360）。
             message = (
                 "passorder submitted but order not found in system "
                 "(stock=%s action=%s price=%s volume=%d, %d lookup(s) including "
@@ -3048,15 +2910,15 @@ class BigQmtRpcHandlers:
                 self._last_server_error = message
             return True
         except Exception:
-            # A failed lookup must not lose the order -- it is already submitted.
+            # 查找失败不能丢掉这笔委托——它已经提交了。
             return True
 
     def _handle_submit_orders_batch(self, params):
         orders = params.get("orders") or []
         if not isinstance(orders, list) or not orders:
-            raise ValueError("orders must be a non-empty list")
+            raise ValueError("orders 必须是非空列表")
         if len(orders) > 500:
-            raise ValueError("orders exceeds batch limit 500")
+            raise ValueError("orders 超过批量上限 500")
         batch_started = time.time()
         batch_id = str(params.get("batch_id") or uuid.uuid4().hex)
         account_id = self._request_account_id(params)
@@ -3064,18 +2926,14 @@ class BigQmtRpcHandlers:
             params.get("strategy_name"),
             (orders[0] or {}).get("strategy_name"),
         )
-        # order_stock_async routes a queued backlog through here (#181), but it
-        # never promised order_stock_batch's idempotency contract, and
-        # inheriting it swallowed orders while answering success (#190):
-        # no remark is normal for async (the single path invents
-        # "bqrpc:<uuid>"), and repeating one is legal there. Under this batch
-        # endpoint the first meant ORDER_TAG_REQUIRED and placed nothing, the
-        # second meant "already submitted" and placed one of N.
-        #
-        # Default True so deliberate order_stock_batch callers -- who supply
-        # tags precisely to be protected against a retry double-ordering --
-        # keep exactly today's behaviour. Only a caller that opts out gets the
-        # single path's semantics.
+        # order_stock_async 把已排队的积压路由到这里（#181），但它从未承诺
+        # order_stock_batch 的幂等契约，而继承那个契约会吞掉委托却答成功（#190）：
+        # 对异步来说没有备注是正常的（单笔路径会自造 "bqrpc:<uuid>"），重复一个
+        # 备注在那里也合法。在这个批量端点下，前者意味着 ORDER_TAG_REQUIRED 且
+        # 什么也没下，后者意味着“已提交过”并只下出 N 笔中的一笔。
+        # 默认 True，使有意调用 order_stock_batch 的调用方——他们提交标签正是为了
+        # 防止重试重复下单——完全保持今天的行为。只有显式退出的调用方才得到单笔
+        # 路径的语义。
         idempotent = params.get("idempotent")
         idempotent = True if idempotent is None else bool(idempotent)
         existing_by_tag = {}
@@ -3105,33 +2963,28 @@ class BigQmtRpcHandlers:
         results = []
         for index, item in enumerate(orders):
             item = dict(item or {})
-            # No per-item settlement, and not negotiable per item (#181).
+            # 没有逐项结算，也不能按项协商（#181）。
             #
-            # _handle_submit_order defaults wait_settlement to True and parks
-            # the settlement in a SINGLE slot; the service takes that slot once
-            # per request. N orders in one request therefore overwrite each
-            # other and only the last survives -- carrying the batch's own
-            # request/response, so the whole batch reply gets held until that
-            # one order settles or times out, and that one order's diagnostic
-            # ("order not found in system", naming one stock, one price, one
-            # volume) is attached to a reply covering all of them. The
-            # order_sys_id it back-fills is read by nobody: each result dict is
-            # built from the submit result before any settlement runs.
+            # _handle_submit_order 把 wait_settlement 默认成 True，并把结算寄存在
+            # **唯一** 一个槽位里；service 每个请求只取一次该槽位。于是一个请求里
+            # 的 N 笔委托会互相覆盖，只有最后一笔留下——而它带着整批的请求/响应，
+            # 所以整个批量的回复会被压住，直到那一笔结算完成或超时，并且那一笔的
+            # 诊断（“order not found in system”，只点名一只股票、一个价格、一个
+            # 数量）被挂到覆盖全部委托的回复上。它回填的 order_sys_id 没人读：每个
+            # 结果 dict 都在任何结算运行之前就已由提交结果构造好了。
             #
-            # Nothing is lost by skipping it. The batch answers per item
-            # already, and order_sys_id arrives on the order_callback push the
-            # same way it does for order_stock_async (#50). Honouring an
-            # explicit wait_settlement per item would need a settlement queue
-            # keyed to one reply, which is the "把单槽改成队列" half of #181.
+            # 跳过它不损失任何东西。批量本来就按项作答，而 order_sys_id 与
+            # order_stock_async 一样通过 order_callback 推送到达（#50）。要按项尊重
+            # 显式的 wait_settlement，需要一条对应单个回复的结算队列，那正是 #181
+            # 里“把单槽改成队列”的那一半。
             item["wait_settlement"] = False
             order_tag = str(item.get("order_remark") or item.get("remark") or item.get("signal_id") or "")
             if not order_tag and not idempotent:
-                # Same invention as _handle_submit_order, so an async order
-                # with no remark reaches the broker instead of being rejected.
-                # Only the signal_id is set: _handle_submit_order derives the
-                # remark from it as "bqrpc:rpc-<hex>", and pre-building the
-                # remark here would double the prefix and change the string QMT
-                # shows in 备注 (which #152's settlement lookup matches on).
+                # 与 _handle_submit_order 相同的一套自造逻辑，使没有备注的异步委托
+                # 能到达券商而不是被拒。只设 signal_id：_handle_submit_order 会由它
+                # 推导出 "bqrpc:rpc-<hex>" 形式的备注，而在这里预先造备注会让前缀
+                # 翻倍，并改变 QMT 在「备注」里显示的字符串（#152 的结算查找正是按
+                # 它匹配）。
                 item.setdefault("signal_id", "rpc-%s" % uuid.uuid4().hex)
                 order_tag = "bqrpc:%s" % item["signal_id"]
             if not order_tag:
@@ -3187,10 +3040,9 @@ class BigQmtRpcHandlers:
                     "order_sys_id": str(getattr(result, "order_sys_id", None) or ""),
                     "user_order_id": str(getattr(result, "user_order_id", None) or ""),
                 }
-                # Not journalled when the caller opted out: those tags are not
-                # identities (async may repeat a remark for genuinely different
-                # orders), so recording them would let one suppress a later
-                # deliberate order_stock_batch item that reuses the string.
+                # 调用方选择退出时不写日志：那些标签不是身份（异步可能为真正不同的
+                # 委托重复同一备注），记录它们会让一条记录压掉后来复用该字符串的
+                # 有意 order_stock_batch 项。
                 if order_tag and idempotent:
                     self._submit_journal[journal_key] = dict(response)
                 results.append(response)
@@ -3205,9 +3057,8 @@ class BigQmtRpcHandlers:
                     "error": "%s: %s" % (exc.__class__.__name__, exc),
                     "user_order_id": order_tag,
                 })
-        # One line per batch, always: a batch that outlives the client's
-        # timeout keeps running to completion here, and without this line the
-        # doubled orders that follow have no server-side trace.
+        # 每个批量无条件打一行：超出客户端超时的批量会在这里继续跑到完成，没有
+        # 这一行，随后翻倍的委托在服务端就毫无痕迹。
         try:
             from .logging_setup import get_logger
             get_logger("rpc").info(
@@ -3221,22 +3072,21 @@ class BigQmtRpcHandlers:
         return results
 
     def _handle_passorder(self, params):
-        """Raw native-passorder passthrough (route 2).
+        """原生 passorder 直通（路线 2）。
 
-        Forwards the 11-arg passorder signature straight through to QMT, with
-        ContextInfo supplied server-side. No opType validation, no code
-        normalization, no settlement read-back -- the caller owns the native
-        contract. See BigQmtOrderGateway.passorder_passthrough.
+        把 11 个参数的 passorder 签名原样转发给 QMT，ContextInfo 由服务端提供。
+        不做 opType 校验、不做代码归一、不做结算回读——原生契约由调用方负责。见
+        BigQmtOrderGateway.passorder_passthrough。
 
-        Accepts both the native argument names (op_type/order_type/price_type/
-        prType...) and passorder's own spellings, so a caller can paste the
-        signature they know. account defaults to the request/gateway account.
+        同时接受原生参数名（op_type/order_type/price_type/prType...）和 passorder
+        自己的拼写，这样调用方可以粘贴他们熟悉的签名。account 默认取请求/网关
+        账户。
         """
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
+            raise RuntimeError("order_gateway 未配置")
         passthrough = getattr(self.order_gateway, "passorder_passthrough", None)
         if not callable(passthrough):
-            raise RuntimeError("this deployment predates the passorder passthrough")
+            raise RuntimeError("本部署早于 passorder 直通")
 
         def pick(*names, **kw):
             for name in names:
@@ -3260,11 +3110,11 @@ class BigQmtRpcHandlers:
         user_order_id = pick("user_order_id", "userOrderId", "order_remark",
                              "remark", default="")
         if op_type is None:
-            raise ValueError("op_type is required")
+            raise ValueError("op_type 是必需的")
         if not order_code:
-            raise ValueError("order_code is required")
+            raise ValueError("order_code 是必需的")
         if volume is None:
-            raise ValueError("volume is required")
+            raise ValueError("volume 是必需的")
         return passthrough(
             op_type=op_type,
             order_type=order_type,
@@ -3281,26 +3131,22 @@ class BigQmtRpcHandlers:
 
     def _handle_cancel_order(self, params):
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
+            raise RuntimeError("order_gateway 未配置")
         account_id = self._request_account_id(params)
         order_sys_id = str(params.get("order_sys_id") or params.get("order_sysid") or params.get("order_id") or "")
         if not order_sys_id:
-            raise ValueError("order_sys_id or order_id is required")
+            raise ValueError("order_sys_id 或 order_id 是必需的")
         order_ref = OrderRef(
             order_sys_id=order_sys_id,
             user_order_id=str(params.get("user_order_id") or ""),
         )
         result = self.order_gateway.cancel(order_ref, account_id=account_id)
 
-        # The native cancel return is not trustworthy in EITHER direction.
-        # #148: falsey while the broker accepted the cancel (status became 54
-        # within 67 ms).  #151: truthy for an order that does not exist at
-        # all -- the return describes "the request was sent", not "the order
-        # was cancelled".  So both directions settle against the order
-        # snapshot now.  A truthy return gets ONE immediate lookup first: the
-        # common case (order exists, already 53/54) confirms without an extra
-        # round trip, so the fast path stays fast; only an unconfirmed truthy
-        # pays the settle wait.
+        # 原生撤单返回值两个方向都不可信。#148：券商已接受撤单（67ms 内状态变成
+        # 54）时它返回假。#151：对根本不存在的委托它返回真——这个返回值描述的是
+        # “请求已发出”，而不是“委托已撤销”。所以现在两个方向都按委托快照结算。
+        # 返回真时先做一次即时查找：常见情形（委托存在、已经是 53/54）无需额外
+        # 往返就能确认，快路径仍然快；只有未确认的真值才付结算等待的代价。
         settlement = CancelSettlement(
             order_ref,
             account_id,
@@ -3313,7 +3159,7 @@ class BigQmtRpcHandlers:
                 if self._apply_cancel_lookup(settlement):
                     return result
             except Exception:
-                pass  # fall through to the parked/inline wait below
+                pass  # 继续走下面的排队 / inline 等待
         if self.settle_orders_inline:
             try:
                 import time as _time
@@ -3326,19 +3172,18 @@ class BigQmtRpcHandlers:
         return result
 
     def _handle_cancel_orders_batch(self, params):
-        """Cancel N orders in one RPC.
+        """用一次 RPC 撤 N 笔委托。
 
-        Settlement lookups are skipped (same reason as submit_orders_batch:
-        get_trade_detail_data is empty off the adjust thread). The cancel
-        callback on the client confirms the outcome asynchronously.
+        跳过结算查找（原因同 submit_orders_batch：get_trade_detail_data 在 adjust
+        线程之外为空）。客户端上的撤单回调会异步确认结果。
         """
         if self.order_gateway is None:
-            raise RuntimeError("order_gateway is not configured")
+            raise RuntimeError("order_gateway 未配置")
         items = params.get("items") or []
         if not isinstance(items, list) or not items:
-            raise ValueError("items must be a non-empty list")
+            raise ValueError("items 必须是非空列表")
         if len(items) > 500:
-            raise ValueError("items exceeds batch limit 500")
+            raise ValueError("items 超过批量上限 500")
         results = []
         for index, item in enumerate(items):
             item = dict(item or {})
@@ -3350,15 +3195,12 @@ class BigQmtRpcHandlers:
                 or ""
             )
             market = str(item.get("market") or "")
-            # accepted/confirmed mirror the submit batch's vocabulary: the
-            # native cancel return answers "the request went out", not "the
-            # order is cancelled" -- and it lies in BOTH directions live
-            # (#148: false while the order was cancelled 67ms later; #151:
-            # true for an order that did not exist). The single-cancel path
-            # settles against the order snapshot; this batch path skips that
-            # (it is the latency the batch exists to avoid), so nothing here
-            # may claim "cancelled". The confirmation is the order-status push
-            # (54) or a query read-back.
+            # accepted/confirmed 沿用提交批量的说法：原生撤单返回值回答的是“请求
+            # 已发出”，而不是“委托已撤销”——而且它在实盘中两个方向都撒谎（#148：
+            # 返回假而 67ms 后委托被撤销；#151：对不存在的委托返回真）。单笔撤单
+            # 路径按委托快照结算；这个批量路径跳过它（那正是批量存在要省的延迟），
+            # 所以这里任何地方都不能声称“已撤销”。确认来自委托状态推送（54）或一次
+            # 查询回读。
             entry = {"index": index, "success": False,
                      "accepted": False, "confirmed": False}
             if not order_sys_id:
@@ -3380,7 +3222,7 @@ class BigQmtRpcHandlers:
         return results
 
     def _settle_cancel_from_status(self, settlement, status, order_sys_id, final):
-        """One status answer, from the watch table or the snapshot row."""
+        """一个状态答案，来自盯盘表或快照行。"""
         if status in CANCELED_ORDER_STATUSES:
             settlement.result.success = True
             settlement.result.message = ""
@@ -3393,11 +3235,9 @@ class BigQmtRpcHandlers:
         if status in CANCEL_IN_FLIGHT_STATUSES:
             if not final:
                 return False
-            # The exchange has accepted the cancel and it is on its way --
-            # 51/52 transition to 54 in milliseconds normally, slower around
-            # the close or under congestion. That is not a failed cancel, and
-            # reporting one is the #148 false negative through a narrower
-            # window (issue #151).
+            # 交易所已接受撤单、正在途中——51/52 通常几毫秒内就转 54，临近收盘或
+            # 拥堵时更慢。那不是撤单失败，把它报成失败就是 #148 假阴性从一个更窄
+            # 的窗口再现（问题 #151）。
             settlement.result.success = True
             settlement.result.message = (
                 "cancel accepted by exchange, still in flight: order %s is status %s"
@@ -3412,14 +3252,12 @@ class BigQmtRpcHandlers:
             % (settlement.attempts, order_sys_id, status or "unknown"))
 
     def _fail_cancel_settlement(self, settlement, message):
-        """Settle a cancel as FAILED and push a cancel_error event (#389).
+        """把一次撤单结算为失败，并推一条 cancel_error 事件（#389）。
 
-        QMT logs a refused cancel (已成不可撤 etc.) but fires NO callback for
-        it: a strategy that listens on on_cancel_error never learns, and
-        keeps re-cancelling a dead order. The bridge's own settle path is the
-        one place that concludes the failure (status looked up against the
-        order snapshot), so the push is synthesized here and rides the same
-        channel as native order/trade events.
+        QMT 会记录被拒的撤单（已成不可撤等），但不会为它触发任何回调：监听
+        on_cancel_error 的策略永远不知道，于是不停去撤一笔已死的委托。桥接层自己
+        的结算路径是唯一能得出失败结论的地方（按委托快照查状态），所以推送在这里
+        合成，并与原生 order/trade 事件走同一通道。
         """
         settlement.result.success = False
         settlement.result.message = message
@@ -3429,8 +3267,7 @@ class BigQmtRpcHandlers:
     def _publish_cancel_error(self, settlement, message):
         hook = getattr(self, "exec_event_publisher", None)
         if not callable(hook):
-            # Tests and deployments predating the strategy-side hook have no
-            # channel; the RPC reply still carries the verdict.
+            # 早于策略侧钩子的测试和部署没有通道；RPC 回复仍会带上结论。
             return
         try:
             order_ref = settlement.order_ref
@@ -3454,7 +3291,7 @@ class BigQmtRpcHandlers:
             pass
 
     def _apply_cancel_lookup(self, settlement, final=False):
-        """Resolve an ambiguous native cancel return from the order snapshot."""
+        """按委托快照解析含义不明的原生撤单返回值。"""
         from .account_type_map import request_account_type
 
         with request_account_type(getattr(settlement, "account_type", None)):
@@ -3463,8 +3300,8 @@ class BigQmtRpcHandlers:
     def _apply_cancel_lookup_as_requested(self, settlement, final=False):
         settlement.attempts += 1
         order_sys_id = str(settlement.order_ref.order_sys_id or "")
-        # Fast path: the order's own status change was pushed to us by QMT's
-        # order_callback (issue #164). A table miss falls through to the poll.
+        # 快路径：这笔委托自己的状态变化已由 QMT 的 order_callback 推给我们
+        # （问题 #164）。表未命中就走轮询。
         watch = getattr(self, "order_watch_table", None)
         if watch is not None:
             try:
@@ -3541,7 +3378,7 @@ def _convertible_optype_of(order_type):
 
 
 def _is_cash_repay_order_type(order_type):
-    """直接还款 (MiniQMT 32 / 45): the amount rides in the volume slot."""
+    """直接还款 (MiniQMT 32 / 45)：金额放在 volume 槽位里。"""
     try:
         return int(order_type) in (32, 45)
     except (TypeError, ValueError):
@@ -3585,7 +3422,7 @@ def _passthrough_action_of(order_type):
 
 
 def _deployed_version():
-    """Version of the bridge actually running here, or "" if unknown."""
+    """此处实际运行的桥接层版本，未知时返回 ""。"""
     try:
         from bigqmt_signal_trader.version import __version__
 
@@ -3595,7 +3432,7 @@ def _deployed_version():
 
 
 def _normalize_mapping_value(value):
-    """Make one mapping value JSON-safe without flattening its shape."""
+    """把单个映射值处理成 JSON 安全，同时不压平它的形状。"""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, dict):
@@ -3607,10 +3444,10 @@ def _normalize_mapping_value(value):
 
 
 def _normalize_detail_rows(rows):
-    """Convert get_trade_detail_data row objects into JSON-serializable dicts.
+    """把 get_trade_detail_data 的行对象转成可 JSON 序列化的 dict。
 
-    QMT returns objects with m_strXxx / m_nXxx / m_dXxx attributes. We map
-    each to its public attributes so the result survives JSON encoding.
+    QMT 返回带 m_strXxx / m_nXxx / m_dXxx 属性的对象。我们把每个映射到它的
+    公开属性，使结果能通过 JSON 编码。
     """
     if not rows:
         return []
@@ -3647,16 +3484,14 @@ def _jsonable_scalar(value):
 
 
 def _normalize_grouped_detail_rows(rows):
-    """Serialize get_history_trade_detail_data's documented grouped answer.
+    """序列化 get_history_trade_detail_data 文档化的分组答案。
 
-    The official contract is ``[(timetag, [detail, ...]), ...]`` -- the
-    example iterates ``for time, data in obj_list`` and then the details in
-    ``data``. _normalize_detail_rows alone treats each outer tuple as one
-    detail object: a tuple has no data attributes, so a fully-populated
-    history normalized to [{}], losing both the grouping and every deal in
-    it (#395). Grouped entries become ``{"timetag": t, "details": [...]}``;
-    anything not in the documented shape goes through the flat normaliser so
-    a build that answers flat rows still answers.
+    官方契约是 ``[(timetag, [detail, ...]), ...]``——示例里用
+    ``for time, data in obj_list`` 迭代，然后再遍历 ``data`` 里的明细。只用
+    _normalize_detail_rows 会把每个外层元组当成一个明细对象：元组没有数据属性，
+    于是一份填满数据的历史被规范化成 [{}]，分组和里面的每笔成交都丢了（#395）。
+    分组条目变成 ``{"timetag": t, "details": [...]}``；不符合文档形状的一律走
+    扁平规范化器，使以扁平行作答的构建仍能作答。
     """
     if not rows:
         return []
@@ -3674,19 +3509,14 @@ def _normalize_grouped_detail_rows(rows):
     return result
 
 
-# A response carries typed envelopes (DataFrame/Series/Panel) only sometimes.
-# A whole-market snapshot is ~20 MB of plain scalars with none in it, and
-# walking that tree on the client to rebuild nothing costs 341ms -- more than
-# parsing it did. Checking the raw text for the marker is a C substring scan
-# over the same bytes: 3.7ms. So the answer rides along on the envelope and the
-# client skips the walk when there is provably nothing to restore. Measured on
-# 51285 instruments: 345.9ms -> 3.7ms.
+# 只在响应含 DataFrame、Series 或 Panel 类型标记时递归还原。
+# 对 51285 个标的的全市场快照，扫描原文比遍历结构快（实测 345.9 毫秒降至 3.7 毫秒）。
 TYPED_PAYLOAD_MARKER = '"__bigqmt_type__"'
 TYPED_PAYLOAD_FLAG = "__bigqmt_typed__"
 
 
 def loads_rpc_response(raw):
-    """Parse a response envelope and record whether it carries typed data."""
+    """解析应答并标记其中是否包含需还原的类型。"""
     text = decode_text(raw)
     response = json.loads(text)
     if isinstance(response, dict):
@@ -3695,7 +3525,7 @@ def loads_rpc_response(raw):
 
 
 def encode_rpc_request_payload(request):
-    """Encode request JSON using the RPC request payload format."""
+    """按 RPC 载荷格式编码请求 JSON。"""
 
     raw = json.dumps(request, ensure_ascii=False).encode("utf-8")
     encoded = base64.b64encode(raw).decode("ascii").translate(SAFE_B64_DIGIT_ENCODE)
@@ -3711,7 +3541,7 @@ def decode_rpc_request_payload(text):
 
 
 class ValkeyPubSubRpcService:
-    """Receive RPC requests from Valkey and write responses back to Valkey."""
+    """通过配置的传输层接收 RPC 请求和发送应答。"""
 
     def __init__(
         self,
@@ -3740,31 +3570,21 @@ class ValkeyPubSubRpcService:
         heavy_codes_threshold=HEAVY_READ_CODES_THRESHOLD,
     ):
         self.listen_valkey = valkey_client
-        # Heavy reads leave the adjust thread for one worker (#351). Only in
-        # the adjust drain: with background threads the receive thread already
-        # runs them off the strategy thread. See HEAVY_READ_METHODS.
+        # adjust 处理队列时，大查询可交给一个工作线程（#351）。
+        # 启用后台接收线程时，这些查询直接在该线程执行。
         self.heavy_offload = bool(heavy_offload)
         self.heavy_codes_threshold = max(1, int(heavy_codes_threshold))
         self._heavy_queue = queue.Queue()
-        # Send worker replies on the adjust thread at its next tick.
+        # 工作线程的结果在下一轮 adjust 发送。
         self._heavy_replies = queue.Queue()
         self._heavy_thread = None
         self._heavy_count = 0
-        # A handler that holds its thread longer than this logs the method
-        # and the thread (#342). On the adjust thread that is the strategy
-        # frozen; the drain phase logs only its total, so a 33-minute
-        # ``[adjust_phase] drain`` never said which request it was inside.
+        # 超过此阈值时记录具体方法和线程，定位拖慢 adjust 的请求（#342）。
         self.slow_request_seconds = float(slow_request_seconds)
-        # A request past the client's own deadline is not dispatched (#303).
-        # The client states its wait in the envelope; the server measures the
-        # age from the moment it received the request, so no clock is shared.
-        # The margin covers the transport leg the server cannot see plus one
-        # passorder: refuse a little early rather than place an order whose
-        # caller has already gone.
+        # 收到请求后计时，按客户端传入的等待时长判断是否过期（#303）。
+        # 留出传输和一次 passorder 的余量，避免执行调用方已超时的委托。
         self.expire_margin_seconds = max(0.0, float(expire_margin_seconds))
-        # How often drain_pending pauses a batch to settle and reply. With
-        # passorder at ~200ms, a 20-order batch is 4s in which nobody -- not
-        # even the first order, done at 0.2s -- gets an answer.
+        # 批量处理时定期暂停队列，先确认并应答已提交的委托。
         self.settle_interval_seconds = max(0.0, float(settle_interval_seconds))
         self._expired_request_count = 0
         self.valkey = response_valkey_client or valkey_client
@@ -3785,29 +3605,22 @@ class ValkeyPubSubRpcService:
         self.debug_log_limit = int(debug_log_limit)
         self._received_count = 0
         self._processed_count = 0
-        # (account_id, request_id) -> {"at", "response"} for write methods,
-        # so a transparently retried RPUSH cannot dispatch a second order (#245).
+        # 按 (account_id, request_id) 缓存写请求应答，防止 RPUSH 重试重复下单（#245）。
         self._order_requests = collections.OrderedDict()
         self._duplicate_order_requests = 0
         self._published_count = 0
         self._deferred_count = 0
         self.print_prefix = print_prefix
         self.pending = queue.Queue(maxsize=int(max_queue_size))
-        # Submit/cancel replies waiting on a main-thread order snapshot.
-        # Unbounded on purpose: every entry represents a live broker operation,
-        # so dropping one would strand it with no reply.
+        # 等待主线程委托快照的下单和撤单请求。队列不设上限，确保待确认委托有应答。
         self._pending_settlements = queue.Queue()
-        # Async orders already answered, still watched for a pre-record
-        # refusal (#345). Separate from the reply queue so
-        # pending_settlement_count keeps meaning "replies waiting".
+        # 单独跟踪已应答的异步委托，识别终端落单前的拒绝（#345）。
         self._shadow_settlements = queue.Queue()
         self._running = threading.Event()
         self._thread = None
         self._queue_thread = None
         self._pubsub = None
-        # Transport owns the wire. Default to a ValkeyTransport built from the
-        # same clients/templates so behavior is unchanged. An explicit
-        # ``transport`` (e.g. ZmqTransport) overrides the Valkey path entirely.
+        # 通信由传输层负责。未指定 transport 时沿用传入的客户端和模板构造 Valkey 传输。
         if transport is None:
             from .transports.valkey_transport import ValkeyTransport
 
@@ -3826,9 +3639,7 @@ class ValkeyPubSubRpcService:
                 print_prefix=print_prefix,
             )
         self._transport = transport
-        # Let the handlers reach the transport for read-only diagnostics
-        # (reply-queue residency, #104). Set here rather than in the
-        # strategy file so a reload picks it up without a restart.
+        # 供处理器读取传输层的诊断信息，如应答在队列中的停留时间（#104）。
         try:
             self.handlers.rpc_transport = transport
         except Exception:
@@ -3840,8 +3651,7 @@ class ValkeyPubSubRpcService:
             self.handlers.rpc_service = self
         except Exception:
             pass
-        # Route inbound raw payloads through the service's dispatch (which
-        # applies the inline-vs-deferred fork) instead of transport.deliver().
+        # 原始载荷交给 RPC 服务，统一判断直接执行还是排队。
         self._transport.on_raw_payload = self._handle_received_payload
 
     @property
@@ -3854,17 +3664,13 @@ class ValkeyPubSubRpcService:
 
     def start(self):
         self._running.set()
-        # Delegate thread lifecycle to the transport. The transport invokes the
-        # on_request callback with a decoded request dict; enqueue_payload routes
-        # it through the inline-vs-deferred fork and publishes the response
-        # itself (returns None so the transport's deliver() does not double-send).
-        # ValkeyTransport additionally routes raw bytes through on_raw_payload
-        # (set in __init__) for its own receive loops.
+        # 传输层管理接收线程。enqueue_payload 分发已解码的请求并负责应答，
+        # 返回 None 以避免传输层重复发送。Valkey 的接收循环也可上交原始载荷。
         self._transport.start_receiving(
             self.enqueue_payload,
             background_threads=self.background_threads,
         )
-        # Mirror transport threads onto the service for stop()/diagnostics.
+        # 记录传输线程，供停止操作及诊断使用。
         self._thread = getattr(self._transport, "_thread", None)
         self._queue_thread = getattr(self._transport, "_queue_thread", None)
         if not self.background_threads:
@@ -3885,12 +3691,12 @@ class ValkeyPubSubRpcService:
         self._heavy_thread = None
         if heavy is not None and heavy.is_alive():
             heavy.join(1.0)
-        # The transport owns the threads now; keep the attributes for back-compat.
+        # 线程由传输层管理，保留属性以兼容已有调用。
         self._thread = None
         self._queue_thread = None
         self._pubsub = None
 
-    # -- heavy reads off the adjust thread (#351) -------------------------
+    # -- 把重读取移出 adjust 线程（#351） ------------------------------
     def _start_heavy_worker(self):
         if not self.heavy_offload or self._heavy_thread is not None:
             return
@@ -3916,7 +3722,7 @@ class ValkeyPubSubRpcService:
         return thread is not None and threading.current_thread() is thread
 
     def _should_offload(self, payload):
-        """Heavy read, and there is a worker to take it."""
+        """重读取，且有工作线程可以承接它。"""
         thread = self._heavy_thread
         if thread is None or not thread.is_alive():
             return False
@@ -3948,18 +3754,17 @@ class ValkeyPubSubRpcService:
             codes = []
         if len(codes) > self.heavy_codes_threshold:
             return True
-        # A market token ("SH", "SZ", "SHO"...) is thousands of instruments.
+        # 市场标记（"SH"、"SZ"、"SHO" 等）代表数千个标的。
         for code in codes:
             if isinstance(code, str) and code and "." not in code:
                 return True
         if canonical == "get_ticks":
-            # types= only makes sense with a token; a caller who passes it
-            # wants the market.
+            # types= 只在带标记时有意义；传它的调用方要的就是整个市场。
             return bool(params.get("types"))
         period = str(params.get("period") or "").lower()
         if period in ("tick", "l2quote", "l2order", "l2transaction"):
             return True
-        # A date window (count -1 with a start) instead of the last N bars.
+        # 用日期窗口（count 为 -1 且带 start），而不是最近 N 根 K 线。
         try:
             count = int(params.get("count", -1))
         except (TypeError, ValueError):
@@ -3972,7 +3777,7 @@ class ValkeyPubSubRpcService:
         return self._heavy_queue.qsize()
 
     def flush_heavy_replies(self, max_items=100):
-        """Send the worker's finished replies. Adjust thread."""
+        """发送工作线程已完成的回复。adjust 线程。"""
         sent = 0
         for _ in range(int(max_items)):
             try:
@@ -4027,11 +3832,10 @@ class ValkeyPubSubRpcService:
                     print("%s 队列轮询 key=%s"
                           % (self.print_prefix, self.request_queue))
                 while self._running.is_set():
-                    # brpop blocks server-side until an item arrives (or the
-                    # short timeout fires), so a request is picked up within
-                    # ~1ms of being pushed instead of waiting up to
-                    # queue_poll_interval_seconds. The 1s ceiling lets us
-                    # re-check _running for a clean shutdown.
+                    # brpop 在服务端阻塞直到有元素到达（或短超时触发），所以请求
+                    # 被推入后约 1ms 内就被取走，而不是等满
+                    # queue_poll_interval_seconds。1s 的上限让我们能重新检查
+                    # _running 以干净退出。
                     item = self.listen_valkey.brpop(self.request_queue, timeout=1)
                     if not self._running.is_set():
                         break
@@ -4063,8 +3867,8 @@ class ValkeyPubSubRpcService:
 
     def enqueue_payload(self, raw_payload):
         payload = self._loads(raw_payload)
-        # Server clock, at receipt. The age the request reaches when the
-        # adjust thread finally picks it up is measured from here.
+        # 服务端时钟，在收到时取。请求最终被 adjust 线程取走时的积压年龄从
+        # 这里起算。
         payload.setdefault("_received_at", time.time())
         if self._should_offload(payload):
             self._heavy_count += 1
@@ -4085,9 +3889,8 @@ class ValkeyPubSubRpcService:
         try:
             self.pending.put_nowait(payload)
         except queue.Full:
-            # A full pending queue (client polling storm) must not raise into the
-            # adjust thread — QMT stops the strategy on a callback raise. Drop the
-            # oldest request and keep the newest instead of crashing.
+            # 待处理队列满（客户端轮询风暴）时不能把异常抛进 adjust 线程——QMT 在
+            # 回调抛异常时会停掉策略。丢掉最旧的请求并保留最新的，而不是崩掉。
             try:
                 self.pending.get_nowait()
             except Exception:
@@ -4102,14 +3905,11 @@ class ValkeyPubSubRpcService:
             return False
         method = str((payload or {}).get("method") or "")
         canonical = getattr(self.handlers, "_canonical_method", lambda value: value)(method)
-        # Second gate, on the per-request path rather than the config path: a
-        # trade-context method never runs on the receive thread, whatever
-        # listener_methods happens to contain (#252). The expansion below is a
-        # one-off at construction; this runs for every request, so a spelling
-        # nobody thought of cannot route get_trade_detail_data off the main
-        # strategy thread -- where it answers with the right row count and
-        # every field None, which a client reads as "no money", not as a
-        # failed call.
+        # 第二道闸，在按请求的路径上而不是配置路径上：交易上下文方法绝不在接收
+        # 线程上运行，无论 listener_methods 里恰好有什么（#252）。下面的展开是
+        # 构造时一次性的；这里对每个请求都跑，所以没人想到的某种拼写也无法把
+        # get_trade_detail_data 路由到主策略线程之外——在那里它答出的行数是对的、
+        # 每个字段都是 None，而客户端会把那读成“没钱”，不是“调用失败”。
         if method in LISTENER_DEFERRED_METHODS or canonical in LISTENER_DEFERRED_METHODS:
             return False
         if method in self.listener_methods:
@@ -4117,22 +3917,18 @@ class ValkeyPubSubRpcService:
         return canonical in self.listener_methods
 
     def _expand_listener_methods(self, listener_methods):
-        """Which methods may run inline on the receive thread.
+        """哪些方法可以在接收线程上就地运行。
 
-        The deferred set is subtracted **last**, over the whole result, not
-        only inside the ``"*"`` branch. Naming a method explicitly used to
-        bypass the subtraction entirely, so
-        ``rpc_listener_methods=("get_asset",)`` put a trade-context method
-        back on the receive thread. That is harmless while the receive thread
-        IS the adjust thread (rpc_background_threads False), and silently
-        wrong the moment it is not: off the main strategy thread these answer
-        with the right row count and every field None -- which reads as "this
-        account has no money", not as a failed call.
+        延后集合是 **最后** 减去的，作用于整个结果，而不只在 ``"*"`` 分支里。过去
+        显式点名一个方法会完全跳过这次减法，于是
+        ``rpc_listener_methods=("get_asset",)`` 把交易上下文方法又放回了接收线程。
+        当接收线程 **就是** adjust 线程时（rpc_background_threads False）这无害，
+        而一旦不是就静默出错：在主策略线程之外，它们答出的行数是对的、每个字段都
+        是 None——读起来像“这个账户没钱”，而不是调用失败。
 
-        Making it depend on two unrelated keys agreeing is what kept
-        ``rpc_background_threads`` pinned to False as a blanket rule. Enforce
-        it here instead: no configuration can route a trade-context method to
-        a background thread, so the flag is free to be chosen on latency.
+        让它依赖两个不相关的键相互一致，正是过去把 rpc_background_threads 一律钉
+        在 False 的原因。改为在这里强制：任何配置都无法把交易上下文方法路由到
+        后台线程，于是那个开关可以自由地按延迟来选。
         """
         resolve = getattr(self.handlers, "_canonical_method", lambda value: value)
         methods = set()
@@ -4143,14 +3939,12 @@ class ValkeyPubSubRpcService:
             else:
                 methods.add(method)
                 methods.add(resolve(method))
-        # Subtract by CANONICAL name, not by the literal spelling. The loop
-        # above keeps the caller's alias alongside the canonical name, so a
-        # plain `methods - LISTENER_DEFERRED_METHODS` removed `get_positions`
-        # and left `query_stock_positions` sitting right next to it -- and
-        # `_should_process_in_listener` matches the raw method name first, so
-        # the alias won (#252). `("get_positions",)` and `("*",)` were correct
-        # throughout, which is what made this read as "the config spelling
-        # changes the answer" rather than as a dispatch bug.
+        # 按 **规范名** 而不是字面拼写做减法。上面的循环把调用方的别名与规范名
+        # 并存，所以朴素的 `methods - LISTENER_DEFERRED_METHODS` 会移掉
+        # `get_positions` 却把 `query_stock_positions` 留在旁边——而
+        # `_should_process_in_listener` 先匹配原始方法名，于是别名胜出（#252）。
+        # `("get_positions",)` 和 `("*",)` 一直是正确的，这正是它读起来像“配置里
+        # 的拼写改变了答案”而不是分发 bug 的原因。
         return set(m for m in methods if resolve(m) not in LISTENER_DEFERRED_METHODS)
 
     def _loads(self, raw_payload):
@@ -4160,25 +3954,22 @@ class ValkeyPubSubRpcService:
         text = decode_rpc_request_payload(text)
         payload = json.loads(text)
         if not isinstance(payload, dict):
-            raise ValueError("rpc payload must be a json object")
+            raise ValueError("rpc 载荷必须是 JSON 对象")
         return payload
 
     def settle_pending_orders(self, max_items=100):
-        """Retry parked submit/cancel lookups on the adjust thread.
+        """在 adjust 线程上重试已排队的提交/撤单查找。
 
-        A queue rather than a list because rpc_listener_methods is configurable:
-        if submit_order is ever put in it, the producer becomes the listener
-        thread while this consumer stays on adjust.
+        用队列而不是列表，因为 rpc_listener_methods 是可配置的：如果 submit_order
+        被放进去，生产者就变成监听线程，而消费者仍在 adjust 上。
 
-        Unsettled entries go back on the queue, so each order costs one lookup
-        per adjust tick until it resolves or its deadline passes.
+        未结算的条目会回到队列，所以每笔委托每个 adjust tick 花一次查找，直到结清
+        或过了截止时间。
 
-        Timed like a request (#342's slow-request log): a pass that misses the
-        callback fast path scans the terminal's ORDER list, once per pass, and
-        drain_pending runs up to three passes per tick. With #345 every
-        order_stock_async is watched for order_settle_timeout_seconds too, so
-        on a day with hundreds of orders this is the one adjust-thread cost
-        that grew, and the log is where it shows.
+        像请求那样计时（#342 的慢请求日志）：一次错过回调快路径的遍历会扫描终端的
+        ORDER 列表，每趟一次，而 drain_pending 每个 tick 最多跑三趟。#345 之后每笔
+        order_stock_async 也要盯 order_settle_timeout_seconds，所以在有数百笔委托
+        的日子里，这是唯一增长了的 adjust 线程成本，而日志就是它显现的地方。
         """
         pending = self._pending_settlements.qsize()
         shadow = self._shadow_settlements.qsize()
@@ -4194,15 +3985,13 @@ class ValkeyPubSubRpcService:
 
     def _settle_pending_orders(self, max_items=100):
         settled = 0
-        # Snapshot the size first. Unsettled entries go back on the same queue,
-        # so draining until empty would keep re-picking them and spin one adjust
-        # tick into many lookups per order.
+        # 先快照队列大小。未结算条目会回到同一个队列，所以“排到空”会不断重新取
+        # 到它们，把一个 adjust tick 变成每笔委托的许多次查找。
         batch = min(int(max_items), self._pending_settlements.qsize())
-        # One ORDER snapshot per account per pass, fetched on the first
-        # settlement that misses the callback fast path and reused by the
-        # rest. It was one get_trade_detail_data per pending order per tick:
-        # a 20-order burst on a day with hundreds of rows cost 20 full
-        # conversions of the day's list every 100ms (#303).
+        # 每个账户每趟一份 ORDER 快照，由第一个错过回调快路径的结算去取、其余的
+        # 复用。过去是每个待结算委托每个 tick 一次 get_trade_detail_data：在一天有
+        # 数百行的日子里，一次 20 笔的突发每 100ms 就要完整转换 20 次当天的列表
+        # （#303）。
         orders_cache = {}
         for _ in range(batch):
             try:
@@ -4217,7 +4006,7 @@ class ValkeyPubSubRpcService:
                     done = self.handlers._apply_order_lookup(
                         settlement, final=expired, orders_cache=orders_cache)
             except Exception:
-                done = True  # never strand a submitted order in the queue
+                done = True  # 绝不把已提交的委托搁在队列里
             if not done:
                 self._pending_settlements.put(settlement)
                 continue
@@ -4242,16 +4031,15 @@ class ValkeyPubSubRpcService:
             settled += 1
             if (getattr(settlement, "shadow", False)
                     and not isinstance(settlement, CancelSettlement)):
-                # Converted at its deadline (#360): the reply answered
-                # "unconfirmed"; keep watching on the shadow queue so a late
-                # callback settles it silently and only a true refusal pushes
-                # order_error at the extended deadline.
+                # 在它的截止时间转换（#360）：回复当时答的是“未确认”；继续在影子
+                # 队列上盯着，使迟到的回调能静默结清它，只有真正的拒单才会在延长
+                # 后的截止时间推 order_error。
                 self._shadow_settlements.put(settlement)
         settled += self._settle_shadow_orders(orders_cache, max_items)
         return settled
 
     def _settle_shadow_orders(self, orders_cache, max_items=100):
-        """Watch already-answered async orders; push order_error on a refusal (#345)."""
+        """盯着已回复过的异步委托；被拒时推 order_error（#345）。"""
         settled = 0
         batch = min(int(max_items), self._shadow_settlements.qsize())
         for _ in range(batch):
@@ -4280,12 +4068,11 @@ class ValkeyPubSubRpcService:
         return self._pending_settlements.qsize()
 
     def _push_shadow_order_error(self, settlement):
-        """order_error for an async order the terminal never recorded (#345).
+        """终端从未记录过的异步委托的 order_error（#345）。
 
-        Same channels the 废单 callback path uses: the valkey exec-event
-        channels when there is a valkey client, else the quote push channel's
-        exec:* topic. A deployment with neither channel cannot carry
-        it -- the client falls back to a synchronous settlement there.
+        与废单回调路径相同的通道：有 valkey 客户端时走 valkey 执行事件通道，否则
+        走行情推送通道的 exec:* 主题。两个通道都没有的部署无法承载它——客户端在
+        那里退回到同步结算。
         """
         request = settlement.order_request
         publish = getattr(self.handlers, "publish_order_error", None)
@@ -4297,21 +4084,19 @@ class ValkeyPubSubRpcService:
             print("%s 影子 order_error 推送失败：%s" % (self.print_prefix, exc))
 
     def drain_pending(self, max_items=20, budget_seconds=None):
-        """Run queued requests on the adjust thread, then settle.
+        """在 adjust 线程上运行已排队的请求，然后结算。
 
-        ``budget_seconds`` bounds how long this tick keeps the strategy
-        thread (#303). Twenty orders at ~200ms each held it for 4s: QMT's
-        own callbacks could not land, so every settlement fell to the slow
-        query, and the first order's reply -- ready at 0.2s -- left with the
-        twentieth's. What does not fit stays queued for the next tick; at
-        least one request always runs. None keeps the old unbounded batch.
-        Every ``settle_interval_seconds`` of work the batch pauses to settle
-        and reply, so early orders answer while later ones still run.
+        ``budget_seconds`` 限定这个 tick 占住策略线程多久（#303）。20 笔各约
+        200ms 的委托把它占了 4s：QMT 自己的回调落不下来，于是每次结算都退到慢
+        查询，而第一笔 0.2s 就该发的回复跟着第二十笔一起走。放不下的继续排队等
+        下一个 tick；至少总会运行一个请求。None 保留旧的无限批量。每干
+        ``settle_interval_seconds`` 的活，批量就暂停去结算并回复，使早的委托在
+        后面的仍在跑时就已经作答。
         """
-        # Replies the heavy worker finished since last tick go out first:
-        # they are already late by the read itself.
+        # 自上个 tick 以来重读取工作线程已完成的回复先发出去：它们单是读取本身
+        # 就已经晚了。
         self.flush_heavy_replies()
-        # Settle carry-overs from earlier ticks before taking on new work.
+        # 先结算上一个 tick 遗留的条目，再接新活。
         self.settle_pending_orders()
         processed = 0
         started = _monotonic()
@@ -4336,16 +4121,14 @@ class ValkeyPubSubRpcService:
                     and _monotonic() - last_settle >= self.settle_interval_seconds):
                 self.settle_pending_orders()
                 last_settle = _monotonic()
-        # Settle again so an order submitted in THIS drain still replies on this
-        # tick. One lookup, no sleep -- if QMT has not assigned the id yet we
-        # simply retry next tick rather than holding the thread (issue #44).
+        # 再次结算，使 **本次** 排空中提交的委托仍能在本 tick 回复。一次查找、不
+        # 睡眠——QMT 还没分配 id 就下一个 tick 重试，而不是占住线程（问题 #44）。
         self.settle_pending_orders()
         return processed
 
     def drain_request_queue(self, max_items=20):
-        # Delegate to the transport when it owns the wire directly; for Valkey
-        # the transport's drain drives _handle_received_payload (which honors
-        # the inline-vs-deferred fork), matching the original semantics.
+        # 由 transport 直接拥有链路时交给它；对 Valkey 来说，transport 的排空驱动
+        # _handle_received_payload（它遵守就地/延后的分叉），与原始语义一致。
         transport_drain = getattr(self._transport, "drain_request_queue", None)
         if transport_drain is not None and not isinstance(self._transport, type(None)):
             return transport_drain(max_items=max_items)
@@ -4366,17 +4149,16 @@ class ValkeyPubSubRpcService:
         return resolve(method) if callable(resolve) else method
 
     def _claim_order_request(self, key):
-        """Claim (account_id, request_id) for a write. None == first time.
+        """为一次写操作认领 (account_id, request_id)。None == 首次。
 
-        Returns the existing entry when this id has already been seen, so the
-        caller can answer without dispatching a second native order.
+        该 id 已见过时返回既有条目，使调用方无需再派发一次原生委托就能作答。
         """
         store = getattr(self, "_order_requests", None)
         if store is None:
             store = self._order_requests = collections.OrderedDict()
         now = time.time()
-        # Prune by age, then by size. Both are bounded on purpose: this runs
-        # on the adjust thread and must not grow with uptime.
+        # 先按年龄、再按数量裁剪。两者都有意有界：这在 adjust 线程上运行，不能
+        # 随运行时长增长。
         for stale in [k for k, v in store.items()
                       if now - v.get("at", now) > self.ORDER_DEDUP_TTL_SECONDS]:
             store.pop(stale, None)
@@ -4395,16 +4177,15 @@ class ValkeyPubSubRpcService:
             if state:
                 store[key]["state"] = state
 
-    # Cancels run however late they arrive: a late cancel is harmless and is
-    # exactly what a caller who gave up on it still wants. A late submit is
-    # the opposite -- the caller has already decided it did not happen.
+    # 撤单无论多晚到达都执行：迟到的撤单无害，而且正是已放弃它的调用方仍想要的。
+    # 迟到的提交相反——调用方已经认定它没有发生。
     _EXPIRY_EXEMPT_METHODS = frozenset(["cancel_order", "cancel_orders_batch"])
 
     def _client_deadline(self, request):
-        """When this request's caller stops listening, on the server clock.
+        """本请求的调用方何时不再等待，按服务端时钟。
 
-        None when the envelope does not say (a client older than #303) --
-        such a request is never refused, exactly as before.
+        信封没有说明时（早于 #303 的客户端）为 None——这样的请求永不被拒，与以前
+        完全一致。
         """
         try:
             timeout = float(request.get("timeout_seconds") or 0)
@@ -4428,14 +4209,12 @@ class ValkeyPubSubRpcService:
         return now - float(request.get("_received_at") or now)
 
     def _refuse_expired(self, request, response, method, waited, order_key):
-        """Reply RequestExpired without dispatching (#303).
+        """不派发，直接回复 RequestExpired（#303）。
 
-        Orders run one at a time on the QMT strategy thread, ~200ms each.
-        Thirty-two concurrent order_stock calls with a 6s timeout: the first
-        twenty fill the first drain, the rest wait for the next tick, time
-        out at 6s -- and were then placed anyway, minutes after the caller
-        had logged them as failed. The caller's timeout must mean what it
-        says: after it, nothing it asked for happens.
+        委托在 QMT 策略线程上一笔一笔执行，每笔约 200ms。32 个并发 order_stock 配
+        6s 超时：前 20 个填满第一次排空，其余等下一个 tick，在 6s 超时——然后仍然
+        被下出去了，在调用方记下失败之后几分钟。调用方的超时必须说到做到：超时
+        之后，它所请求的任何事情都不该发生。
         """
         self._expired_request_count += 1
         response["error"] = (
@@ -4457,21 +4236,20 @@ class ValkeyPubSubRpcService:
         return response
 
     def _request_outcome(self, params, account_id=None):
-        """What became of an order request, by request_id (#303).
+        """某笔委托请求的结果，按 request_id 查询（#303）。
 
-        For a caller whose order_stock timed out. Read on the listener thread,
-        so it answers even while the adjust thread is deep in a batch.
+        给 order_stock 超时的调用方用。在监听线程上读取，所以即使 adjust 线程正深
+        陷某个批量也能作答。
 
-            unknown      never picked up (still queued -- it will be refused
-                         when it is, being past its deadline -- or dropped)
-            dispatching  passorder is running right now
-            dispatched   passorder returned; the order id is being looked up
-            settled      replied; ``response`` is what the caller missed
-            refused      past its deadline before dispatch; nothing placed
+            unknown      从未被取出（仍在队列——取出时因已过期会被拒——或被丢弃）
+            dispatching  passorder 正在运行
+            dispatched   passorder 已返回；正在查订单号
+            settled      已回复；``response`` 就是调用方错过的那条
+            refused      分派前已过期；什么都没下
         """
         request_id = str((params or {}).get("request_id") or "").strip()
         if not request_id:
-            raise ValueError("request_id is required")
+            raise ValueError("request_id 是必需的")
         account_id = str(account_id or (params or {}).get("account_id") or self.account_id or "")
         store = getattr(self, "_order_requests", None) or {}
         entry = store.get((account_id, request_id))
@@ -4486,20 +4264,16 @@ class ValkeyPubSubRpcService:
         account_id = str(request.get("account_id") or self.account_id or "")
         method = str(request.get("method") or "")
 
-        # At-most-once for writes (#245). The client's valkey-py connection
-        # retries transparently on ConnectionError/TimeoutError, and the retry
-        # re-sends the whole command -- conn.retry wraps send AND parse, so an
-        # RPUSH the server already accepted is sent again when the reply is
-        # lost. Nothing downstream deduped: order_stock / order_stock_async
-        # both alias to submit_order, and _handle_submit_order has no
-        # idempotency check (only submit_orders_batch does). So one
-        # client.call could dispatch two native passorders.
+        # 写操作的至多一次（#245）。客户端的 valkey-py 连接在
+        # ConnectionError/TimeoutError 上会透明重试，而重试会重发整条命令——
+        # conn.retry 包住 send 和 parse，所以服务器已接受的 RPUSH 在回复丢失时会
+        # 被再发一次。下游没有任何去重：order_stock / order_stock_async 都别名到
+        # submit_order，而 _handle_submit_order 没有幂等检查（只有
+        # submit_orders_batch 有）。于是一次 client.call 可能派发两次原生 passorder。
         #
-        # The retry re-sends the identical payload, request_id included, which
-        # is what makes this fixable here: the second copy is recognisable.
-        # Answer it with the first one's response instead of dispatching --
-        # both copies name the same reply key, so it lands where the client is
-        # already waiting.
+        # 重试会重发完全相同的载荷（含 request_id），这正是可以在这里修的原因：
+        # 第二份是可识别的。用第一份的回复作答，而不是再派发一次——两份指向同一个
+        # 回复键，所以它会落在客户端已经等待的地方。
         order_key = None
         if request_id and self._canonical(method) in ORDER_METHODS:
             order_key = (account_id, request_id)
@@ -4510,8 +4284,8 @@ class ValkeyPubSubRpcService:
                 print("%s 已抑制重复委托请求 method=%s request_id=%s"
                       % (self.print_prefix, method, request_id))
                 if remembered is None:
-                    # Still in flight: the first copy publishes to the same
-                    # reply key when it settles. Nothing to do but not dispatch.
+                    # 仍在途：第一份结算时会发布到同一个回复键。除了不派发，无事
+                    # 可做。
                     return None
                 try:
                     self._publish_response(request, remembered)
@@ -4526,16 +4300,14 @@ class ValkeyPubSubRpcService:
             "ok": False,
             "data": None,
             "error": "",
-            # server_error carries QMT-side diagnostic info (e.g. passorder
-            # submitted but order not found in system, get_trade_detail_data
-            # returned empty) that doesn't raise an exception but indicates a
-            # problem. Lets clients see why an operation silently failed.
+            # server_error 携带 QMT 侧诊断（例如 passorder 已提交但委托不在系统里、
+            # get_trade_detail_data 返回空），它们不抛异常但表明出了问题。让客户端
+            # 能看到操作为何静默失败。
             "server_error": "",
             "handled_at": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            # Wall clock, not perf_counter: the client is a separate process
-            # on the same machine, so these are directly comparable to its own
-            # time.time() and decompose the round trip into wait / handle /
-            # return without guessing (#104).
+            # 墙钟而不是 perf_counter：客户端是同机上的独立进程，所以这些时间可以
+            # 直接与它自己的 time.time() 比较，并把往返分解成 排队等待 / 处理 / 返回，
+            # 无需猜测（#104）。
             "_t_recv": time.time(),
         }
         waited = self._expired_before_dispatch(request, method)
@@ -4544,7 +4316,7 @@ class ValkeyPubSubRpcService:
         _t0 = _t1 = _t_json1 = None
         try:
             if self.account_id and account_id and account_id != self.account_id:
-                raise PermissionError("account_id mismatch")
+                raise PermissionError("account_id 不匹配")
             _t0 = time.perf_counter()
             try:
                 if method == "get_request_outcome":
@@ -4555,20 +4327,18 @@ class ValkeyPubSubRpcService:
                 _t1 = time.perf_counter()
                 self._note_slow_request(method, _t1 - _t0)
             response["data"] = to_jsonable(result)
-            # to_jsonable is where a big answer burns its time (#386: 12.7MB
-            # of 5m bars took ~11s here on the serve side while the handler
-            # itself was fast, and nothing logged it -- the slow-request note
-            # covers only the handler segment).
+            # to_jsonable 是大答案烧时间的地方（#386：12.7MB 的 5m K 线在服务侧
+            # 这里花了约 11s，而处理器本身很快，且没有任何东西记录——慢请求记录只
+            # 覆盖处理器那一段）。
             _t_json1 = time.perf_counter()
             response["ok"] = True
-            # Surface server-side diagnostics when the handler recorded one.
+            # 处理器记录了服务端诊断时把它暴露出来。
             server_error = getattr(self.handlers, "_last_server_error", None)
             if server_error:
                 response["server_error"] = str(server_error)
-            # passorder may still be awaiting its asynchronously assigned id;
-            # a falsey native cancel may still be awaiting a reliable terminal
-            # status (#148). Park either reply instead of sleeping on this
-            # thread; a later adjust tick settles and publishes it (#44).
+            # passorder 可能仍在等它异步分配的 id；返回假的原生撤单可能仍在等一个
+            # 可靠的终端状态（#148）。把任一回复挂起，而不是在这个线程上睡；之后的
+            # adjust tick 会结算并发布它（#44）。
             take_shadows = getattr(self.handlers, "take_shadow_settlements", None)
             for shadow in (take_shadows() if callable(take_shadows) else []):
                 shadow.request = request
@@ -4592,9 +4362,8 @@ class ValkeyPubSubRpcService:
         try:
             self._publish_response(request, response)
         except Exception:
-            # A response-publish failure (e.g. valkey outage) must not propagate
-            # to the adjust thread — QMT stops the strategy on a callback raise.
-            # The request already ran; the client will just see a timeout.
+            # 响应发布失败（例如 valkey 故障）不能传播到 adjust 线程——QMT 在回调抛
+            # 异常时会停掉策略。请求已经执行；客户端只会看到超时。
             import traceback as _tb
             try:
                 from .logging_setup import get_logger
@@ -4606,10 +4375,9 @@ class ValkeyPubSubRpcService:
         _t_pub1 = time.perf_counter()
         self._note_slow_response(method, _t0, _t1, _t_json1, _t_pub0, _t_pub1)
         if method == "ping":
-            # Logged AFTER publish: this print goes to the QMT output panel,
-            # which costs ~1 adjust tick of GIL wait on the serving thread --
-            # between the handler and the send it inflated ping's round trip
-            # by ~100ms and made the breakdown lie (#104).
+            # 在发布 **之后** 记录：这条 print 会写到 QMT 输出面板，在服务线程上要花
+            # 约 1 个 adjust tick 的 GIL 等待——夹在处理器与发送之间时，它把 ping 的
+            # 往返放大约 100ms，并让分解数据撒谎（#104）。
             try:
                 from .logging_setup import get_logger
                 get_logger("rpc").info(
@@ -4626,11 +4394,10 @@ class ValkeyPubSubRpcService:
         return response
 
     def _note_slow_request(self, method, seconds):
-        """Name a handler that held its thread for ``slow_request_seconds``.
+        """点名一个占住线程 ``slow_request_seconds`` 的处理器。
 
-        Logged after the handler returns (or raises), so it cannot add GIL
-        wait to a request that was fast. Never raises: this runs on the
-        adjust thread too, where an exception stops the strategy.
+        在处理器返回（或抛异常）之后记录，所以它不会给本来很快的请求增加 GIL 等待。
+        从不抛异常：这也在 adjust 线程上运行，而那里抛异常会停掉策略。
         """
         try:
             threshold = float(self.slow_request_seconds)
@@ -4653,15 +4420,13 @@ class ValkeyPubSubRpcService:
 
     def _note_slow_response(self, method, t_handle0, t_handle1, t_json_done,
                             t_pub0, t_pub1):
-        """Segmented slow note for the time AROUND the handler (#386).
+        """针对处理器 **之外** 时间（#386）的分段慢日志。
 
-        The handler-level note above covers only ``handlers.handle``; a big
-        answer then burns its real time in ``to_jsonable`` and the publish,
-        neither of which any log named -- a 60-code 40-day 5m read spent
-        ~11.5s server-side with zero slow lines. Fires only when the TOTAL
-        exceeds ``slow_request_seconds`` while the handler segment alone did
-        not (otherwise the handler note already named it). Never raises:
-        this runs on the adjust thread too.
+        上面的处理器级记录只覆盖 ``handlers.handle``；一个大答案随后把真正的耗时
+        花在 ``to_jsonable`` 和发布上，而没有任何日志点名它们——一次 60 个代码、
+        40 天、5m 的读取在服务端花了约 11.5s，却没有一行慢日志。只有当 **总耗时**
+        超过 ``slow_request_seconds`` 而处理器段单独没有超过时才触发（否则处理器
+        记录已经点名了）。从不抛异常：这也在 adjust 线程上运行。
         """
         if t_handle0 is None or t_handle1 is None:
             return
@@ -4699,13 +4464,12 @@ class ValkeyPubSubRpcService:
 
     def _publish_response(self, request, response):
         if self._on_heavy_worker():
-            # Built on the worker, sent by the adjust thread (see
-            # _heavy_replies). Every publish the worker reaches -- the normal
-            # reply, a RequestExpired refusal -- parks here.
+            # 在工作线程上构建，由 adjust 线程发送（见 _heavy_replies）。工作线程
+            # 到达的每次发布——正常回复、RequestExpired 拒绝——都挂在这里。
             self._heavy_replies.put((request, response))
             return
-        # Delegate to the transport (ValkeyTransport fans out to key/list/channel;
-        # ZMQ/MySQL transports use their native reply path).
+        # 交给 transport（ValkeyTransport 分发到 key/list/channel；ZMQ/MySQL
+        # transport 走它们自己的回复路径）。
         self._transport.send_response(request, response)
         self._published_count = getattr(self._transport, "_published_count", self._published_count)
 
@@ -4782,7 +4546,7 @@ def call_valkey_rpc(
     transport="queue",
     request_id=None,
 ):
-    """Small external client helper for tests and admin scripts."""
+    """供测试和管理脚本使用的小型外部客户端助手。"""
 
     request_id = str(request_id or uuid.uuid4().hex)
     request_channel = request_channel_template.format(account_id=account_id)
@@ -4800,8 +4564,8 @@ def call_valkey_rpc(
         "reply_list": response_list,
         "reply_key": response_key,
         "ttl_seconds": ttl_seconds,
-        # How long this caller waits. The server refuses, rather than runs,
-        # an order it only gets to after that (#303).
+        # 本调用方等多久。超过这个时间之后才轮到执行的委托，服务端会直接拒绝而
+        # 不是执行它（#303）。
         "timeout_seconds": float(timeout_seconds),
         "_sent_at": time.time(),
     }
@@ -4835,7 +4599,7 @@ def call_valkey_rpc(
         if raw_response:
             return loads_rpc_response(raw_response)
         raise TimeoutError(
-            "valkey rpc timeout: %s account_id=%s request_queue=%s" % (method, account_id, request_queue)
+            "valkey rpc 超时: %s account_id=%s request_queue=%s" % (method, account_id, request_queue)
         )
 
     pubsub = valkey_client.pubsub(ignore_subscribe_messages=True)
@@ -4856,7 +4620,7 @@ def call_valkey_rpc(
         raw_response = valkey_client.get(response_key)
         if raw_response:
             return loads_rpc_response(raw_response)
-        raise TimeoutError("valkey rpc timeout: %s" % method)
+        raise TimeoutError("valkey rpc 超时: %s" % method)
     finally:
         try:
             pubsub.close()

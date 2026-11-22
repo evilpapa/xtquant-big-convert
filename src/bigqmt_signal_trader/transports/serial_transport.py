@@ -1,4 +1,4 @@
-"""Bounded serial framing and the QMT-side RPC transport."""
+"""带大小限制的串口分帧与 QMT 侧 RPC 传输。"""
 
 import json
 import logging
@@ -28,7 +28,7 @@ def open_serial(port, baudrate):
 
 
 class SerialFrames:
-    """The caller owns the port; each line is CRC32, TAB, UTF-8 JSON, LF."""
+    """调用方管理串口，每帧由 CRC32、制表符、UTF-8 JSON 和换行符组成。"""
 
     def __init__(self, port, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
         self.port = port
@@ -45,7 +45,7 @@ class SerialFrames:
     def _bad_frame(self, reason):
         self._bad_frames += 1
         if self._bad_frames <= 3 or self._bad_frames % 100 == 0:
-            _log.warning("Discarded serial frame: %s (count=%d)", reason, self._bad_frames)
+            _log.warning("已丢弃无效串口帧：%s（累计 %d 帧）", reason, self._bad_frames)
 
     def _accept_chunk(self, chunk):
         parts = chunk.split(b"\n")
@@ -55,7 +55,7 @@ class SerialFrames:
                 if len(self._line) + len(part) > self.max_frame_bytes:
                     self._line.clear()
                     self._discard = True
-                    self._bad_frame("size limit exceeded")
+                    self._bad_frame("超过帧大小上限")
                 else:
                     self._line.extend(part)
             if complete:
@@ -65,7 +65,7 @@ class SerialFrames:
                 self._discard = False
 
     def read_frames(self, limit):
-        """Read at most one bounded chunk; scan at most limit complete lines."""
+        """最多读取一个固定上限的数据块，并解析至多 limit 帧。"""
         if limit <= 0:
             return []
         if not self._lines:
@@ -85,7 +85,7 @@ class SerialFrames:
                     raise ValueError("expected a JSON object")
                 frames.append(frame)
             except (ValueError, RecursionError):
-                self._bad_frame("invalid checksum or JSON")
+                self._bad_frame("校验和错误或 JSON 格式无效")
         return frames
 
     @property
@@ -180,7 +180,7 @@ class SerialTransport(RpcTransport):
                     self._stopped.wait(0.002)
         except Exception:
             self._failed = True
-            _log.exception("Serial link on %s failed; restart the strategy after checking the port", self.port)
+            _log.exception("串口 %s 通信失败，请检查端口后重启策略", self.port)
         finally:
             wire.port.close()
 
@@ -205,7 +205,7 @@ class SerialTransport(RpcTransport):
                     "the RPC was already handled"))
                 wire.begin({"type": "response", "response": error, "session": self._session})
             else:
-                self._note_drop("event exceeds frame limit or cannot be encoded")
+                self._note_drop("事件超过帧大小上限或无法编码")
 
     def drain_request_queue(self, max_items=20):
         if not self._running or self._failed:
@@ -223,17 +223,17 @@ class SerialTransport(RpcTransport):
     def _note_drop(self, reason):
         self._drops += 1
         if self._drops <= 3 or self._drops % 100 == 0:
-            _log.warning("Serial %s: %s (dropped=%d)", self.port, reason, self._drops)
+            _log.warning("串口 %s：%s（累计丢弃 %d 条消息）", self.port, reason, self._drops)
 
     def _enqueue(self, buffer, frame):
         if self._failed or not self._running:
-            self._note_drop("link is down")
+            self._note_drop("串口连接已断开")
             raise TransportError("serial link is down")
         try:
             buffer.put_nowait(frame)
         except queue.Full:
-            self._note_drop("outbound queue is full")
-            raise TransportError("serial outbound queue is full")
+            self._note_drop("发送队列已满")
+            raise TransportError("串口发送队列已满")
 
     def send_response(self, request, response):
         self._enqueue(self._replies, {"type": "response", "response": response})
@@ -255,4 +255,4 @@ class SerialTransport(RpcTransport):
         if thread is not None and thread is not threading.current_thread():
             thread.join(1.0)
             if thread.is_alive():
-                _log.warning("Serial I/O on %s is still closing", self.port)
+                _log.warning("串口 %s 的收发线程仍在退出", self.port)

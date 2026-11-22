@@ -1,26 +1,7 @@
-"""File-based logging for the Big QMT bridge.
+"""大 QMT 桥接的文件日志和标准输出。
 
-Diagnostics used to be print()-only, which is lost when the QMT output panel
-scrolls or the terminal restarts. This module wires Python's stdlib ``logging``
-to a rotating file so errors survive restarts and can be reviewed after a
-crash.
-
-Usage (any module, both server and client):
-
-    from bigqmt_signal_trader.logging_setup import get_logger
-    log = get_logger("rpc")
-    log.info("started")
-    log.error("download failed: %s", exc)
-
-Behavior:
-- Log directory resolves to ``<qmt_python_dir>/logs`` when running inside QMT
-  (found via a sys.path entry ending in ``\\python``), else ``~/.cache/bigqmt/logs``.
-- Rotates at midnight into ``bigqmt.log.YYYY-MM-DD`` backups, keeping the last
-  7 days by default (override with env BIGQMT_LOG_RETENTION_DAYS).
-- Each record is also printed to stdout so the QMT output panel still shows it.
-- Thread-safe (logging is; the print side is best-effort wrapped).
-- Never raises: a logging failure must not bring down the strategy.
-- Opt out via env BIGQMT_LOG_ENABLED=0 / BIGQMT_LOG_TO_STDOUT=0.
+午夜轮转，默认保留 7 天，可通过 BIGQMT_LOG_RETENTION_DAYS 调整。
+BIGQMT_LOG_ENABLED 和 BIGQMT_LOG_TO_STDOUT 分别控制日志启用和标准输出。
 """
 
 import datetime as _dt
@@ -33,9 +14,7 @@ try:
     import logging
     import logging.handlers
 except ImportError:
-    # Some broker QMT Python bundles omit logging from python36.zip.  The
-    # bridge still needs a minimal file/stdout logger to start and report why
-    # later operations fail.
+    # 部分券商的 Python 环境缺少 logging，使用简化的日志实现。
     logging = None
 
 _LOGGER_NAME = "bigqmt"
@@ -50,10 +29,7 @@ def _env_bool(name, default=True):
 
 
 def _resolve_log_dir():
-    """Pick a writable log dir. Prefers the QMT python dir (the sys.path entry
-    ending in ``\\python``) so logs sit beside the deployed strategy; falls back
-    to a user cache dir otherwise. Deliberately does NOT use this package's own
-    src/ directory (a repo checkout is not a writable runtime location)."""
+    """查找可写的日志目录，优先使用 QMT 的 python 目录，其次使用用户缓存。"""
     candidates = []
     for entry in sys.path:
         try:
@@ -66,7 +42,7 @@ def _resolve_log_dir():
         try:
             path = os.path.join(base, "logs")
             os.makedirs(path, exist_ok=True)
-            # probe writability
+            # 检查目录是否可写。
             probe = os.path.join(path, ".write_test")
             with open(probe, "w"):
                 pass
@@ -82,7 +58,7 @@ def _resolve_log_dir():
 
 if logging is not None:
     class _SafeStreamHandler(logging.Handler):
-        """print() the record so the QMT output panel shows it; never raises."""
+        """用 print 输出日志，忽略输出失败。"""
 
         def emit(self, record):
             try:
@@ -92,7 +68,7 @@ if logging is not None:
 
 
 class _FallbackLogger:
-    """Small logger used only when the broker Python omits stdlib logging."""
+    """标准库缺少 logging 时使用的简化日志实现。"""
 
     def __init__(self, name):
         self.name = name
@@ -138,11 +114,7 @@ class _FallbackLogger:
 
 
 def _cleanup_old_logs(log_dir, retention_days):
-    """Delete rotated log files older than retention_days.
-
-    TimedRotatingFileHandler only prunes backups at rotation time; this sweeps
-    stale files on startup too (e.g. after a weekend gap or a config change).
-    """
+    """启动时清理过期日志，补充 TimedRotatingFileHandler 在轮转时的清理。"""
     try:
         cutoff = time.time() - retention_days * 86400
         for name in os.listdir(log_dir):
@@ -159,25 +131,10 @@ def _cleanup_old_logs(log_dir, retention_days):
 
 
 def _detach_existing_handlers(logger):
-    """Drop and CLOSE whatever a previous run left on this logger (issue #139).
+    """移除并关闭上一轮加载留下的处理器（#139）。
 
-    Idempotence cannot live in a module global here. The entry purges every
-    bigqmt_signal_trader module from sys.modules on each start
-    (_clear_local_modules, and reload_deployment does the same), so
-    _initialized is back to False on the next import -- while
-    logging.getLogger("bigqmt") lives in the logging module's own registry,
-    which is never purged. The module state resets, the logger does not, so
-    _setup() kept appending: after a day of restarts one log line was written
-    to bigqmt.log SIXTEEN times.
-
-    close() is the half that is easy to miss. Removing a handler without
-    closing it leaves the file handle open, and TimedRotatingFileHandler then
-    cannot rename its own file:
-
-        PermissionError: [WinError 32] ... 'bigqmt.log' -> 'bigqmt.log.2026-08-31'
-
-    which fired on every log write, and meant rotation never succeeded -- so
-    backupCount pruning never ran and BIGQMT_LOG_RETENTION_DAYS did nothing.
+    策略重载会重置模块状态，logging 注册表仍保留旧处理器。
+    移除处理器可避免重复写入，关闭句柄可避免 Windows 日志轮转失败。
     """
     for handler in list(getattr(logger, "handlers", [])):
         try:
@@ -191,22 +148,9 @@ def _detach_existing_handlers(logger):
 
 
 def _log_file_name():
-    """Log file name, scoped so two processes never share one file (#139/#144).
+    """按账号或进程号命名日志，减少 Windows 上多个进程争用文件（#139、#144）。
 
-    A user running two bridges at once -- one live account, one simulated --
-    got both clients writing the same ~/.cache/bigqmt/logs/bigqmt.log. Two OS
-    handles on one file means TimedRotatingFileHandler can never rename it on
-    Windows:
-
-        PermissionError: [WinError 32] ... 'bigqmt.log' -> 'bigqmt.log.2026-09-01'
-
-    raised on every write, and rotation never succeeding means backupCount
-    pruning never runs either. No amount of in-process handler bookkeeping
-    fixes that -- the other handle belongs to another process.
-
-    Account id first: it is stable across restarts, so a bridge keeps writing
-    the same file and rotation still has something to roll. PID otherwise.
-    BIGQMT_LOG_NAME pins it explicitly for anyone who wants the old behaviour.
+    按账号命名时，重启后可继续轮转同一文件。BIGQMT_LOG_NAME 可指定文件名。
     """
     explicit = str(os.environ.get("BIGQMT_LOG_NAME") or "").strip()
     if explicit:
@@ -217,13 +161,7 @@ def _log_file_name():
 
 
 def _tolerant_rotator(source, dest):
-    """Rename for rotation, but never raise if the file is held.
-
-    Belt and braces next to _log_file_name: someone pinning BIGQMT_LOG_NAME
-    across two processes is back to a shared file, and a failed rename must not
-    turn every subsequent log write into a traceback in the QMT panel. Losing
-    one rotation is a smaller problem than losing the log's readability.
-    """
+    """轮转时尝试重命名，文件被占用时跳过。"""
     try:
         if os.path.exists(source):
             os.replace(source, dest)
@@ -251,7 +189,7 @@ def _setup():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # File handler: rotate at midnight, keep the last 7 days only.
+    # 文件日志在午夜轮转，默认保留 7 天。
     log_dir = _resolve_log_dir()
     if log_dir is not None:
         try:
@@ -271,7 +209,7 @@ def _setup():
         except Exception:
             pass
 
-    # Stdout handler so the QMT panel still shows logs.
+    # 同时输出到标准输出。
     if _env_bool("BIGQMT_LOG_TO_STDOUT", True):
         stream = _SafeStreamHandler()
         stream.setLevel(logging.INFO)
@@ -283,11 +221,7 @@ def _setup():
 
 
 def get_logger(name=""):
-    """Return a module logger under the shared ``bigqmt`` root.
-
-    ``get_logger("rpc")`` -> logger named ``bigqmt.rpc``; the tag is shown in
-    each log line so the old ``[bigqmt_rpc]`` prefixes remain visible.
-    """
+    """返回 bigqmt 下的模块日志记录器，例如 bigqmt.rpc。"""
     _setup()
     suffix = str(name or "").strip(".")
     full = _LOGGER_NAME if not suffix else "%s.%s" % (_LOGGER_NAME, suffix)

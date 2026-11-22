@@ -130,7 +130,7 @@ class MismatchIsAnnouncedTest(unittest.TestCase):
             trader.subscribe(StockAccount(ACCOUNT, "CREDIT"))
 
         joined = "\n".join(logs.output)
-        self.assertIn("account_type mismatch", joined)
+        self.assertIn("account_type 不匹配", joined)
 
     def test_the_warning_says_where_to_fix_it(self):
         trader, _recorder = _trader("STOCK")
@@ -141,7 +141,7 @@ class MismatchIsAnnouncedTest(unittest.TestCase):
 
         joined = "\n".join(logs.output)
         self.assertIn("BIGQMT_ACCOUNT_TYPE", joined)
-        self.assertIn("does NOT travel", joined)
+        self.assertIn("不会传到服务端", joined)
 
     def test_the_warning_names_the_symptom(self):
         """"all-zero asset row" is what the reporter actually saw."""
@@ -151,7 +151,7 @@ class MismatchIsAnnouncedTest(unittest.TestCase):
         with self.assertLogs(compat.log, level="WARNING") as logs:
             trader.subscribe(StockAccount(ACCOUNT, "CREDIT"))
 
-        self.assertIn("all-zero", "\n".join(logs.output))
+        self.assertIn("资产行会全部返回 0", "\n".join(logs.output))
 
     def test_agreement_is_quiet(self):
         trader, _recorder = _trader("CREDIT")
@@ -162,7 +162,7 @@ class MismatchIsAnnouncedTest(unittest.TestCase):
             logger.debug("marker")           # so assertLogs has something
             trader.subscribe(StockAccount(ACCOUNT, "CREDIT"))
 
-        self.assertEqual([l for l in logs.output if "mismatch" in l], [])
+        self.assertEqual([l for l in logs.output if "account_type 不匹配" in l], [])
 
     def test_a_silent_deployment_does_not_warn(self):
         """No reported type means nothing to disagree with."""
@@ -174,7 +174,7 @@ class MismatchIsAnnouncedTest(unittest.TestCase):
             logger.debug("marker")
             trader.subscribe(StockAccount(ACCOUNT, "CREDIT"))
 
-        self.assertEqual([l for l in logs.output if "mismatch" in l], [])
+        self.assertEqual([l for l in logs.output if "account_type 不匹配" in l], [])
 
 
 class ServerSideTest(unittest.TestCase):

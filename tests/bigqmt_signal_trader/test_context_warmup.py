@@ -131,12 +131,12 @@ class EmptyResultIsReportedTest(unittest.TestCase):
 
         lines = self._run(Empty())
 
-        self.assertTrue([l for l in lines if "returned NOTHING" in l], lines)
+        self.assertTrue([l for l in lines if "没有返回数据" in l], lines)
 
     def test_a_real_fetch_reports_the_row_count(self):
         lines = self._run(FakeContext())
 
-        warm = [l for l in lines if "warm in" in l or "warm after" in l]
+        warm = [l for l in lines if "预热完成" in l]
         self.assertTrue(warm, lines)
         self.assertIn("159", warm[0])
 

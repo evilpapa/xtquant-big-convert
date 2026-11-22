@@ -1,10 +1,5 @@
 # coding: utf-8
-"""ThinkTrader Big QMT strategy entry.
-
-Keep this entry file ASCII-only because QMT's strategy editor may save the
-generated strategy file with a local code page while preserving this coding
-header. Business logic stays in the importable package.
-"""
+"""大 QMT 策略的生命周期回调和桥接初始化。"""
 
 import datetime
 import importlib as _importlib
@@ -13,13 +8,8 @@ import threading
 import time
 import traceback as _traceback
 
-# The DRYRUN entry reloads strategy/runtime/valkey_rpc/valkey_common but NOT the
-# other package submodules. Without this, the "from adapter_factory import build_app"
-# below re-binds the STALE cached module on every strategy re-run, so edits to
-# adapter_factory never take effect until a full terminal restart. Force-reload it
-# (only it -- reloading the adapter classes would break isinstance elsewhere) so a
-# plain strategy re-run picks up build_app fixes. build_app imports the adapter
-# classes lazily, so their identity is preserved.
+# 策略重跑时刷新 adapter_factory，使 build_app 的修改生效。
+# 保留适配器类的身份，避免其他模块的 isinstance 判断失效。
 _af_mod = sys.modules.get("bigqmt_signal_trader.adapter_factory")
 if _af_mod is not None:
     try:
@@ -33,19 +23,20 @@ except NameError:
     _load_bridge_module = None
 
 if _load_bridge_module is not None:
-    _adapter_factory = _load_bridge_module("bigqmt_signal_trader.adapter_factory")
-    _valkey_settings = _load_bridge_module("bigqmt_signal_trader.adapters.valkey_common")
-    _runner = _load_bridge_module("bigqmt_signal_trader.runner")
-    _runtime_bigqmt = _load_bridge_module("bigqmt_signal_trader.runtime_bigqmt")
-    _order_watch = _load_bridge_module("bigqmt_signal_trader.order_watch")
-    _default_build_app = _adapter_factory.build_app
-    forward_order_event = _runner.forward_order_event
-    forward_trade_event = _runner.forward_trade_event
-    init_app = _runner.init_app
-    _reset_runner_app = _runner.reset_app
-    sync_positions_app = _runner.sync_positions_app
-    tick_app = _runner.tick_app
+    _adapter_factory     = _load_bridge_module("bigqmt_signal_trader.adapter_factory")
+    _valkey_settings     = _load_bridge_module("bigqmt_signal_trader.adapters.valkey_common")
+    _runner              = _load_bridge_module("bigqmt_signal_trader.runner")
+    _runtime_bigqmt      = _load_bridge_module("bigqmt_signal_trader.runtime_bigqmt")
+    _order_watch         = _load_bridge_module("bigqmt_signal_trader.order_watch")
+    _default_build_app   = _adapter_factory.build_app
+    forward_order_event  = _runner.forward_order_event
+    forward_trade_event  = _runner.forward_trade_event
+    init_app             = _runner.init_app
+    _reset_runner_app    = _runner.reset_app
+    sync_positions_app   = _runner.sync_positions_app
+    tick_app             = _runner.tick_app
     BigQmtRuntimeAdapter = _runtime_bigqmt.BigQmtRuntimeAdapter
+
 else:
     from bigqmt_signal_trader.adapters import valkey_common as _valkey_settings
     from bigqmt_signal_trader.adapter_factory import build_app as _default_build_app
@@ -61,13 +52,12 @@ else:
     from bigqmt_signal_trader import order_watch as _order_watch
 
 
-# The order watch table (issue #164) lives at module level: created at module
-# load, written from the C++ callback thread, read from the adjust thread.
+# 委托跟踪表在模块加载时创建，由 C++ 回调线程写入、adjust 线程读取（#164）。
 _order_watch_table = _order_watch.OrderWatchTable()
 
 
 def _note_order_watch(order_info):
-    """Learn remark->sysid and sysid->status from a raw QMT orderInfo."""
+    """从 QMT 原始 orderInfo 记录备注到柜台编号、柜台编号到状态的映射。"""
     try:
         _order_watch_table.note(
             _exec_events.normalize_order_event(order_info, ""))
@@ -75,18 +65,10 @@ def _note_order_watch(order_info):
         pass
 
 
-# exec_events is loaded here, at module load, and never from inside the
-# order/deal callback. QMT runs those callbacks on a C++ thread entered via
-# PyGILState_Ensure; the first exec of a not-yet-imported module on such a
-# thread fails down in the C layer WITHOUT setting a Python exception, which
-# surfaces as SystemError "error return without exception set" (issue #76,
-# live repro 2026-08-27). Modules already in sys.modules resolve fine there --
-# which is why this only bites deployments where the init-time reload could not
-# preload it, i.e. the single-file QMT sandbox build.
+# 在模块加载时预加载 exec_events。QMT 的委托和成交回调运行在 C++ 线程上，
+# 在该线程上首次执行模块可能触发 SystemError。已载入 sys.modules 的模块可正常读取（#76）。
 def _import_exec_events():
-    # In the QMT sandbox a package-level "from bigqmt_signal_trader import x"
-    # goes through the C-level __import__ and fails the same way; the local
-    # loader that already serves the adapter modules does not.
+    # 在 QMT 沙箱中沿用适配器的加载器，避开 C 层 __import__ 的相同限制。
     if _load_bridge_module is not None:
         return _load_bridge_module("bigqmt_signal_trader.exec_events")
     from bigqmt_signal_trader import exec_events
@@ -99,9 +81,8 @@ def _load_exec_events():
         return _import_exec_events()
     except Exception:
         direct_error = _traceback.format_exc()
-    # Only reached when the direct load failed. A plain threading.Thread always
-    # has a full Python thread state, so the exec that just failed succeeds
-    # there; the import lock makes handing the result back safe.
+    # 直接加载失败后，交给拥有完整 Python 线程状态的 threading.Thread 重试。
+    # 导入锁保证结果可以安全交回。
     holder = {}
 
     def _target():
@@ -128,31 +109,30 @@ def _load_exec_events():
 _exec_events = _load_exec_events()
 
 
-_app_factory = None
-_account_id = ""
-_config = {}
-_qmt_api = {}
+_app_factory   = None
+_account_id    = ""
+_config        = {}
+_qmt_api       = {}
 _adjust_logged = False
+
 # QMT 调了多少次 credit_account_callback。0 说明 QMT 压根没回调，
 # 大于 0 但 handlers 里没数据说明是转交那一步断了（#202）。
-_credit_callback_fired = 0
-_rpc_service = None
+_credit_callback_fired      =     0
+_rpc_service                = None
 _quote_subscription_service = None  # (QuoteSubscriptionManager, QuotePushChannel)
-_exec_event_valkey_client = None  # reused; building a new client per trade callback leaks
-_scheduled_adjust = False
-# Latency tuning / diagnostics (server side, in the Big QMT process).
-#  - switch interval: hand the GIL to the background RPC thread ~5x more often
-#    than the 5ms default so it is not starved as long during Python contention.
-#  - GIL probe: a heartbeat thread that measures how long the interpreter was
-#    unable to run it (i.e. the process was stalled), independent of any request.
-_GIL_SWITCH_INTERVAL = 0.001
-_LATENCY_PROBE_ENABLED = False
-_LATENCY_PROBE_THRESHOLD_MS = 50.0
-_latency_probe_started = False
-_last_full_tick_refresh_at = 0.0
-_last_full_tick_market_refresh_at = 0.0
-# Observed adjust cadence, so a mis-scheduled run_time (e.g. clamped to bar
-# cadence) is visible in the logs instead of silently costing latency.
+_exec_event_valkey_client   = None  # reused;                    building          a new client per trade callback leaks
+_scheduled_adjust           = False
+
+# 大 QMT 进程内的延迟诊断。缩短 GIL 切换间隔可减少后台 RPC 线程的等待。
+# 心跳线程独立测量解释器无法调度它的时长。
+_GIL_SWITCH_INTERVAL              = 0.001
+_LATENCY_PROBE_ENABLED            = False
+_LATENCY_PROBE_THRESHOLD_MS       =  50.0
+_latency_probe_started            = False
+_last_full_tick_refresh_at        =   0.0
+_last_full_tick_market_refresh_at =   0.0
+
+# 记录 adjust 的实际周期，用于识别 run_time 被限制到 K 线周期等调度问题。
 _adjust_tick_stats = {"last_ts": 0.0, "count": 0, "window_start": 0.0, "sum": 0.0, "min": 0.0, "max": 0.0}
 
 
@@ -187,19 +167,12 @@ def bind_qmt_api(passorder_func=None, cancel_func=None, get_trade_detail_data_fu
                 _qmt_api[name] = func
 
 
-# A reload asked for over RPC. Deferred to the adjust tick rather than done in
-# the handler, because reset_app() stops the very RPC service that is answering
-# the request -- the reply has to be sent first.
-# not_before: the reply to reload_deployment has to reach the client before the
-# transport it would travel on is torn down. Longer than the ZMQ ROUTER's
-# 1s RCVTIMEO, because that is how long its thread can sit in recv_multipart
-# before it loops back to _drain_response_queue and actually sends the reply.
-# _wait_for_responses_to_flush is the real guarantee; this is the floor.
-_RELOAD_GRACE_SECONDS = 1.5
-_RELOAD_FLUSH_TIMEOUT_SECONDS = 5.0
-_reload_request = {"pending": False, "requested_at": 0.0, "not_before": 0.0,
-                   "by": ""}
-_reload_result = {}
+# reload_deployment 先应答，再由后续 adjust 重载，避免 reset_app() 提前关闭传输。
+# not_before 是最短等待时间，_wait_for_responses_to_flush 再检查应答是否已发出。
+_RELOAD_GRACE_SECONDS         =         1.5
+_RELOAD_FLUSH_TIMEOUT_SECONDS =         5.0
+_reload_request               = {"pending": False, "requested_at": 0.0, "not_before": 0.0, "by": ""}
+_reload_result                = {}
 
 
 def request_reload(reason=""):
@@ -344,8 +317,7 @@ def _wait_for_responses_to_flush(timeout_seconds=None):
     deadline = time.time() + max(0.0, timeout_seconds)
     while time.time() < deadline:
         if _pending_response_count() == 0:
-            # qsize() drops when the sender dequeues, which is just BEFORE the
-            # send. One more yield so that send completes.
+            # 发送者出队后仍需完成发送，再让出一次执行时间。
             time.sleep(0.2)
             return True
         time.sleep(0.05)
@@ -353,7 +325,7 @@ def _wait_for_responses_to_flush(timeout_seconds=None):
 
 
 def _perform_reload(context_info):
-    """Purge, re-import, re-init. Runs on the adjust thread."""
+    """在 adjust 线程清除模块缓存，重新导入并初始化。"""
     global _reload_result
     _reload_request["pending"] = False
     started = time.time()
@@ -366,13 +338,8 @@ def _perform_reload(context_info):
         if not result["replies_flushed"]:
             print("[bigqmt_reload] 警告：%.0fs 后仍有 %d 个应答在队列中；"
                   "重新加载仍会继续，但调用方可能看到超时"
-                  % (_pending_response_count(), _RELOAD_FLUSH_TIMEOUT_SECONDS))
-        # #393: a reload rebuilds the handlers, and with them the in-process
-        # order-identity journal -- on a no-Valkey deployment every order this
-        # bridge had named flipped to the QMT-side process name at once.
-        # This module survives the reload (QMT execs it; only the package is
-        # purged), so carry the journal across and hand it to the new
-        # handlers below.
+                  % (_RELOAD_FLUSH_TIMEOUT_SECONDS, _pending_response_count()))
+        # 重载会重建处理器。保留旧委托归属记录，供新处理器继续回填策略名（#393）。
         identity_journal = None
         old_handlers = getattr(_rpc_service, "handlers", None)
         if old_handlers is not None:
@@ -384,9 +351,7 @@ def _perform_reload(context_info):
         if identity_journal:
             new_handlers = getattr(_rpc_service, "handlers", None)
             if new_handlers is not None:
-                # init may have recovered entries written by another process.
-                # Keep those too, together with old memory-only entries whose
-                # disk write failed. A valid first name still owns its remark.
+                # 合并初始化恢复的记录和旧的内存记录，优先保留仍有效的首次归属。
                 recovered = getattr(new_handlers, "_order_identity_local", None) or {}
                 now = time.time()
                 ttl = getattr(new_handlers, "_ORDER_IDENTITY_LOCAL_TTL_SECONDS", 7 * 86400)
@@ -431,10 +396,7 @@ def reset_app():
         except Exception:
             pass
     _rpc_service = None
-    # Stop the quote-push channel + unsubscribe big-QMT whole-quote subs. Without
-    # this a strategy re-run leaks the PUB port (next run's start_publisher hits
-    # EADDRINUSE, silently dropping quotes forever) and leaves stale QMT
-    # subscriptions firing into dead manager objects.
+    # 停止行情推送并取消全推订阅，避免重跑时发布端口仍被占用或旧订阅仍触发回调。
     if _quote_subscription_service is not None:
         try:
             manager, channel = _quote_subscription_service
@@ -451,7 +413,7 @@ def reset_app():
         except Exception:
             pass
     _quote_subscription_service = None
-    # Drop the reused exec-event valkey client so the next run rebuilds it fresh.
+    # 清除缓存的成交回报客户端，供下次启动重新创建。
     _exec_event_valkey_client = None
     _reset_runner_app()
 
@@ -506,10 +468,7 @@ def _detect_account_id(context_info=None):
     return ""
 
 
-# Official Big QMT runtime-injected global functions (like passorder) that we
-# expose over RPC. These are not ContextInfo methods and not in the IDE stub;
-# QMT injects them into the process global namespace at startup. We resolve
-# them lazily so the module imports cleanly outside QMT (tests/dev).
+# 大 QMT 启动时注入的全局函数，经 RPC 暴露。延迟查找函数，便于在终端外导入测试。
 _EXTRA_QMT_GLOBAL_FUNCS = (
     "get_history_trade_detail_data",  # 历史成交明细
     "get_value_by_order_id",          # 按 order_id 查委托详情
@@ -521,48 +480,30 @@ _EXTRA_QMT_GLOBAL_FUNCS = (
     "get_unclosed_compacts",          # 未平仓合约（负债）
     "get_closed_compacts",            # 已平仓合约
     "get_debt_contract",              # 负债合约
-    # 信用账户明细，查柜台的那条路。异步：结果只从 credit_account_callback
-    # 出来，见下面的 credit_account_callback 和 #202。
-    "query_credit_account",
+    "query_credit_account",           # 信用账户明细，查柜台的那条路。异步：结果只从 credit_account_callback 出来，见下面的 credit_account_callback 和 #202。
     "get_option_subject_position",    # 期权标的持仓
     "get_comb_option",                # 组合期权
     "get_hkt_exchange_rate",          # 港股通汇率
-    # download_history_data / download_history_data2 are global functions
-    # injected by QMT (not ContextInfo methods), same as passorder. They
-    # must be captured here so the adapter can call them. Issue #32.
-    "download_history_data",
+    "download_history_data",          # 和 passorder 一样，从 QMT 注入的命名空间获取下载函数（#32）。
     "download_history_data2",
-    # Some QMT builds expose only down_history_data (single stock, same 4-arg
-    # signature). Issue #54: without it the download RPC is a silent no-op and
-    # reads only ever return the latest day.
-    "down_history_data",
-    # 公式族也是运行时全局（官方文档原型就是全局函数，#374）：不在捕获名单里
-    # 的话 qmt_api 永远拿不到，适配器的「全局优先」就没有可优先的对象。
-    "call_formula",
+    "down_history_data",              # 部分 QMT 只提供四参数的单标的下载函数 down_history_data（#54）。
+    "call_formula",                   # 公式族也是运行时全局（官方文档原型就是全局函数，#374）：不在捕获名单里的话 qmt_api 永远拿不到，适配器的「全局优先」就没有可优先的对象。
     "subscribe_formula",
     "unsubscribe_formula",
     "get_formula_result",
     "gen_factor_index",
 )
 
-# The full set of QMT-injected global function names (the three trade entry
-# points plus the extras above). Mount sites (the RPC runtime's direct mount)
-# capture whatever is callable from their own exec namespace via
-# capture_qmt_injected_funcs() -- this is the single source for that list; do
-# not hand-copy the names elsewhere.
+# QMT 注入函数的统一名单，策略入口通过 capture_qmt_injected_funcs 读取。
 _QMT_INJECTED_GLOBAL_FUNCS = (
     "passorder", "cancel", "get_trade_detail_data",
 ) + _EXTRA_QMT_GLOBAL_FUNCS
 
 
 def capture_qmt_injected_funcs(namespace):
-    """Capture QMT-injected global funcs from a mounted entry's exec namespace.
+    """从 QMT 挂载文件的命名空间收集已注入的函数。
 
-    QMT mounts an entry file by exec and injects these functions into THAT
-    namespace only -- the strategy module's globals/builtins lookups cannot
-    see them -- so a mounted entry must pass its own globals() here and feed
-    the result to bind_qmt_api(extra_funcs=...). Non-callables are skipped,
-    so a plain import namespace binds nothing.
+    入口传入自己的 globals()，再将结果交给 bind_qmt_api。跳过不可调用的值。
     """
     captured = {}
     for name in _QMT_INJECTED_GLOBAL_FUNCS:
@@ -719,10 +660,10 @@ def _build_rpc_service(context_info, app, config):
 
     import importlib
     if _load_bridge_module is not None:
-        _market_bigqmt = _load_bridge_module("bigqmt_signal_trader.adapters.market_bigqmt")
-        _position_bigqmt = _load_bridge_module("bigqmt_signal_trader.adapters.position_bigqmt")
-        _valkey_rpc = _load_bridge_module("bigqmt_signal_trader.valkey_rpc")
-        BigQmtRpcHandlers = _valkey_rpc.BigQmtRpcHandlers
+        _market_bigqmt         = _load_bridge_module("bigqmt_signal_trader.adapters.market_bigqmt")
+        _position_bigqmt       = _load_bridge_module("bigqmt_signal_trader.adapters.position_bigqmt")
+        _valkey_rpc            = _load_bridge_module("bigqmt_signal_trader.valkey_rpc")
+        BigQmtRpcHandlers      = _valkey_rpc.BigQmtRpcHandlers
         ValkeyPubSubRpcService = _valkey_rpc.ValkeyPubSubRpcService
     else:
         from bigqmt_signal_trader.adapters import market_bigqmt as _market_bigqmt
@@ -731,13 +672,10 @@ def _build_rpc_service(context_info, app, config):
         BigQmtRpcHandlers = _valkey_rpc.BigQmtRpcHandlers
         ValkeyPubSubRpcService = _valkey_rpc.ValkeyPubSubRpcService
 
-    # QMT keeps strategy modules in the same process between editor reruns.
-    # Reload adapters here so synced local package fixes take effect immediately.
+    # QMT 重跑策略时会沿用进程内的模块缓存，重载适配器以应用已同步的修改。
     _market_bigqmt = importlib.reload(_market_bigqmt)
     _position_bigqmt = importlib.reload(_position_bigqmt)
-    # Reload the lazily-imported helper modules too, so edits to them take effect on
-    # an editor rerun (QMT persists sys.modules across reruns; a plain lazy import
-    # would otherwise keep the stale cached version).
+    # 一并重载延迟导入的模块，使其修改也能在策略重跑时生效。
     for _mod_name in (
         "bigqmt_signal_trader.full_tick_cache",
         "bigqmt_signal_trader.download_jobs",
@@ -748,8 +686,7 @@ def _build_rpc_service(context_info, app, config):
             importlib.reload(importlib.import_module(_mod_name))
         except Exception as _reload_err:
             print("[bigqmt_rpc] 重新加载 %s 失败：%s" % (_mod_name, _reload_err))
-    # The RPC import has a valid module even if early optional push loading
-    # failed. Callbacks reuse this reference without importing on the C++ stack.
+    # 复用 RPC 已加载的回报模块，避免在 C++ 回调中导入。
     _exec_events = _valkey_rpc._exec_events
     BigQmtMarketDataProvider = _market_bigqmt.BigQmtMarketDataProvider
     BigQmtPositionProvider = _position_bigqmt.BigQmtPositionProvider
@@ -767,10 +704,8 @@ def _build_rpc_service(context_info, app, config):
         valkey_config = dict(config.get("valkey") or {})
         valkey_config.update(dict(rpc_config.get("valkey") or {}))
         listen_valkey_config = dict(valkey_config)
-        # Never use socket_timeout=None on the listen client: the same client also
-        # serves the adjust-thread LPOP drain, and a None timeout makes a hung
-        # (not refused) valkey block the QMT main thread forever. brpop's own 1s
-        # command timeout is unaffected by a bounded socket timeout.
+        # Valkey 直连模式的 LPOP 与监听共用客户端。设定 Socket 超时，
+        # 避免 Valkey 无响应时长时间阻塞策略线程。BRPOP 自身仍有 1 秒命令超时。
         if listen_valkey_config.get("socket_timeout") in (None, ""):
             listen_valkey_config["socket_timeout"] = 10
         valkey_client = rpc_config.get("valkey_client") or config.get("valkey_client") or _valkey_common.build_valkey_client(listen_valkey_config)
@@ -805,8 +740,7 @@ def _build_rpc_service(context_info, app, config):
         market_data=BigQmtMarketDataProvider(
             context_info,
             qmt_api=qmt_api,
-            # The handlers build their own provider; without this it defaults
-            # to native-on and dials 58610.
+            # RPC 处理器自行创建行情提供器，显式传入是否允许访问原生 xtdata。
             native_xtdata_enabled=_native_xtdata_enabled(rpc_config),
         ),
         position_provider=BigQmtPositionProvider(
@@ -818,62 +752,31 @@ def _build_rpc_service(context_info, app, config):
         allow_order_methods=allow_order_methods,
         allowed_methods=rpc_config.get("allowed_methods"),
         qmt_api=qmt_api,
-        # Async settlement keeps passorder off the adjust thread's critical
-        # path; set rpc_settle_orders_inline=True only for a runtime with no
-        # adjust drain to retry on.
+        # 默认由后续 adjust 确认委托。仅在无法通过 adjust 重试确认时，才需要同步确认。
         settle_orders_inline=(transport_name != "serial"
                               and _config_bool(rpc_config.get("settle_orders_inline"), False)),
         order_settle_timeout_seconds=float(rpc_config.get("order_settle_timeout_seconds", 3.0)),
         quote_subscription_manager=quote_manager,
-        # .get(key) not .get(key, default): "" is a real answer here (leave
-        # 报单来源 blank), and a default would swallow it -- issue #154.
+        # 空字符串表示让报单来源留空（#154）。
         default_strategy_name=rpc_config.get("default_strategy_name"),
     )
-    # Neither of these may depend on the TRANSPORT. Only a valkey transport
-    # builds the two clients above, so on zmq both were None -- and each had a
-    # working counterpart on the other side of that None:
-    #
-    #   download jobs   _pump_download_jobs advances queued jobs on every
-    #                   adjust tick and takes its client from _exec_event_valkey,
-    #                   so on zmq the worker ran while submit / get_status /
-    #                   wait answered "download jobs require a Valkey client".
-    #                   The worker was running and the door was locked.
-    #   order identity  orders were never remembered at submit time, so a query
-    #                   could never put the strategy name back (issue #133).
-    #
-    # _exec_event_valkey is the helper that already covers this case ("only
-    # builds a client when _rpc_service has none, which is the zmq-transport
-    # case") and caches it -- its docstring says what building one per call
-    # cost. No valkey configured at all leaves both None, and both stores treat
-    # that as "feature off", never as an error.
-    _store_valkey = response_valkey_client or valkey_client or _exec_event_valkey(config)
-    handlers.download_job_valkey_client = _store_valkey
+    # 下载任务和委托归属共用已配置的 Valkey 客户端（#133）。
+    # 串口模式下 _exec_event_valkey 返回 None，相关存储功能随之停用。
+    _store_valkey                         = response_valkey_client or valkey_client or _exec_event_valkey(config)
+    handlers.download_job_valkey_client   = _store_valkey
     handlers.order_identity_valkey_client = _store_valkey
-    handlers.order_remark_valkey_client = _exec_events.bounded_identity_client(_store_valkey)
-    # Settlement reads the callback-fed watch table first (issue #164).
-    handlers.order_watch_table = _order_watch_table
-    # Whether _pump_download_jobs will actually run queued jobs. The submit RPC
-    # needs it: with the valkey client now wired on every transport, a submit
-    # would otherwise be accepted into a queue that nothing drains.
-    # Lets reload_deployment re-import the package and re-run init without a
-    # strategy restart. The handlers cannot reach this module's own functions
-    # any other way.
-    handlers.reload_hook = request_reload
-    handlers.reload_status_hook = reload_status
-    # Synthesized cancel_error events (#389): QMT fires no callback for a
-    # refused cancel, so the handlers' settle path publishes through this
-    # hook, which rides the same sink/fallback machinery as native events.
-    handlers.exec_event_publisher = _publish_synthesized_cancel_error
-    handlers.exec_events_enabled = _config_bool((config.get("exec_events") or {}).get("enabled"), True)
-    handlers.download_jobs_enabled = _config_bool(
-        (config.get("download_jobs") or {}).get("enabled"), False)
-    handlers.download_job_chunk_size = int((config.get("download_jobs") or {}).get("chunk_size") or 10)
-    handlers.download_job_ttl_seconds = int((config.get("download_jobs") or {}).get("job_ttl_seconds") or 3600)
-    process_in_listener = _config_bool(rpc_config.get("process_in_listener"), True)
-    listener_methods = rpc_config.get("listener_methods") or ("*",)
-    # None when the runtime did not forward the key (local config never set
-    # rpc_background_threads): the resolver then keeps the historical default.
-    configured_bg = rpc_config.get("background_threads")
+    handlers.order_remark_valkey_client   = _exec_events.bounded_identity_client(_store_valkey)
+    handlers.order_watch_table            = _order_watch_table      # 确认委托时优先查回调写入的跟踪表（#164）。
+    handlers.reload_hook                  = request_reload # 通过钩子将 reload_deployment 交给策略模块处理。
+    handlers.reload_status_hook           = reload_status
+    handlers.exec_event_publisher         = _publish_synthesized_cancel_error  # QMT 拒绝撤单时没有回调，确认路径通过此钩子发布 cancel_error（#389）。
+    handlers.exec_events_enabled          = _config_bool((config.get("exec_events") or {}).get("enabled"), True)
+    handlers.download_jobs_enabled        = _config_bool((config.get("download_jobs") or {}).get("enabled"), False)
+    handlers.download_job_chunk_size      = int((config.get("download_jobs") or {}).get("chunk_size") or 10)
+    handlers.download_job_ttl_seconds     = int((config.get("download_jobs") or {}).get("job_ttl_seconds") or 3600)
+    process_in_listener                   = _config_bool(rpc_config.get("process_in_listener"), True)
+    listener_methods                      = rpc_config.get("listener_methods") or ("*",)
+    configured_bg                         = rpc_config.get("background_threads")  # 未配置 rpc_background_threads 时，由传输方式决定默认值。
     if configured_bg is not None:
         configured_bg = _config_bool(configured_bg, False)
     background_threads = _resolve_background_threads(transport_name, configured_bg)
@@ -899,26 +802,22 @@ def _build_rpc_service(context_info, app, config):
         background_threads=background_threads,
         debug_log_limit=int(rpc_config.get("debug_log_limit", 5)),
         transport=transport,
-        # Heavy reads off the adjust thread in drain mode (#351); the runtime
-        # forwards rpc_heavy_offload / rpc_heavy_codes_threshold.
+        # adjust 处理队列时，可把大查询移交给工作线程（#351）。
         heavy_offload=_config_bool(rpc_config.get("heavy_offload"), True),
         heavy_codes_threshold=int(rpc_config.get("heavy_codes_threshold", 20) or 20),
     )
     if transport_name == "serial":
         return service
-    # Multi-account: when BIGQMT_ACCOUNT_TYPE_MAP has multiple entries,
-    # build one RPC service per account sharing the same handlers.
+    # BIGQMT_ACCOUNT_TYPE_MAP 含多个账号时，每个账号创建一个 RPC 服务，共用处理器。
     try:
         from bigqmt_signal_trader.multi_account import build_multi_account_rpc_service
         multi_service = build_multi_account_rpc_service(
             context_info, app, config,
-            # The single-service builder: reuse everything we just built
-            # as the primary, and let build_multi_account_rpc_service
-            # create secondary services if the map has more entries.
+            # 复用已创建的主账号服务，由多账号构建器创建附属服务。
             lambda ctx, app, cfg: service if ctx is context_info else None,
         )
         if multi_service is not service:
-            # Multi-account mode: wrapped in MultiAccountRpcServiceManager
+            # 多账号服务由 MultiAccountRpcServiceManager 管理。
             return multi_service
     except Exception as _ma_err:
         print("[bigqmt_rpc] multi_account 检查失败，已回退到单账户模式：%s" % _ma_err)
@@ -1003,12 +902,8 @@ def _drain_rpc_service(config):
             _quote_subscription_service[0].reap_expired()
         except Exception as exc:
             _log_err("quote_push", "清理过期推送资源失败：%s" % exc)
-    # #310 warm-up subscriptions (terminals whose get_full_tick answers only
-    # subscribed codes) are dropped once idle; getattr-guarded so a package
-    # from before the warm-up still drains.
-    # The provider hangs off the handlers (service.handlers.market_data); the
-    # service itself has no market_data, so reading it there found None and
-    # the adjust-loop prune never ran.
+    # 从 RPC 处理器取得行情提供器，释放闲置的预热订阅（#310）。
+    # 兼容尚无清理接口的旧处理器。
     prune = getattr(getattr(getattr(_rpc_service, "handlers", None), "market_data", None),
                     "prune_tick_subscriptions", None)
     if callable(prune):

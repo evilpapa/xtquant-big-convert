@@ -182,7 +182,7 @@ class PlaceholderBarsHealTest(unittest.TestCase):
         self.assertEqual(2, client.reads, "expected exactly one retry")
         self.assertTrue(warn.called, "placeholder after retry went unreported")
         text = " ".join(str(a) for a in warn.call_args[0])
-        self.assertIn("placeholder", text)
+        self.assertIn("占位 K 线", text)
         self.assertIn("suspendFlag", text)
 
     def test_frames_without_suspendflag_never_match(self):

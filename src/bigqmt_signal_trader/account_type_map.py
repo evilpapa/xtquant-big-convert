@@ -1,43 +1,38 @@
 # coding: utf-8
-"""Per-request account_type resolution from BIGQMT_ACCOUNT_TYPE_MAP.
+"""依据 BIGQMT_ACCOUNT_TYPE_MAP 按请求解析 account_type。
 
-By default, BigQmtOrderGateway and BigQmtPositionProvider use a fixed
-account_type set at init time (``self.account_type = "STOCK"``). In a
-single-account deployment this is correct. In a multi-account deployment
-(one QMT process serving STOCK + FUTURE), the gateway is shared and
-self.account_type must match the *request's* account_id, not the gateway's
-default.
+默认情况下，BigQmtOrderGateway 和 BigQmtPositionProvider 在初始化时会使用固定的
+account_type（``self.account_type = "STOCK"``）。在单账号部署中这是正确的；但在
+多账号部署中（一个 QMT 进程同时服务 STOCK 和 FUTURE），网关是共享的，因此
+``self.account_type`` 必须与请求中的 *account_id* 匹配，而不能始终使用网关默认值。
 
-BIGQMT_ACCOUNT_TYPE_MAP is a dict {account_id: account_type} in the local
-config. When it is present, account_type_for() returns the mapped type;
-otherwise it falls back to the gateway's own default (the *default_type*
-argument), preserving full backward compatibility.
+BIGQMT_ACCOUNT_TYPE_MAP 是本地配置中的字典，格式为 ``{account_id: account_type}``。
+当该配置存在时，account_type_for() 会返回映射后的类型；否则回退到网关自身的
+默认类型（``default_type`` 参数），完全保持向后兼容。
 
-One account, several types (港股通)
-----------------------------------
-A stock account trades 港股通 through the SAME account id, but the terminal
-keeps those positions / orders / deals under a different account type:
-``get_trade_detail_data(acc, 'HUGANGTONG', 'POSITION')``, not ``'STOCK'``.
-An id -> one type table cannot say that, so a value may be a LIST::
+一个账号对应多种类型（港股通）
+--------------------------------
+股票账号可以通过同一个 account id 交易港股通，但终端会将对应的持仓、委托和成交
+记录在其他 account type 下，例如调用
+``get_trade_detail_data(acc, 'HUGANGTONG', 'POSITION')``，而不是 ``'STOCK'``。
+因此，id 到单一类型的表无法满足需求，值可以写成列表：
 
     BIGQMT_ACCOUNT_TYPE = ["STOCK", "HUGANGTONG", "SHENGANGTONG"]
     BIGQMT_ACCOUNT_TYPE_MAP = {"123456": ["STOCK", "HUGANGTONG"]}
 
-The first entry is the default. A request that names one of the others --
-the client sends ``StockAccount(id, "HUGANGTONG").account_type`` as the
-``account_type`` param -- is answered as that type for the duration of the
-request (a thread-local, see request_account_type(); the adjust thread and
-the heavy-read worker each carry their own). A type the account is not
-configured for is ignored, exactly as before: the deployment's config
-decides what the account trades as (#92), and the server logs the refusal
-once per (account, type).
+第一个元素是默认类型。请求指明其中其他类型时——客户端会通过
+``StockAccount(id, "HUGANGTONG").account_type`` 参数发送该类型——在本次请求期间按
+该类型响应（使用线程局部存储，见 request_account_type()；调仓线程和重读工作线程各自
+持有自己的作用域）。如果账号未配置请求的类型，则忽略该类型，与之前的行为一致：
+部署配置决定账号可以采用哪些交易类型（#92），服务端会针对每个（账号、类型）组合
+记录一次拒绝日志。
 
-Usage in gateway methods::
+网关方法中的用法：
 
-    # Before (fixed account_type):
+    # 修改前（固定 account_type）：
     rows = query(account_id, self.account_type, "ORDER", strategy_name)
 
-    # After (per-request resolution):
+    # 修改后（按请求解析）：
     rows = query(account_id, self._resolve_account_type(account_id), "ORDER", strategy_name)
 """
 
@@ -186,9 +181,9 @@ def _note_refused(account_id, wanted, types):
     try:
         from .logging_setup import get_logger
         get_logger("rpc").warning(
-            "account_type %s requested for account %s***, which is configured "
-            "as %s; answering as %s. Add it to BIGQMT_ACCOUNT_TYPE (a list) or "
-            "BIGQMT_ACCOUNT_TYPE_MAP in the QMT-side local config and restart.",
+            "请求的 account_type 为 %s，账号 %s*** 已配置类型为 %s，本次按 %s 应答。"
+            "如需支持该类型，请加入 QMT 端的 BIGQMT_ACCOUNT_TYPE 列表或 "
+            "BIGQMT_ACCOUNT_TYPE_MAP，随后重启策略。",
             wanted, str(account_id or "")[:3], "/".join(types), types[0])
     except Exception:
         pass

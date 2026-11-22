@@ -7,10 +7,9 @@ qmt.py - QMT 交易/行情统一 CLI 入口
 避免每次现场写 Python。所有子命令默认输出 JSON，加 --table 可切换人类可读表格。
 
 配置来源（按优先级）：
-  1. 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST / ...
-  2. bigqmt_signal_trader_client_config 模块（在 PYTHONPATH 中）
-  3. bigqmt_signal_trader_qmt_config 模块
-  4. 本脚本所在仓库的 src/ 自动加入 sys.path（开发模式）
+  1. 当前目录的 .env
+  2. bigqmt_signal_trader_client_config 或 bigqmt_signal_trader_qmt_config 模块
+  3. 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST / ...
 
 用法示例：
   python qmt.py ping
@@ -72,8 +71,11 @@ def _ensure_qmt_python_on_path() -> None:
     客户端和服务端须使用相同的传输配置。
     通过环境变量 BIGQMT_QMT_PYTHON_DIR 指定，或自动从常见路径/当前目录探测。
     """
+    from bigqmt_signal_trader.local_env import read_local_env
+
     candidates = []
-    env_dir = os.environ.get("BIGQMT_QMT_PYTHON_DIR")
+    env_dir = (read_local_env().get("BIGQMT_QMT_PYTHON_DIR")
+               or os.environ.get("BIGQMT_QMT_PYTHON_DIR"))
     if env_dir:
         candidates.append(env_dir)
     # 常见 QMT 安装路径（国金证券、华泰等）
@@ -300,7 +302,7 @@ def _init():
     except Exception as e:
         _err(
             "configure() 失败。请检查配置：\n"
-            "  - 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST 等\n"
+            "  - 当前目录 .env 或环境变量的 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST 等\n"
             "  - 或 bigqmt_signal_trader_client_config.py 配置文件",
             detail=str(e),
             code="CONFIG_FAIL",
@@ -862,7 +864,7 @@ def cmd_quote_subscribe(args):
         sub_id = xtdata.subscribe_whole_quote(args.codes, callback=on_quote)
     except Exception as e:
         _err("订阅行情失败", detail=str(e), code="SUBSCRIBE_FAIL")
-    print("# subscribed id=%s, waiting for quotes (max %d)..." % (sub_id, args.max), file=sys.stderr)
+    print("# 已订阅，订阅号=%s，等待行情（最多接收 %d 次）……" % (sub_id, args.max), file=sys.stderr)
     # 等待
     timeout = args.timeout
     t0 = time.time()

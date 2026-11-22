@@ -234,9 +234,9 @@ class ThrottleTest(_StrategyState):
         for _ in range(120):
             self._fail_once()
 
-        later = [m for m in self.logged if "still failing" in m]
+        later = [m for m in self.logged if "已连续失败" in m]
         self.assertTrue(later)
-        self.assertIn("still failing", later[0])
+        self.assertIn("已连续失败", later[0])
 
 
 if __name__ == "__main__":

@@ -72,7 +72,7 @@ class RefusesTest(unittest.TestCase):
             self.data.get_stock_type("600000.SH")
         except NotImplementedError as exc:
             text = str(exc)
-            self.assertIn("returns 0 for every code", text)
+            self.assertIn("对每个代码都返回 0", text)
             self.assertIn("ContextInfo.get_stock_type", text)
         else:
             self.fail("expected NotImplementedError")

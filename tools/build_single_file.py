@@ -1,33 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Build BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py.
+"""生成 BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py。
 
-Reads every custom module used by BIGQMT_VALKEY_DRYRUN.py
-(bigqmt_signal_trader package + bigqmt_signal_trader_strategy +
-bigqmt_signal_trader_valkey_rpc_runtime) and embeds their sources
-base64-encoded into a single self-contained strategy file that
-never imports other custom modules from disk.
+将策略入口依赖的项目模块以 Base64 内嵌，供策略从内存加载。
 """
 import base64
 import os
 
-# This script lives in tools/ in a source checkout; a byte-identical copy ships
-# inside the wheel as package data (bigqmt_signal_trader/_singlefile/) so
-# bigqmt-init's single-file options work from a plain pip install too.
+# 源码仓库在 tools/ 提供构建器，安装包在 bigqmt_signal_trader/_singlefile/
+# 附带发行版构建器，供 bigqmt-init 生成单文件策略。
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_PATH = os.environ.get(
     "BIGQMT_BUILD_OUT", os.path.join(ROOT, "src", "BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py"))
 
 
 def resolve_source_dirs(root=ROOT):
-    """(top_dir, package_dir): top_dir holds the top-level strategy modules
-    (bigqmt_signal_trader_strategy.py, bigqmt_signal_trader_valkey_rpc_runtime.py)
-    and is the root for the embedded relative paths; package_dir is the
-    bigqmt_signal_trader package.
-
-    A repository checkout (root/src/...) wins. Otherwise, fall back to an
-    installed package: this is the pip-install layout, where the top-level
-    modules sit beside the package directory.
-    """
+    """查找策略源码根目录和包目录，优先使用仓库的 src/，其次使用安装包。"""
     repo_src = os.path.join(root, "src")
     if os.path.isdir(os.path.join(repo_src, "bigqmt_signal_trader")):
         return repo_src, os.path.join(repo_src, "bigqmt_signal_trader")
@@ -42,26 +29,16 @@ def resolve_source_dirs(root=ROOT):
             and os.path.isfile(os.path.join(top_dir, "bigqmt_signal_trader_valkey_rpc_runtime.py"))):
         return top_dir, package_dir
     raise SystemExit(
-        "cannot locate bigqmt_signal_trader sources: neither a repository "
-        "checkout (src/bigqmt_signal_trader under the builder root) nor an "
-        "installed package with its top-level strategy modules was found")
+        "找不到 bigqmt_signal_trader 源码。请使用带 src/ 的源码仓库，"
+        "或安装包含顶层策略模块的 xtquant-big-convert。")
 
 
-# Setup-time tooling, not runtime code. Keeping it out is not just about size:
-# it imports subprocess and getpass, and this project has already been bitten by
-# QMT's import whitelist (socket, and logging.handlers -> socket indirectly).
-# An unimported module's imports never execute, so this is belt-and-braces --
-# but the belt is cheap.
+# 配置向导只在部署时运行，包含 QMT 策略不需要的 subprocess 和 getpass 依赖。
 EXCLUDED_MODULES = ("init_config.py",)
 
 
 def _assert_unused(pkg_dir, excluded):
-    """Refuse to exclude a module something else imports.
-
-    A previous attempt at trimming this build excluded a module that turned out
-    to be imported at the top level of another one, and the build died on load
-    rather than at build time.
-    """
+    """构建时检查待排除的模块是否仍被引用，避免生成无法加载的策略。"""
     stems = [name[:-3] for name in excluded]
     for dirpath, _dirnames, filenames in os.walk(pkg_dir):
         for fn in sorted(filenames):
@@ -72,7 +49,7 @@ def _assert_unused(pkg_dir, excluded):
             for stem in stems:
                 if ("import %s" % stem) in text or ("from .%s" % stem) in text:
                     raise SystemExit(
-                        "refusing to exclude %s.py: %s imports it" % (stem, fn))
+                        "不能排除 %s.py，%s 仍引用该模块" % (stem, fn))
 
 
 def collect_package(pkg_dir, root, excluded=EXCLUDED_MODULES):
@@ -125,35 +102,23 @@ def main():
 
     embedded = embed_block(sources, extra)
 
-    template = TEMPLATE.replace("__EMBEDDED_SOURCES_BLOCK__", embedded)
+    # 模板中的中文字符串以 Unicode 转义写入，兼容 QMT 的 GBK 文件头。
+    template = TEMPLATE.encode("ascii", "backslashreplace").decode("ascii")
+    template = template.replace("__EMBEDDED_SOURCES_BLOCK__", embedded)
 
     total = sum(len(v) for v in sources.values()) + sum(len(v) for v in extra.values())
     with open(OUT_PATH, "w", encoding="utf-8", newline="\n") as f:
         f.write(template)
-    print("WROTE %s" % OUT_PATH)
-    print("embedded files: %d package + %d top-level" % (len(sources), len(extra)))
-    print("embedded raw bytes: %d" % total)
+    print("已生成 %s" % OUT_PATH)
+    print("已嵌入 %d 个包内模块和 %d 个顶层模块" % (len(sources), len(extra)))
+    print("内嵌源码共 %d 字节" % total)
 
 
 TEMPLATE = '''#coding:gbk
-"""Single-file self-contained Big QMT Valkey dry-run strategy.
+"""大 QMT 单文件桥接策略。
 
-All custom modules referenced by the original BIGQMT_VALKEY_DRYRUN entry
-are embedded into this file and loaded in-memory at runtime:
-
-    * bigqmt_signal_trader package (all submodules)
-    * bigqmt_signal_trader_strategy
-    * bigqmt_signal_trader_valkey_rpc_runtime
-    * bigqmt_signal_trader_qmt_config  (generated from the config block below)
-
-This file never imports any other custom module from disk. It only uses the
-standard library plus third-party libraries (the RESP client, pandas, ...). The
-embedded loader below resolves relative imports against the in-memory sources,
-so you can copy this one file to a QMT python directory and run it as a
-strategy without shipping the package alongside.
-
-Set the BIGQMT_ACCOUNT_ID environment variable before running.
-Edit BIGQMT_CONFIG below for your deployment.
+项目模块内嵌并从内存加载。部署前设置 BIGQMT_ACCOUNT_ID 环境变量，
+再按部署环境修改下方的 BIGQMT_CONFIG。
 """
 import base64 as _base64
 import builtins as _builtins
@@ -164,12 +129,12 @@ import types
 import warnings
 
 if sys.version_info < (3, 12):
-    raise RuntimeError("xtquant-big-convert requires Python 3.12 or newer.")
+    raise RuntimeError("xtquant-big-convert 需要 Python 3.12 或更高版本。")
 
 # =========================== config block ===========================
 BIGQMT_ACCOUNT_ID = os.environ.get("BIGQMT_ACCOUNT_ID", "").strip()
 if not BIGQMT_ACCOUNT_ID:
-    warnings.warn("BIGQMT_ACCOUNT_ID is unset or empty; no account is configured.", RuntimeWarning)
+    warnings.warn("BIGQMT_ACCOUNT_ID 未设置或为空，当前未配置账户。", RuntimeWarning)
 
 BIGQMT_ACCOUNT_TYPE = "STOCK"
 
@@ -238,10 +203,10 @@ def _resolve_name(name, module_globals, level):
         return name
     package = (module_globals or {}).get("__package__") or (module_globals or {}).get("__name__", "")
     if not package:
-        raise ImportError("relative import without package")
+        raise ImportError("相对导入缺少所属包")
     for unused in range(level - 1):
         if "." not in package:
-            raise ImportError("relative import beyond top-level package")
+            raise ImportError("相对导入超出顶层包")
         package = package.rsplit(".", 1)[0]
     return package + ("." + name if name else "")
 
@@ -254,7 +219,7 @@ def _find_local_source(name):
     module_file = relative + ".py"
     if module_file in _EMBEDDED_SOURCES:
         return module_file, False
-    raise ModuleNotFoundError("local source not found: %s" % name, name=name)
+    raise ModuleNotFoundError("找不到内嵌模块：%s" % name, name=name)
 
 
 def _set_parent_attribute(name, module):
@@ -339,16 +304,16 @@ def _stop_previous_rpc_service():
         return
     try:
         reset()
-        print("[bigqmt_shell] previous rpc service stopped")
+        print("[bigqmt_shell] 已停止之前的 RPC 服务")
     except Exception as exc:
-        print("[bigqmt_shell] previous rpc service stop failed: %s" % exc)
+        print("[bigqmt_shell] 停止之前的 RPC 服务失败：%s" % exc)
 
 
 _stop_previous_rpc_service()
 _clear_local_modules()
 _importlib.import_module = _local_import_module
 _importlib.reload = _local_reload
-print("[bigqmt_shell] all-in-one strategy embedded sources=%d" % len(_EMBEDDED_SOURCES))
+print("[bigqmt_shell] 单文件策略已嵌入 %d 个源码模块" % len(_EMBEDDED_SOURCES))
 
 
 def _fallback_account_id():
@@ -365,7 +330,7 @@ try:
     _strategy = _local_import("bigqmt_signal_trader_strategy", globals(), fromlist=("*",))
     _strategy.reset_app()
 except Exception as bridge_preload_error:
-    print("[bigqmt_shell] bridge preload failed: %s" % bridge_preload_error)
+    print("[bigqmt_shell] 桥接预加载失败：%s" % bridge_preload_error)
 
 _runtime = _local_import("bigqmt_signal_trader_valkey_rpc_runtime", globals(), fromlist=("*",))
 
@@ -377,18 +342,18 @@ def _load_local_config():
 try:
     _config = _load_local_config()
     BIGQMT_CONFIG = _runtime.local_valkey_config(_config)
-    print("[bigqmt_shell] local valkey config loaded keys=%s" % sorted((BIGQMT_CONFIG or {}).keys()))
+    print("[bigqmt_shell] 本地 RPC 配置已加载 keys=%s" % sorted((BIGQMT_CONFIG or {}).keys()))
     _runtime.configure_runtime_valkey(BIGQMT_CONFIG)
 except Exception as valkey_config_error:
-    print("[bigqmt_shell] local valkey config load failed: %s" % valkey_config_error)
+    print("[bigqmt_shell] 本地 RPC 配置加载失败：%s" % valkey_config_error)
 
 try:
     _config = _load_local_config()
     BIGQMT_ACCOUNT_ID = getattr(_config, "BIGQMT_ACCOUNT_ID", "")
-    print("[bigqmt_shell] local account configured=%s" % bool(BIGQMT_ACCOUNT_ID))
+    print("[bigqmt_shell] 本地账户配置已加载=%s" % bool(BIGQMT_ACCOUNT_ID))
     _runtime.configure_runtime_account(BIGQMT_ACCOUNT_ID)
 except Exception as account_config_error:
-    print("[bigqmt_shell] local account config load failed: %s" % account_config_error)
+    print("[bigqmt_shell] 本地账户配置加载失败：%s" % account_config_error)
     account_id = _fallback_account_id()
     if account_id:
         _runtime.configure_runtime_account(account_id)

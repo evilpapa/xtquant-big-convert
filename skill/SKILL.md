@@ -79,10 +79,10 @@ QMT 策略编辑器里**只加载运行 `BIGQMT_VALKEY_DRYRUN.py` 一个文件**
 启动成功标志（QMT 输出面板）：
 
 ```
-[bigqmt_shell] local valkey config loaded keys=[...]
-[bigqmt_shell] local account config loaded=True
-[bigqmt_rpc] started channel=bigqmt:rpc:req:你的账号
-[bigqmt_signal_trader] init ok
+[bigqmt_shell] 本地 RPC 配置已加载 keys=[...]
+[bigqmt_shell] 本地账户配置已加载=True
+[bigqmt_rpc] 已启动 queue=bigqmt:rpc:queue:你的账号 background_threads=False
+[bigqmt_signal_trader] 初始化成功
 ```
 
 ### 第 5 步：客户端配置 + 验证

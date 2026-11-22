@@ -102,8 +102,8 @@ python -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(
 QMT 策略编辑器**加载并运行 `BIGQMT_VALKEY_DRYRUN.py`**（单文件模式是 `..._ALL_IN_ONE.py`），运行模式切到**实盘**。输出面板看到这两行即成功：
 
 ```
-[bigqmt_shell] bigqmt_signal_trader 0.3.37 loaded from D:\...\python\bigqmt_signal_trader
-[bigqmt_rpc] started channel=bigqmt:rpc:req:你的账号
+[bigqmt_shell] bigqmt_signal_trader 0.3.37 已从 D:\...\python\bigqmt_signal_trader 加载
+[bigqmt_rpc] 已启动 queue=bigqmt:rpc:queue:你的账号 background_threads=False
 ```
 
 第一行的版本号和目录**就是实际加载的**，以后升级看它。
@@ -213,7 +213,7 @@ xt_trader.reload_status()                       # 1~2 秒后看这个
 | 客户端报 `account_id` 为空 / 连到 127.0.0.1 / 连的是别的账号 | 客户端没找到 `bigqmt_signal_trader_client_config.py`：它靠 import 找，必须和运行的脚本同目录（或在 `PYTHONPATH` 上、或 `BIGQMT_CLIENT_CONFIG_MODULE` 指定）。`python -c` 是从**当前目录**找。找不到时退回服务端那份 `bigqmt_signal_trader_qmt_config.py`，所以在 QMT 目录里跑能通、换个目录就不通 |
 | 查询全空但账户有数据 | 账号没对上（服务端 `BIGQMT_ACCOUNT_ID` vs 客户端），或 QMT 不在实盘模式 |
 | 信用账户查出来整行 0 | `bigqmt-init` 的账号类型选了 STOCK，应选 CREDIT |
-| QMT 报错 `xtquant-big-convert requires Python 3.12 or newer` | 检查并升级 QMT 策略实际使用的解释器 |
+| QMT 提示需要 Python 3.12 或更高版本 | 检查并升级 QMT 策略实际使用的解释器 |
 | 启动面板没有任何输出 | 文件没拷全（4 项缺一不可），或加载的是 runtime 文件而不是 DRYRUN 入口 |
 | 面板像正常启动然后"结束运行"，外部连不上 | 看 `download globals bound=[]` 是不是**空的**、有没有 `init ok`。空的说明 QMT 没注入任何 API 全局——文件被当**普通脚本**执行。两个已知原因：在**策略编辑器界面**运行、勾了**「独立 python 进程」**。0.3.8 起入口会直接把这段话打出来（issue #123） |
 | 改了代码但没生效 | QMT 跨重跑保留 `sys.modules`，**拷贝本身不生效**。先用 `get_deployment_info()` 确认跑的是哪个 build，再 `reload_deployment` |

@@ -1,9 +1,8 @@
 # coding: utf-8
-"""Big QMT valkey-bridge CLI client (Jianghai Securities deployment).
+"""大 QMT Valkey 桥接命令行客户端（江海证券部署）。
 
-External-python entry point for querying assets/positions/orders/trades and
-market data through the xtquant_big_convert RPC bridge, plus order submit and
-cancel. Usage examples:
+在外部 Python 环境运行，通过 xtquant_big_convert RPC 查询资产、持仓、委托、
+成交和行情，也可提交委托和撤单。用法示例：
 
     python qmt_cli.py discover
     python qmt_cli.py ping
@@ -18,9 +17,8 @@ cancel. Usage examples:
     python qmt_cli.py cancel 1234
     python qmt_cli.py watch
 
-The account id is read from bigqmt_signal_trader_client_config.BIGQMT_ACCOUNT_ID,
-or from --account / BIGQMT_ACCOUNT_ID env var. `discover` scans Valkey for the
-account id the QMT-side strategy registered.
+账号依次来自 --account、本地 .env、环境变量或客户端配置模块。
+`discover` 在 Valkey 中查找已注册的账号。
 """
 import argparse
 import json
@@ -32,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import bigqmt_signal_trader_client_config as cfg  # noqa: E402
-except ImportError:  # config not written yet (e.g. pre-deploy discover)
+except ImportError:  # 配置尚未生成，例如部署前运行 discover。
     cfg = None
 
 from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
@@ -41,6 +39,7 @@ from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
     BigQmtXtData,
 )
 from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client, local_valkey_config
+from bigqmt_signal_trader.local_env import read_local_env
 from xtquant import xtconstant  # noqa: E402
 from xtquant.xttype import StockAccount  # noqa: E402
 
@@ -48,52 +47,36 @@ from xtquant.xttype import StockAccount  # noqa: E402
 def account_id(args):
     value = (
         getattr(args, "account", "")
+        or read_local_env().get("BIGQMT_ACCOUNT_ID", "").strip()
         or os.environ.get("BIGQMT_ACCOUNT_ID", "")
         or getattr(cfg, "BIGQMT_ACCOUNT_ID", "")
     )
     value = str(value or "").strip()
     if not value:
         sys.exit(
-            "account id is empty: set BIGQMT_ACCOUNT_ID in "
-            "bigqmt_signal_trader_client_config.py, or pass --account, "
-            "or export BIGQMT_ACCOUNT_ID"
+            "资金账号为空。请传入 --account，或在 .env、环境变量或客户端配置模块中设置 BIGQMT_ACCOUNT_ID。"
         )
     return value
 
 
-def valkey_kwargs():
-    if cfg is None:
-        sys.exit(
-            "bigqmt_signal_trader_client_config.py not found next to this "
-            "script -- run deploy_qmt_bridge.ps1 first, or create it with "
-            "BIGQMT_CONFIG (see deploy/README.md)"
-        )
-    return local_valkey_config(cfg)
-
-
 def raw_valkey():
-    return build_valkey_client(valkey_kwargs())
+    client = BigQmtRpcClient()
+    config = local_valkey_config(cfg)
+    config.update(client.valkey_config, url=client._valkey_url)
+    return build_valkey_client(config, environ={})
 
 
 def make_trader(acc_id):
-    return BigQmtXtTrader(
-        account_id=acc_id,
-        valkey_config=valkey_kwargs(),
-        timeout_seconds=getattr(cfg, "BIGQMT_RPC_TIMEOUT_SECONDS", 30.0),
-    )
+    return BigQmtXtTrader(account_id=acc_id)
 
 
 def make_data(acc_id):
-    client = BigQmtRpcClient(
-        account_id=acc_id,
-        valkey_config=valkey_kwargs(),
-        timeout_seconds=getattr(cfg, "BIGQMT_RPC_TIMEOUT_SECONDS", 30.0),
-    )
-    return BigQmtXtData(client)
+    return BigQmtXtData(BigQmtRpcClient(account_id=acc_id))
 
 
 def as_stock_account(acc_id):
-    account_type = str(getattr(cfg, "BIGQMT_ACCOUNT_TYPE", "STOCK") or "STOCK")
+    account_type = str(read_local_env().get("BIGQMT_ACCOUNT_TYPE")
+                       or getattr(cfg, "BIGQMT_ACCOUNT_TYPE", None) or "STOCK")
     return StockAccount(acc_id, account_type)
 
 
@@ -111,17 +94,18 @@ def cmd_discover(args):
     r = raw_valkey()
     keys = [k.decode() if isinstance(k, bytes) else k for k in r.keys("bigqmt:*")]
     if not keys:
-        print("no bigqmt:* keys in valkey db=%s -- is the QMT strategy running?" % r.connection_pool.connection_kwargs.get("db"))
+        print("Valkey 数据库 %s 中没有 bigqmt:* 键，请确认 QMT 策略是否正在运行。"
+              % r.connection_pool.connection_kwargs.get("db"))
         return
     accounts = set()
     for key in keys:
         for prefix in ("bigqmt:positions:", "bigqmt:rpc:req:", "bigqmt:order_events:", "bigqmt:trade_events:"):
             if key.startswith(prefix):
                 accounts.add(key[len(prefix):])
-    print("valkey keys:")
+    print("Valkey 键：")
     for key in sorted(keys):
         print("  ", key)
-    print("discovered accounts:", sorted(accounts) or "(none yet)")
+    print("发现的账号：", sorted(accounts) or "（暂无）")
 
 
 def cmd_ping(args):
@@ -130,7 +114,7 @@ def cmd_ping(args):
     started = time.time()
     pong = trader.client.call("ping")
     elapsed_ms = (time.time() - started) * 1000.0
-    print("ping OK in %.1f ms" % elapsed_ms)
+    print("ping 成功，耗时 %.1f 毫秒" % elapsed_ms)
     print(json.dumps(pong, ensure_ascii=False, indent=2, default=str))
 
 
@@ -139,7 +123,7 @@ def cmd_asset(args):
     trader = make_trader(acc_id)
     asset = trader.query_stock_asset(as_stock_account(acc_id))
     if asset is None:
-        print("query_stock_asset returned None")
+        print("未查询到账号资产（query_stock_asset 返回 None）")
         return
     print(json.dumps(fmt_row(asset, [
         "account_id", "account_type", "cash", "frozen_cash",
@@ -151,7 +135,7 @@ def cmd_positions(args):
     acc_id = account_id(args)
     trader = make_trader(acc_id)
     positions = trader.query_stock_positions(as_stock_account(acc_id)) or []
-    print("positions: %d" % len(positions))
+    print("持仓：%d 条" % len(positions))
     for pos in positions:
         print(json.dumps(fmt_row(pos, [
             "stock_code", "volume", "can_use_volume", "open_price",
@@ -165,7 +149,7 @@ def cmd_orders(args):
     orders = trader.query_stock_orders(
         as_stock_account(acc_id), cancelable_only=args.cancelable
     ) or []
-    print("orders: %d" % len(orders))
+    print("委托：%d 条" % len(orders))
     for order in orders:
         print(json.dumps(fmt_row(order, [
             "order_id", "stock_code", "order_type", "order_volume",
@@ -178,7 +162,7 @@ def cmd_trades(args):
     acc_id = account_id(args)
     trader = make_trader(acc_id)
     trades = trader.query_stock_trades(as_stock_account(acc_id)) or []
-    print("trades: %d" % len(trades))
+    print("成交：%d 条" % len(trades))
     for trade in trades:
         print(json.dumps(fmt_row(trade, [
             "stock_code", "order_type", "traded_volume", "traded_price",
@@ -193,7 +177,7 @@ def cmd_tick(args):
     for code in args.codes:
         tick = ticks.get(code)
         if not tick:
-            print("%s: no data" % code)
+            print("%s：暂无行情" % code)
             continue
         print(json.dumps({
             "code": code,
@@ -215,7 +199,7 @@ def cmd_kline(args):
     ) or {}
     df = result.get(args.code)
     if df is None or len(df) == 0:
-        print("no kline for %s (not downloaded in QMT local data?)" % args.code)
+        print("未查到 %s 的 K 线，请检查 QMT 是否已下载相应数据。" % args.code)
         return
     print(df.to_string())
 
@@ -225,15 +209,15 @@ def cmd_order(args, order_type):
     trader = make_trader(acc_id)
     account = as_stock_account(acc_id)
     if trader.connect() != 0:
-        sys.exit("connect failed")
+        sys.exit("连接失败")
     price_type = xtconstant.FIX_PRICE if args.price > 0 else xtconstant.LATEST_PRICE
     order_id = trader.order_stock(
         account, args.code, order_type, args.volume, price_type,
         args.price, "bigqmt_cli", args.remark or "cli-order",
     )
     if isinstance(order_id, int) and order_id == -1:
-        sys.exit("order rejected (order_stock returned -1)")
-    print("order submitted, order_id=%s" % order_id)
+        sys.exit("委托被拒绝（order_stock 返回 -1）")
+    print("委托已提交，委托号=%s" % order_id)
 
 
 def cmd_cancel(args):
@@ -241,12 +225,12 @@ def cmd_cancel(args):
     trader = make_trader(acc_id)
     account = as_stock_account(acc_id)
     result = trader.cancel_order_stock(account, args.order_id)
-    print("cancel_order_stock -> %s (0 = success, -1 = failure)" % result)
+    print("撤单返回值：%s（0 表示成功，-1 表示失败）" % result)
 
 
 class _Printer:
     def on_disconnected(self):
-        print("[event] disconnected")
+        print("[event] 连接已断开")
 
     def on_stock_order(self, order):
         print("[order] %s" % json.dumps(fmt_row(order, [
@@ -287,44 +271,44 @@ def cmd_watch(args):
     trader.register_callback(_Printer())
     trader.start()
     if trader.connect() != 0:
-        sys.exit("connect failed")
+        sys.exit("连接失败")
     trader.subscribe(account)
-    print("watching exec events for %s ... Ctrl+C to stop" % acc_id)
+    print("正在监听账号 %s 的交易回报，按 Ctrl+C 停止。" % acc_id)
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nstopped.")
+        print("\n监听已停止。")
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Big QMT valkey-bridge CLI")
-    parser.add_argument("--account", default="", help="override account id")
+    parser = argparse.ArgumentParser(description="大 QMT Valkey 桥接命令行工具")
+    parser.add_argument("--account", default="", help="指定资金账号，覆盖默认配置")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("discover", help="scan valkey for registered accounts")
-    sub.add_parser("ping", help="rpc ping")
-    sub.add_parser("asset", help="query account asset")
-    sub.add_parser("positions", help="query positions")
-    p_orders = sub.add_parser("orders", help="query orders")
+    sub.add_parser("discover", help="在 Valkey 中查找已注册的账号")
+    sub.add_parser("ping", help="测试 RPC 连通性")
+    sub.add_parser("asset", help="查询账号资产")
+    sub.add_parser("positions", help="查询持仓")
+    p_orders = sub.add_parser("orders", help="查询委托")
     p_orders.add_argument("--cancelable", action="store_true")
-    sub.add_parser("trades", help="query trades")
-    p_tick = sub.add_parser("tick", help="full tick snapshot")
+    sub.add_parser("trades", help="查询成交")
+    p_tick = sub.add_parser("tick", help="查询行情快照")
     p_tick.add_argument("codes", nargs="+")
-    p_kline = sub.add_parser("kline", help="kline from QMT local data")
+    p_kline = sub.add_parser("kline", help="查询 QMT 本地 K 线")
     p_kline.add_argument("code")
     p_kline.add_argument("--period", default="1d")
     p_kline.add_argument("--count", type=int, default=10)
     for name, order_type in (("buy", xtconstant.STOCK_BUY), ("sell", xtconstant.STOCK_SELL)):
-        p = sub.add_parser(name, help="submit a %s order" % name)
+        p = sub.add_parser(name, help="提交买入委托" if name == "buy" else "提交卖出委托")
         p.add_argument("code")
         p.add_argument("volume", type=int)
-        p.add_argument("price", type=float, help="0 = latest-price (market) order")
+        p.add_argument("price", type=float, help="0 表示按最新价委托")
         p.add_argument("--remark", default="")
         p.set_defaults(order_type=order_type)
-    p_cancel = sub.add_parser("cancel", help="cancel an order")
+    p_cancel = sub.add_parser("cancel", help="撤销委托")
     p_cancel.add_argument("order_id")
-    sub.add_parser("watch", help="watch order/trade callbacks")
+    sub.add_parser("watch", help="监听委托和成交回报")
 
     args = parser.parse_args(argv)
     handlers = {

@@ -352,8 +352,7 @@ xtdata.get_full_tick(["600000.SH"])               # 显式代码不受影响
 > **这是破坏性变更。** 如果你的代码依赖 `get_full_tick(["SH"])` 返回债券 / 回购 / ETF，请显式传 `types=["all"]`。收窄发生时会打印一次提示，便于发现：
 >
 > ```
-> [bigqmt_market] SH narrowed to 2315 stock; pass types=['all'] for every
-> instrument the exchange lists
+> [bigqmt_market] SH 已筛选出 2315 个标的（stock）。查询交易所全部标的请传 types=['all']。
 > ```
 
 | `types` | 板块 | 约数 |
@@ -1138,15 +1137,14 @@ BIGQMT_VALKEY_DRYRUN.py                  QMT 编辑器里加载的入口
 
 
 ```
-[bigqmt_shell] reload entry paths=['D:\\QMT交易端\\python']
-[bigqmt_shell] local valkey config loaded keys=['host', 'port', 'db', ...]
-[bigqmt_shell] local account config loaded=True
+[bigqmt_shell] 本地 RPC 配置已加载 transport=valkey keys=['host', 'port', 'db', ...]
+[bigqmt_shell] 本地账户配置已加载=True
 [bigqmt_rpc] transport=valkey mode process_in_listener=True listener_methods=('*',) ...
-[bigqmt_rpc] started channel=bigqmt:rpc:req:你的账号
-[bigqmt_signal_trader] init ok
+[bigqmt_rpc] 已启动 queue=bigqmt:rpc:queue:你的账号 background_threads=False
+[bigqmt_signal_trader] 初始化成功
 ```
 
-两个会让它看起来启动了、其实没起来的坑：在**策略编辑器界面**直接点运行、勾了**「独立 python 进程」**。两种情况下 QMT 不注入任何 API 全局，文件被当普通脚本执行完就结束，`init()` 永远不会调用。面板里 `download globals bound=[]` 是空的就是这个（0.3.8 起入口会直接把这段话打出来，#123）。
+从**策略编辑器界面**直接运行，或勾选**「独立 Python 进程」**时，QMT 会按普通脚本执行，跳过 `init()`。如果面板提示「QMT 未注入任何 API 全局函数」，请检查策略的运行方式（#123）。
 
 ### 第 5 步：客户端验证、调用
 

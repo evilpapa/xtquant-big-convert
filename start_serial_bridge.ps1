@@ -6,17 +6,16 @@
 .DESCRIPTION
   链路：QMT 模型交易(如 COM10) <-com0com-> 本脚本的串口(如 COM11) <-串口帧-> 桥接 <-Valkey-> 策略。
 
-  默认从 bigqmt_signal_trader_qmt_config.py 读取 QMT 侧在用的 Valkey 地址，
-  避免桥接连到 127.0.0.1 而 QMT 连到别的机器 —— 这是
-  "ERROR Bridge stopped (TimeoutError)" 最常见的原因。
+  优先使用当前目录 .env 中的账号和 Valkey 地址。未配置地址时读取
+  bigqmt_signal_trader_qmt_config.py 中的 Valkey 配置。
   启动前预检 Valkey 连通性和串口能否打开；-CheckOnly 只预检不启动。
 
 .PARAMETER ValkeyUrl
   valkey://[user:password@]host:port/db，也接受 redis://。
-  优先级：本参数 > -LocalConfig 的 BIGQMT_CONFIG > 环境变量 BIGQMT_SERIAL_VALKEY_URL。
+  优先级：本参数 > .env > -LocalConfig 的 BIGQMT_CONFIG > 环境变量。
 
 .PARAMETER Account
-  资金账号。默认读取环境变量 BIGQMT_ACCOUNT_ID；可用本参数覆盖。
+  资金账号。默认读取 .env 或环境变量中的 BIGQMT_ACCOUNT_ID。
 
 .PARAMETER Port
   桥接这一侧的串口，默认 COM11。
@@ -78,7 +77,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 function Say-Step([string]$m) { Write-Host ""; Write-Host ("== " + $m) -ForegroundColor Cyan }
-function Say-Ok([string]$m) { Write-Host ("   [ok]   " + $m) -ForegroundColor Green }
+function Say-Ok([string]$m) { Write-Host ("   [通过] " + $m) -ForegroundColor Green }
 function Say-Warn([string]$m) { Write-Host ("   [warn] " + $m) -ForegroundColor Yellow }
 function Say-Fail([string]$m) { Write-Host ("   [fail] " + $m) -ForegroundColor Red }
 function Say-Detail([string]$m) { Write-Host ("          " + $m) -ForegroundColor DarkGray }
@@ -182,8 +181,32 @@ function Resolve-Python($Entry) {
     return ""
 }
 
+function Invoke-Capture([string]$Exe, [string[]]$Arguments) {
+    # 5.1 里 native 命令的 stderr 重定向会生成 ErrorRecord，EAP=Stop 会把整段语句打断。
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $Exe @Arguments 2>&1 | ForEach-Object { [string]$_ }
+        return @{ Code = $LASTEXITCODE; Output = @($output) }
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
 # ---- 3. 解析参数 ------------------------------------------------------------
 Say-Step "配置"
+
+$entry = Resolve-BridgeEntry $BridgeExe
+$pyExe = Resolve-Python $entry
+$dotenv = $null
+if ((-not $ValkeyUrl -or [string]::IsNullOrWhiteSpace($Account)) -and
+        (Test-Path -LiteralPath ".env" -PathType Leaf)) {
+    if (-not $pyExe) { throw "读取 .env 需要外部 Python，请检查 PATH 或指定 -BridgeExe。" }
+    $result = Invoke-Capture $pyExe @("-c", "import json; from bigqmt_signal_trader.local_env import local_serial_settings; print(json.dumps(local_serial_settings()))")
+    if ($result.Code -ne 0) { throw "无法读取 .env，请确认同一 Python 环境已安装最新版 xtquant-big-convert。" }
+    $dotenv = $result.Output[-1] | ConvertFrom-Json
+}
 
 $configPath = Find-LocalConfig $LocalConfig
 $configText = ""
@@ -196,6 +219,10 @@ if ($configPath) {
 }
 
 $valkeySource = "命令行 -ValkeyUrl"
+if (-not $ValkeyUrl -and $dotenv.valkey_url) {
+    $ValkeyUrl = $dotenv.valkey_url
+    $valkeySource = ".env"
+}
 if (-not $ValkeyUrl) {
     $ValkeyUrl = New-ValkeyUrlFromBlock $valkeyBlock
     if ($ValkeyUrl) { $valkeySource = "本地配置" }
@@ -204,23 +231,29 @@ if (-not $ValkeyUrl -and $env:BIGQMT_SERIAL_VALKEY_URL) {
     $ValkeyUrl = $env:BIGQMT_SERIAL_VALKEY_URL
     $valkeySource = "环境变量 BIGQMT_SERIAL_VALKEY_URL"
 }
+if (-not $ValkeyUrl -and $env:BIGQMT_VALKEY_URL) {
+    $ValkeyUrl = $env:BIGQMT_VALKEY_URL
+    $valkeySource = "环境变量 BIGQMT_VALKEY_URL"
+}
 if (-not $ValkeyUrl) {
     $ValkeyUrl = "valkey://127.0.0.1:6379/5"
     $valkeySource = "内置默认值（未找到 QMT 侧配置）"
 }
 
 $accountSource = "命令行 -Account"
+if ([string]::IsNullOrWhiteSpace($Account) -and $dotenv.account_id) {
+    $Account = $dotenv.account_id
+    $accountSource = ".env"
+}
 if ([string]::IsNullOrWhiteSpace($Account)) {
     $Account = $env:BIGQMT_ACCOUNT_ID
     $accountSource = "环境变量 BIGQMT_ACCOUNT_ID"
 }
 if ([string]::IsNullOrWhiteSpace($Account)) {
-    Write-Warning "缺少资金账号：请设置环境变量 BIGQMT_ACCOUNT_ID，或传入 -Account。"
+    Write-Warning "缺少资金账号：请在 .env 或环境变量中设置 BIGQMT_ACCOUNT_ID，或传入 -Account。"
     exit 1
 }
 $Account = $Account.Trim()
-
-$entry = Resolve-BridgeEntry $BridgeExe
 
 Write-Host ("   账号      : " + $Account + "   (" + $accountSource + ")")
 Write-Host ("   串口      : " + $Port + " @ " + $Baudrate + " baud, 帧上限 " + $MaxFrameBytes)
@@ -235,22 +268,8 @@ elseif ($configPath -and -not $configTransport) {
     Say-Warn '本地配置里没有 "transport": "serial"，QMT 侧默认仍走 Valkey，不会用到本桥接。'
 }
 
-function Invoke-Capture([string]$Exe, [string[]]$Arguments) {
-    # 5.1 里 native 命令的 stderr 重定向会生成 ErrorRecord，EAP=Stop 会把整段语句打断。
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $output = & $Exe @Arguments 2>&1 | ForEach-Object { [string]$_ }
-        return @{ Code = $LASTEXITCODE; Output = @($output) }
-    }
-    finally {
-        $ErrorActionPreference = $previous
-    }
-}
-
 # ---- 4. 预检 ----------------------------------------------------------------
 Say-Step "预检"
-$pyExe = Resolve-Python $entry
 $preflightOk = $true
 
 if (-not $pyExe) {
@@ -333,7 +352,7 @@ if ($LogFile) {
     if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
         New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     }
-    $header = "# " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + " start " + $printed
+    $header = "# " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + " 启动 " + $printed
     Add-Content -LiteralPath $LogFile -Value $header -Encoding UTF8
 }
 
@@ -359,8 +378,8 @@ if ($code -eq 0) {
 }
 else {
     Say-Fail ("桥接异常退出，exit=" + $code + "。对照上面的 ERROR 行：")
-    Say-Detail "Cannot reach Valkey ...     Valkey 地址/端口/db 不对，或 Valkey 没启动、被防火墙挡住。"
-    Say-Detail "Cannot open serial port ... 串口名不对，或被 QMT/另一个桥接占用，或 com0com 端口对不存在。"
-    Say-Detail "Bridge stopped ...         运行中串口或 Valkey 断链；重启桥接和 QMT 策略，重启前先查委托和成交。"
+    Say-Detail "无法连接 Valkey：请检查地址、端口、数据库、服务状态和防火墙。"
+    Say-Detail "无法打开串口：请检查串口名称、端口占用及 com0com 端口对。"
+    Say-Detail "桥接已停止：请检查串口和 Valkey，查询委托及成交后再重启桥接和 QMT 策略。"
 }
 exit $code

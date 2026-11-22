@@ -201,7 +201,7 @@ def test_fsync_failure_is_reported_without_raising_and_warning_is_throttled(
     assert not store.remember("acct", "r", NOW, "alpha")
     assert not store.remember("acct", "r2", NOW, "alpha")
     assert "disk failure" in store.error
-    assert capsys.readouterr().out.count("restart recovery may be incomplete") == 1
+    assert capsys.readouterr().out.count("重启后可能无法完整恢复") == 1
     assert not os.path.exists(store._segment + ".lock")
 
 

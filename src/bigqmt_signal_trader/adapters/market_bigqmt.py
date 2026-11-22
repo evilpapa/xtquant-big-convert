@@ -1,29 +1,9 @@
-"""Big QMT market data adapter.
+"""大 QMT 行情适配器，封装策略上下文和终端原生 xtdata SDK。
 
-This module wraps two QMT runtime objects:
-
-* ``ContextInfo`` — the strategy-scoped object exposed inside ``handlebar`` /
-  ``init``. It carries methods that operate on the *current* subscribed context
-  (``get_market_data_ex``, ``get_full_tick``, ``get_instrumentdetail`` ...).
-* the **native xtdata SDK** (``bin.x64/Lib/site-packages/xtquant/xtdata.py``) —
-  a module of global functions that talk to the local quote service directly.
-  Some APIs only exist here, never as ContextInfo methods.
-
-The split matters. Per the official docs and the ContextInfo IDE stub
-(``_PyContextInfo.py``):
-
-* ``get_sector_list`` / ``get_holidays`` are **xtdata module functions**
-  (SDK xtdata.py lines 784 / 1197). They are *not* ContextInfo methods, so
-  calling ``ContextInfo.get_sector_list()`` raises NotImplementedError.
-* ``get_markets`` / ``get_market_last_trade_date`` do not exist in either the
-  ContextInfo stub or the xtdata SDK — they are MiniQMT-only conveniences that
-  must be synthesized from ``get_trading_dates``.
-* ``get_trading_dates`` exists on BOTH objects but with **different first
-  arguments**: the ContextInfo method takes ``stockcode`` while the xtdata
-  module function takes ``market``. We pass ``market`` (that is what every
-  caller in this codebase supplies), so we route through xtdata.
-
-This module does not make trading decisions.
+ContextInfo 提供当前策略的行情和标的查询。板块列表和节假日查询走
+原生 xtdata。get_trading_dates 在两端的首参分别为 stockcode 和
+market，项目调用使用 market，因此由 xtdata 处理。
+get_markets 和 get_market_last_trade_date 由交易日历推导。
 """
 
 import datetime as _dt
@@ -40,34 +20,21 @@ log = get_logger("market")
 
 
 def _ignore_tick_push(data):
-    """Callback for the #310 warm-up subscriptions: the snapshot is read back
-    with get_full_tick, so the pushes themselves are not needed."""
+    """预热订阅的空回调，快照由 get_full_tick 读取（#310）。"""
     return None
 
 
 MARKET_CODES = {"SH", "SZ", "BJ", "HK"}
 
-# A market token asks QMT for every instrument the exchange lists, and stocks
-# are a small minority: "SH" answers with 26744 instruments of which 2315 (8.7%)
-# are stocks -- the rest is bonds, repos and the like. At a measured ~0.29ms per
-# instrument that is 7.5s for the whole market against 0.88s for the stocks
-# alone, and the cost is strictly linear in instrument count (issue #104).
-#
-# So narrow the REQUEST, not the response: resolve the token to a sector listing
-# and ask QMT only for those codes. Filtering afterwards would still pay for
-# every instrument. The sector lookup is FormulaServer-served (~10ms measured),
-# so it costs nothing next to what it saves.
-#
-# Sector names are QMT's own, verified against a live terminal. Note "北证A股"
-# is NOT one of them -- the Beijing board is "京市A股".
+# 查询市场代码会读取交易所挂牌的所有标的。查询前先按板块筛选，
+# 实测上交所从 26744 个标的减到 2315 只股票，耗时从约 7.5 秒降到约 0.88 秒（#104）。
+# 板块名沿用终端命名，北交所 A 股为「京市A股」。
 STOCK_SECTOR_BY_MARKET = {
     "SH": "上证A股",
     "SZ": "深证A股",
     "BJ": "京市A股",
 }
-# Cross-market sectors; results are filtered back to the requested exchange.
-# Not narrowing at all: "all" keeps the market token, i.e. the pre-0.2.15
-# behaviour of returning every instrument the exchange lists.
+# 跨市场板块按所请求的交易所过滤。传入 "all" 时保留市场代码，查询全部标的。
 DEFAULT_TICK_TYPES = ("stock",)
 
 SECTOR_BY_TYPE = {
@@ -76,7 +43,7 @@ SECTOR_BY_TYPE = {
     "etf": "沪深ETF",
     "index": "沪深指数",
     "convertible": "沪深转债",
-    # Aliases for the same sector: what people actually type.
+    # 同一板块的常用别名。
     "cbond": "沪深转债",
     "cb": "沪深转债",
     "convertible_bond": "沪深转债",
@@ -287,36 +254,10 @@ def _raw_market_data_payload(payload, field_list, stock_list, partial=None):
     return frames
 
 
-# The fields the rescue's servant actually serves.
-#
-# Name the servant right, because it is NOT get_local_data. The terminal's own
-# wrapper is
-#     get_local_data(stock_code='', start_time='19700101', end_time='22010101',
-#                    period='follow', divid_type='none', count=-1)
-# -- no field list at all, and ``divid_type`` rather than ``dividend_type`` --
-# so every shape ``_market_data_shapes("get_local_data", ...)`` builds raises
-# TypeError, and the call lands on the ``get_market_data`` shapes appended
-# after them:
-#     ContextInfo.get_market_data(fields, stock_code=[], start_time='',
-#                                 end_time='', skip_paused=True,
-#                                 period='follow', dividend_type='follow',
-#                                 count=-1)
-# That is what answers on a Guojin terminal, that is what the field behaviour
-# below was measured on, and that is what the operator warning names.
-#
-# Measured by asking for one field at a time (600519.SH, 1mon, count=10):
-# open/high/low/close/volume/amount/settle answer 10 rows; time,
-# settelementPrice, openInterest, preClose, suspendFlag and stime answer ZERO
-# -- and one unserved name in the list zeroes the WHOLE request (the 11-column
-# list returns 0 rows, an empty field_list returns 0 rows). That follows from
-# the wrapper's own body, which does ``oriData[code][timenode][field]`` for
-# every requested name.
-#
-# ``settle`` is deliberately left out even though it answered: it is the one
-# name whose spelling differs between builds (settle vs settelementPrice), so
-# including it risks zeroing the rescue on the very terminals that need it.
-# The six below are exactly what the #237 reporter measured working on the
-# broken build.
+# 国金终端的 get_local_data 不接收字段列表，且参数名是 divid_type，
+# 因此该回退路径实际由 ContextInfo.get_market_data 应答（#237）。
+# 任一个字段不受支持都会使整次查询返回空。settle 在不同版本拼写不同，
+# 这里只传逐字段实测可用且名称稳定的六个字段。
 _SYNTH_RESCUE_SERVED_FIELDS = ("open", "high", "low", "close", "volume", "amount")
 
 
@@ -612,9 +553,7 @@ def _load_native_xtdata():
         import os
         import sys
 
-        # Locate <qmt_root>/bin.x64/{lib,Lib}/site-packages that holds the REAL
-        # xtquant package. Walk up from this file (works whether we live under
-        # python/bigqmt_signal_trader/adapters/ in QMT or src/... in the repo).
+        # 从当前文件向上查找终端自带的 bin.x64 下的 xtquant 安装目录。
         real_sp = None
         start = os.path.abspath(__file__)
         for _ in range(8):
@@ -632,11 +571,8 @@ def _load_native_xtdata():
 
         loaded = None
         if real_sp:
-            # Import the real xtquant PACKAGE (not xtdata.py standalone) so its
-            # package-relative imports (xtbson etc.) resolve. Un-shadow our RPC
-            # shim (python/xtquant, src/xtquant) which otherwise wins on sys.path:
-            # put the real site-packages first and drop any already-imported shim
-            # xtquant modules (their __file__ is not under bin.x64/).
+            # 让终端的 site-packages 优先，并移除已加载的兼容层模块，
+            # 以便原生 xtquant 包解析 xtbson 等包内依赖。
             if real_sp not in sys.path:
                 sys.path.insert(0, real_sp)
             for name in [n for n in list(sys.modules) if n == "xtquant" or n.startswith("xtquant.")]:
@@ -949,8 +885,8 @@ class BigQmtMarketDataProvider:
             return
         seen.add(market)
         try:
-            print("[bigqmt_market] %s narrowed to %d %s; pass types=['all'] for "
-                  "every instrument the exchange lists" % (market, kept, total_hint))
+            print("[bigqmt_market] %s 已筛选出 %d 个标的（%s）。查询交易所全部标的请传 types=['all']。"
+                  % (market, kept, total_hint))
         except Exception:
             pass
 
@@ -1033,7 +969,7 @@ class BigQmtMarketDataProvider:
                 if not getattr(self, "_option_tick_fallback_warned", False):
                     self._option_tick_fallback_warned = True
                     log.warning(
-                        "option tick fallback failed for %s: %s",
+                        "期权逐笔行情回退查询失败，标的=%s：%s",
                         missing_options, exc,
                     )
 
@@ -1138,7 +1074,7 @@ class BigQmtMarketDataProvider:
                 if callable(unsubscribe):
                     unsubscribe(handle)
             except Exception as exc:
-                log.warning("full tick warm-up unsubscribe(%s) failed for %s: %s",
+                log.warning("快照预热退订失败，订阅号=%s，标的=%s：%s",
                             handle, sorted(codes), exc)
         return len(expired)
 
@@ -1176,7 +1112,7 @@ class BigQmtMarketDataProvider:
         if value <= 0:
             if not getattr(self, "_tick_subscribe_warned", False):
                 self._tick_subscribe_warned = True
-                log.warning("full tick warm-up subscribe_whole_quote(%s) failed: %r",
+                log.warning("快照预热订阅失败，标的=%s：%r",
                             fresh, handle)
             return data
         with state["lock"]:
@@ -1198,9 +1134,9 @@ class BigQmtMarketDataProvider:
             if time.monotonic() >= deadline:
                 break
         still_missing = self._tick_unanswered(fresh, data)
-        log.info("full tick warm-up: subscribed %s (handle %s), %s after %.1fs",
+        log.info("快照预热已订阅 %s（订阅号 %s），%s，等待 %.1f 秒",
                  fresh, value,
-                 "all answered" if not still_missing else "still empty: %s" % still_missing,
+                 "均已返回行情" if not still_missing else "仍无行情：%s" % still_missing,
                  time.monotonic() - now)
         return data
 
@@ -1815,9 +1751,8 @@ class BigQmtMarketDataProvider:
         if marker in seen:
             return
         seen.add(marker)
-        print("[bigqmt_rpc] get_trading_dates(%s): SDK calendar empty, "
-              "ContextInfo index calendar answered %d rows -- treating the "
-              "empty as 'calendar not loaded', not 'closed' (#391)"
+        print("[bigqmt_rpc] get_trading_dates(%s)：SDK 日历为空，"
+              "ContextInfo 指数日历返回 %d 条，判定 SDK 日历尚未加载（#391）"
               % (market, rows))
 
     def get_holidays(self):
@@ -2357,7 +2292,7 @@ class BigQmtMarketDataProvider:
             try:
                 details[code] = self.get_option_detail_data(code) or {}
             except Exception as exc:
-                log.warning("get_option_detail_data failed for %s: %s", code, exc)
+                log.warning("查询期权合约 %s 的详情失败：%s", code, exc)
                 details[code] = {}
         return details
 

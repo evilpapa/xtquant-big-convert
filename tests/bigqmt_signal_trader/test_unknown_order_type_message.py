@@ -38,15 +38,15 @@ class MissingTest(unittest.TestCase):
     """Nothing supplied: the original message is still the right one."""
 
     def test_no_parameters(self):
-        self.assertEqual(_error({}), "action or order_type is required")
+        self.assertEqual(_error({}), "action 或 order_type 是必需的")
 
     def test_an_empty_order_type(self):
         self.assertEqual(_error({"order_type": ""}),
-                         "action or order_type is required")
+                         "action 或 order_type 是必需的")
 
     def test_an_explicit_none(self):
         self.assertEqual(_error({"order_type": None}),
-                         "action or order_type is required")
+                         "action 或 order_type 是必需的")
 
 
 class UnrecognisedTest(unittest.TestCase):
@@ -55,7 +55,7 @@ class UnrecognisedTest(unittest.TestCase):
     def test_it_does_not_claim_one_was_required(self):
         message = _error({"order_type": 9999})
 
-        self.assertNotIn("is required", message)
+        self.assertNotIn("是必需的", message)
 
     def test_it_quotes_the_value_it_rejected(self):
         self.assertIn("9999", _error({"order_type": 9999}))

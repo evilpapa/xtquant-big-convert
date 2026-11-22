@@ -1,11 +1,8 @@
 # coding: utf-8
-"""Local private config example for the QMT python directory.
+"""QMT 端的私有配置示例。
 
-Copy this file to the QMT python directory as:
-
-    bigqmt_signal_trader_qmt_config.py
-
-Do not commit the real file. It may contain account ids and Valkey credentials.
+复制为 bigqmt_signal_trader_qmt_config.py，放到 QMT 的 python 目录。
+真实配置可能含账号和 Valkey 凭据，请勿提交到版本库。
 """
 
 BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
@@ -37,85 +34,63 @@ BIGQMT_CONFIG = {
     # 异步下载任务和全推快照缓存不可用（这两个在大 QMT 上本来就默认关闭）。
     # 委托/成交回调不受影响
     # "valkey_enabled": False,
-    "host": "127.0.0.1",
-    "port": 6379,
-    "db": 5,
+    "host":     "127.0.0.1",
+    "port":            6379,
+    "db":                 5,
     "username": "",
     "password": "",
-    # Keep order RPC disabled unless you explicitly want remote order/cancel.
+    # 默认关闭远程下单和撤单。
     "rpc_allow_order_methods": False,
     # 未指定 strategy_name 的委托带的 投资备注，默认 "bigqmt_rpc"。
     # 注意这不是内部字段：QMT 把它显示在 委托 列表的「报单来源」列里
     # （issue #154），任何看那个界面的人都能看到。设成自己的名字，或者设成
     # "" 让该列留空 —— 和手动下单一样。单次调用传 strategy_name= 始终优先。
     # "rpc_default_strategy_name": "",
-    # Trade-context methods (LISTENER_DEFERRED_METHODS) always run on QMT's
-    # run_time("adjust", ...) callback -- get_trade_detail_data returns EMPTY
-    # off the main strategy thread. That is enforced when the listener list is
-    # expanded, so no value below can move them (#244).
+    # get_trade_detail_data 在主策略线程外返回空结果，依赖交易上下文的方法
+    # （LISTENER_DEFERRED_METHODS）始终由 QMT 的 adjust 回调执行（#244）。
     #
-    # rpc_background_threads is therefore a pure latency choice: False (the
-    # adjust-thread drain) for every transport. The drain costs at most one
-    # adjust tick; a background thread costs one tick per GIL acquisition and
-    # a round trip has several (#343, live terminal 2026-09-22, ms):
-    #     valkey  True ping 407 / positions 197    False ping 102 / positions 103
-    # True is only for a transport that cannot drain (none of the shipped
-    # ones need it).
-    "rpc_process_in_listener": True,
-    "rpc_listener_methods": ("*",),
-    "rpc_background_threads": False,
-    "schedule_adjust": True,
+    # 各传输方式默认由 adjust 处理队列，最多等一个调度周期。
+    # 后台线程每次获取 GIL 都需等待，一次请求可能等多次（#343）。
+    # 仅在传输方式无法由 adjust 处理队列时启用后台线程。
+    "rpc_process_in_listener":  True,
+    "rpc_listener_methods":     ("*",),
+    "rpc_background_threads":   False,
+    "schedule_adjust":          True,
     "schedule_adjust_interval": "100nMilliSecond",
-    # How long one adjust tick may keep the strategy thread running queued
-    # RPC requests (#303). Unset = one adjust interval, never under 0.5s;
-    # what does not fit waits for the next tick. 0 disables the bound.
+
+    # 单次 adjust 处理 RPC 队列的时间上限（#303）。默认一个调度周期且至少 0.5 秒。
+    # 超出预算的请求留到下一轮，设为 0 取消上限。
     # "drain_budget_seconds": 0.5,
-    # Heavy reads leave the adjust thread for one worker thread in drain mode
-    # (#351): financial data, formulas, and by size a market-token
-    # get_full_tick, > rpc_heavy_codes_threshold codes, tick period or a date
-    # window in get_market_data_ex. QMT releases the GIL for most of those
-    # reads, so the tick keeps its 100ms average and its worst case shrinks
-    # from the whole read to a fraction (measured: 200ms full-market
-    # get_full_tick -> tick max 0.25-0.33s; 2.1s get_financial_data -> ~0.5s).
-    # Their reply pays 1-2 ticks instead of one. download_* holds the GIL for
-    # the whole call and stays inline; light reads and every trade query stay
-    # on the adjust thread as before.
+    # 大查询可交给一个工作线程（#351），包括财务、公式、全市场行情和
+    # get_market_data_ex 的多标的、逐笔或日期窗口查询。
+    # QMT 在多数这类查询期间释放 GIL，减少 adjust 卡顿，应答可能多等一轮。
+    # 下载、轻量查询和交易查询仍在 adjust 线程执行。
     # "rpc_heavy_offload": True,
     # "rpc_heavy_codes_threshold": 20,
-    # The default mode calls get_full_tick through RPC. Enable this cache only
-    # if full-market payloads are too large for your latency/CPU budget.
-    # When a client calls get_full_tick, it renews demand for 10 seconds.
-    # Symbol-list demands refresh every full_tick_refresh_interval_seconds; whole-market
-    # (SH/SZ/BJ/HK) demands refresh on the slower market interval so a ~50k row snapshot
-    # is not pulled every fast tick.
-    "full_tick_cache_enabled": False,
-    "full_tick_demand_ttl_seconds": 10,
-    "full_tick_cache_ttl_seconds": 10,
-    "full_tick_refresh_interval_seconds": 0.5,
-    "full_tick_market_refresh_interval_seconds": 3,
-    # Wall-clock budget for one refresh round; keeps a slow round from stalling the
-    # strategy thread (the in-flight demand always completes).
+    # get_full_tick 默认走 RPC。全市场数据过大时可开启按需快照缓存。
+    # 客户端查询会续期需求，默认有效 10 秒。代码列表按常规间隔刷新，
+    # 全市场（SH/SZ/BJ/HK）使用较慢的间隔。
+    "full_tick_cache_enabled":                   False,
+    "full_tick_demand_ttl_seconds":                 10,
+    "full_tick_cache_ttl_seconds":                  10,
+    "full_tick_refresh_interval_seconds":          0.5,
+    "full_tick_market_refresh_interval_seconds":     3,
+
+    # 每轮刷新的耗时预算，已开始的单项查询会执行完毕。
     "full_tick_refresh_max_wall_seconds": 0.3,
-    "full_tick_max_requests": 8,
-    # Async download jobs: clients submit download_history_data(2) as a job; the
-    # strategy thread downloads download_job_chunk_size symbols per tick (capped by
-    # download_job_max_wall_seconds), so a long download never blocks the RPC pump.
-    # chunk_size is the smallest per-tick block — keep it modest if downloads are slow.
-    # Disabled: the full terminal's xtdata SDK can't reach a data service to
-    # download. Supplement history via the terminal's 数据管理/补充数据 UI, then read
-    # it over RPC (get_market_data_ex/get_local_data). Enable only where a
-    # MiniQMT/xtdata data service is connectable.
-    "download_jobs_enabled": False,
-    "download_job_chunk_size": 10,
-    "download_job_max_wall_seconds": 0.5,
-    "download_job_ttl_seconds": 3600,
-    # Push order_callback/deal_callback details to Valkey so clients get real-time
-    # on_stock_order / on_stock_trade callbacks (MiniQMT style) instead of polling.
+    "full_tick_max_requests":               8,
+
+    # 异步下载任务由策略线程分批处理。每批标的数和每轮耗时由下列参数控制。
+    # 仅在可连接 MiniQMT/xtdata 数据服务时启用。大 QMT 可在终端的
+    # 「数据管理 / 补充数据」下载历史数据，再通过 RPC 读取。
+    "download_jobs_enabled":         False,
+    "download_job_chunk_size":          10,
+    "download_job_max_wall_seconds":   0.5,
+    "download_job_ttl_seconds":       3600,
+
+    # 通过 Valkey 推送委托和成交回报，供客户端触发 on_stock_order / on_stock_trade。
     "exec_events_enabled": True,
-    # Dump the raw order_callback/deal_callback object fields to the QMT output
-    # panel, and attach them to the published event as "raw_fields". Prints on
-    # every callback, so keep it off outside a diagnosis window. Turn it on to
-    # observe what m_nDirection / m_nOffsetFlag actually carry in live callbacks
-    # — the buy/sell mapping in exec_events.py currently assumes 48/49 there.
+    # 诊断时可开启，在策略面板打印每次回调的原始字段，并随 raw_fields 发布。
+    # 用于核对 m_nDirection / m_nOffsetFlag 的实际值，当前买卖映射按 48/49 处理。
     "exec_events_debug_raw_fields": False,
 }

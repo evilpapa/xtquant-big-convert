@@ -55,7 +55,7 @@ class ReconnectLogThrottleTest(unittest.TestCase):
             channel.start_subscriber(["x"], lambda topic, data: None)
             time.sleep(seconds)
             channel.stop()
-        lines = [l for l in buffer.getvalue().splitlines() if "reconnecting" in l]
+        lines = [l for l in buffer.getvalue().splitlines() if "正在重新连接 Valkey 行情订阅" in l]
         return valkey, lines
 
     def test_it_keeps_retrying_every_second(self):
@@ -83,7 +83,7 @@ class ReconnectLogThrottleTest(unittest.TestCase):
     def test_the_report_says_which_attempt_it_is(self):
         """跳号报告必须带次数，否则读的人无法判断断了多久。"""
         _, lines = self._run_outage(3.0)
-        self.assertTrue(any("attempt" in l for l in lines),
+        self.assertTrue(any("第 1 次" in l for l in lines),
                         "报告里没有尝试次数：%s" % lines[:2])
 
 

@@ -24,7 +24,13 @@ from .option_analytics import (
     implied_volatility,
     option_greeks,
 )
-from .xtquant_compat import BigQmtRpcClient, BigQmtXtData, BigQmtXtTrader
+
+def __getattr__(name):
+    if name in ("BigQmtRpcClient", "BigQmtXtData", "BigQmtXtTrader"):
+        from . import xtquant_compat
+
+        return getattr(xtquant_compat, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "AccountSnapshot",

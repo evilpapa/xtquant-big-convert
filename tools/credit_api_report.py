@@ -529,10 +529,12 @@ def main(argv=None):
                         help="查柜台那条路等回调的秒数（默认 0，不等）。实盘实测回调投递在 MainThread 上，而 handler 也在 MainThread —— 等待永远等不到，还白占 adjust 主线程。结果随后落进缓存，下一次调用取到")
     args = parser.parse_args(argv)
 
+    from bigqmt_signal_trader.local_env import read_local_env
     from bigqmt_signal_trader.xtquant_compat import XtQuantTrader
     from bigqmt_signal_trader.version import __version__ as client_version
 
-    account_id = args.account or os.environ.get("BIGQMT_ACCOUNT_ID") or ""
+    account_id = (args.account or read_local_env().get("BIGQMT_ACCOUNT_ID", "").strip()
+                  or os.environ.get("BIGQMT_ACCOUNT_ID") or "")
     trader = XtQuantTrader(None, int(time.time()) % 100000,
                            account_id=account_id or None)
     trader.start()
@@ -558,7 +560,7 @@ def main(argv=None):
         print("")
         print("这个脚本要能找到账号和 valkey/zmq 配置，方式任选其一：")
         print("  1. 在有 bigqmt_signal_trader_client_config.py 的目录下运行；")
-        print("  2. 设环境变量 BIGQMT_ACCOUNT_ID（以及 valkey 那几个）；")
+        print("  2. 在当前目录 .env 或环境变量中设置 BIGQMT_ACCOUNT_ID 和 Valkey 连接参数；")
         print("  3. 加 --account <账号> 参数。")
         print("确认 QMT 终端开着、策略在跑，再重试。")
         try:

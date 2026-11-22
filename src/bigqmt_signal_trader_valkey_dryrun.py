@@ -1,8 +1,8 @@
 # coding: utf-8
-"""Big QMT Valkey dry-run strategy entry.
+"""Big QMT Valkey 模拟运行策略入口。
 
-This entry reads Valkey db5 test signals and writes Valkey state, but orders are
-DryRunOrderGateway orders only. It does not submit real QMT orders.
+此入口从 Valkey db5 测试信号读取数据并将状态写入 Valkey，但订单只会使用
+DryRunOrderGateway，不会提交真实的 QMT 订单。
 """
 
 from bigqmt_signal_trader_strategy import (  # noqa: E402
@@ -19,10 +19,10 @@ from bigqmt_signal_trader_strategy import (  # noqa: E402
 from bigqmt_signal_trader.adapters.valkey_common import local_valkey_config
 
 
-ACCOUNT_ID = "bigqmt_probe"
-VALKEY_HOST = "127.0.0.1"
-VALKEY_PORT = 6379
-VALKEY_DB = 5
+ACCOUNT_ID      = "bigqmt_probe"
+VALKEY_HOST     = "127.0.0.1"
+VALKEY_PORT     = 6379
+VALKEY_DB       = 5
 VALKEY_USERNAME = ""
 VALKEY_PASSWORD = ""
 
@@ -33,9 +33,9 @@ try:
 except Exception:
     BIGQMT_CONFIG = {}
 
-VALKEY_HOST = BIGQMT_CONFIG.get("host", VALKEY_HOST)
-VALKEY_PORT = int(BIGQMT_CONFIG.get("port", VALKEY_PORT))
-VALKEY_DB = int(BIGQMT_CONFIG.get("db", VALKEY_DB))
+VALKEY_HOST     = BIGQMT_CONFIG.get("host", VALKEY_HOST)
+VALKEY_PORT     = int(BIGQMT_CONFIG.get("port", VALKEY_PORT))
+VALKEY_DB       = int(BIGQMT_CONFIG.get("db", VALKEY_DB))
 VALKEY_USERNAME = BIGQMT_CONFIG.get("username", VALKEY_USERNAME)
 VALKEY_PASSWORD = BIGQMT_CONFIG.get("password", VALKEY_PASSWORD)
 

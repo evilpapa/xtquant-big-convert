@@ -1,8 +1,7 @@
 # coding: utf-8
-"""BigQMT Valkey RPC latency benchmark.
+"""大 QMT Valkey RPC 延迟测试。
 
-Measures end-to-end latency for ping (no QMT API call) and get_full_tick
-(real ContextInfo call) to separate transport cost from API cost.
+分别测量 ping 和 get_full_tick，观察传输与行情接口的耗时。
 """
 import os
 import statistics
@@ -13,10 +12,7 @@ from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
 
 
 def _load_valkey_config():
-    """Pull connection details from the local client config or env vars.
-
-    Never hardcode secrets in the repo.
-    """
+    """从客户端配置或环境变量读取连接参数。"""
     try:
         from bigqmt_signal_trader.xtquant_compat import load_client_config
 
@@ -43,19 +39,19 @@ def bench(r, method, params, n=20, timeout=6):
             else:
                 errors += 1
                 if errors <= 2:
-                    print("  %s #%d error: %s" % (method, i, resp.get("error", "")[:120]))
+                    print("  %s 第 %d 次返回错误：%s" % (method, i, resp.get("error", "")[:120]))
         except Exception as e:
             errors += 1
             if errors <= 2:
-                print("  %s #%d exc: %s" % (method, i, e))
+                print("  %s 第 %d 次抛出异常：%s" % (method, i, e))
     if not lats:
-        print("%-18s: ALL FAILED (%d errors)" % (method, errors))
+        print("%-18s: 全部失败（%d 次错误）" % (method, errors))
         return
     lats.sort()
     p50 = statistics.median(lats)
     p95 = lats[int(len(lats) * 0.95)] if len(lats) >= 20 else lats[-1]
     print(
-        "%-18s: n=%d ok=%d fail=%d  min=%.0f  p50=%.0f  p95=%.0f  max=%.0f  avg=%.0f ms"
+        "%-18s: 样本=%d 成功=%d 失败=%d  最小=%.0f  p50=%.0f  p95=%.0f  最大=%.0f  平均=%.0f 毫秒"
         % (
             method,
             len(lats),
@@ -72,15 +68,15 @@ def bench(r, method, params, n=20, timeout=6):
 
 def main():
     r = build_valkey_client(VALKEY)
-    # warmup
+    # 预热连接
     try:
         call_valkey_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
-        print("warmup ping ok\n")
+        print("ping 预热成功\n")
     except Exception as e:
-        print("warmup FAILED: %s\n" % e)
+        print("预热失败：%s\n" % e)
         return
 
-    print("=== latency benchmark (20 calls each) ===")
+    print("=== 延迟测试（每项调用 20 次） ===")
     bench(r, "ping", {}, n=20)
     bench(r, "get_full_tick", {"codes": ["000001.SZ"]}, n=20)
     bench(r, "get_full_tick", {"codes": ["000001.SZ", "600000.SH", "000333.SZ"]}, n=20)

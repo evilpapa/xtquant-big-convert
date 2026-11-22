@@ -53,7 +53,7 @@ QMT 模型交易 (COM10) ←→ com0com ←→ Windows 桥接 (COM11) ←→ Val
    ```
 
    仓库根目录的 `start_serial_bridge.ps1` 会自动从 `bigqmt_signal_trader_qmt_config.py` 读取 Valkey 连接配置（避免桥接连 `127.0.0.1` 而客户端用的是另一台 Valkey，那会报
-   `ERROR Bridge stopped (TimeoutError)`），并在启动前预检 Valkey 连通性和串口：
+   `ERROR 桥接已停止（TimeoutError…）`），并在启动前预检 Valkey 连通性和串口：
 
    ```powershell
    .\start_serial_bridge.ps1 -CheckOnly   # 只预检
@@ -61,7 +61,7 @@ QMT 模型交易 (COM10) ←→ com0com ←→ Windows 桥接 (COM11) ←→ Val
    .\start_serial_bridge.ps1 -LogFile .\bridge.log -ValkeyPubsub
    ```
 
-5. 确认桥接输出 `QMT serial session ready`，然后用现有 Valkey 客户端执行 `ping`、`get_full_tick` 等只读请求。客户端仍配 `transport=valkey`，账号、Valkey 地址和数据库与桥接一致。默认使用 `bigqmt:rpc:queue:{account_id}` 及原有响应键、列表和频道；使用 Valkey pub/sub 发请求的客户端需给桥接加 `--valkey-pubsub`。同一账号只能运行一个队列消费者，避免让直连 Valkey 的 QMT 策略与串口桥接同时消费。
+5. 确认桥接输出 `QMT 串口会话已就绪`，然后用现有 Valkey 客户端执行 `ping`、`get_full_tick` 等只读请求。客户端仍配 `transport=valkey`，账号、Valkey 地址和数据库与桥接一致。默认使用 `bigqmt:rpc:queue:{account_id}` 及原有响应键、列表和频道；使用 Valkey pub/sub 发请求的客户端需给桥接加 `--valkey-pubsub`。同一账号只能运行一个队列消费者，避免让直连 Valkey 的 QMT 策略与串口桥接同时消费。
 
 串口每帧是 `8 位十六进制 CRC32` + `TAB` + `UTF-8 JSON` + `LF`。线程负责分帧和部分写入，QMT 的 `adjust` 从内存队列取请求；委托与成交回报由桥接发布到现有 Valkey 频道，行情全推也使用原频道。行情推送拥塞时会丢弃超出队列容量的更新，委托与成交回报使用独立队列。默认单帧上限 8 MiB，大行情按批查询，或者同时调整 QMT 的 `serial.max_frame_bytes` 与桥接的 `--max-frame-bytes`。延迟还取决于 QMT 调度间隔和串口传输量，请在目标终端实测。
 

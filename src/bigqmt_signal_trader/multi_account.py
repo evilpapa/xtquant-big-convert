@@ -83,8 +83,7 @@ class MultiAccountRpcServiceManager:
         self.account_id = services[0].account_id
         self.valkey = services[0].valkey
         self.listen_valkey = services[0].listen_valkey
-        # QMT calls order_callback / deal_callback for the bound (primary)
-        # account only; the secondaries' events come from polling (#320).
+        # QMT 只为绑定的主账号触发委托和成交回调，其他账号通过轮询获取回报（#320）。
         self.exec_poller = exec_poller
 
     def start(self):
@@ -92,7 +91,7 @@ class MultiAccountRpcServiceManager:
             try:
                 s.start()
             except Exception as e:
-                logger.error("multi_account start %s: %s", s.account_id[:3], e)
+                logger.error("多账号 RPC 启动失败，账号前缀=%s：%s", s.account_id[:3], e)
 
     def stop(self):
         for s in self._services:
@@ -144,7 +143,7 @@ class MultiAccountRpcServiceManager:
             try:
                 poller.poll()
             except Exception as e:
-                logger.error("multi_account: secondary exec poll failed: %s", e)
+                logger.error("多账号：附属账号交易回报轮询失败：%s", e)
         return processed
 
     def secondary_exec_poll_status(self):
@@ -243,12 +242,10 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
     sink = getattr(primary, "valkey", None)
     identity_valkey = sink
     if sink is None:
-        # Without valkey, exec events can go out on the quote push
-        # channel (exec:* topics, #76); the manager holds that channel's
-        # publish, so wrap it as a push sink.
+        # 没有 Valkey 时，可通过推送通道的 exec:* 主题发送交易回报（#76）。
         sink = _push_sink_from_handlers(primary.handlers)
     if not callable(query_rows) or sink is None:
-        logger.warning("multi_account: secondary exec poll unavailable (gateway=%s sink=%s)",
+        logger.warning("多账号：无法轮询附属账号交易回报（网关=%s，发布端可用=%s）",
                        type(gateway).__name__, sink is not None)
         return None
     from .secondary_exec_poll import SecondaryExecPoller, build_row_publisher
@@ -256,35 +253,33 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
     publish = build_row_publisher(sink, context_info=context_info, identity_valkey=identity_valkey)
     poller = SecondaryExecPoller(
         secondary_accounts, query_rows, publish, interval_seconds=interval,
-        log=lambda text: logger.warning("multi_account: %s", text))
-    logger.info("multi_account: secondary exec poll every %.1fs for %s",
+        log=lambda text: logger.warning("多账号：%s", text))
+    logger.info("多账号：每 %.1f 秒轮询一次附属账号 %s 的交易回报",
                 interval, [a[:3] + "***" for a in poller.accounts])
     return poller
 
 
 def _build_secondary(primary, account_id, config):
-    """Build a secondary ``ValkeyPubSubRpcService`` sharing the primary's handlers.
+    """为附属账号创建与主账号共享处理器的 ValkeyPubSubRpcService。
 
-    The secondary gets its own Valkey connection (so ``stop()`` on the secondary
-    doesn't kill the primary's listener) and a ``SecondaryHandlersProxy`` that
-    injects the secondary's account_id into every request.
+    附属账号有独立的 Valkey 连接，停止时不会影响主账号的监听器。
+    SecondaryHandlersProxy 将附属账号的 account_id 注入每个请求。
     """
     rpc_config = dict((config.get("rpc") or {}))
     transport_name = str(rpc_config.get("transport") or "valkey").lower()
     if transport_name not in ("valkey", "", "default"):
-        logger.warning("multi_account: secondary %s*** unavailable for transport %r", account_id[:3], transport_name)
+        logger.warning("多账号：传输方式 %r 不支持附属账号服务（账号前缀=%s）",
+                       transport_name, account_id[:3])
         return None
     try:
         from .valkey_rpc import ValkeyPubSubRpcService
         from .transports.valkey_transport import ValkeyTransport
         from .adapters import valkey_common
     except ImportError:
-        logger.warning("multi_account: secondary build failed (import error)")
+        logger.warning("多账号：导入依赖失败，无法创建附属账号服务")
         return None
 
-    # Build an independent Valkey client for the secondary service.
-    # Shares the same host/port/db/password as primary, but is a separate
-    # connection so closing it during stop() won't affect the primary.
+    # 附属账号沿用主账号的 Valkey 地址、数据库和凭据，使用独立连接。
     try:
         valkey_config = dict(config.get("valkey") or {})
         valkey_config.update(dict(rpc_config.get("valkey") or {}))

@@ -85,8 +85,7 @@ class OrderIdentityJournal(object):
                 or now - self._last_warning_at >= _WARNING_INTERVAL_SECONDS):
             self._last_warning_at = now
             try:
-                print("[bigqmt_rpc] order identity journal %s; restart recovery "
-                      "may be incomplete" % self.error)
+                print("[bigqmt_rpc] 委托归属日志异常：%s。重启后可能无法完整恢复。" % self.error)
             except Exception:
                 pass
 

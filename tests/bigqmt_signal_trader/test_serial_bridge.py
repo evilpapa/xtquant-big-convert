@@ -332,8 +332,8 @@ def test_bridge_warns_and_stops_without_an_account(monkeypatch, caplog):
     assert "BIGQMT_ACCOUNT_ID" in caplog.text
 
 
-@pytest.mark.parametrize("scheme", ["valkey", "redis"])
-def test_bridge_startup_names_the_side_that_failed(monkeypatch, caplog, scheme):
+@pytest.mark.parametrize("source, scheme", [("argument", "valkey"), ("dotenv", "redis")])
+def test_bridge_startup_names_the_side_that_failed(tmp_path, monkeypatch, caplog, source, scheme):
     class FakeValkey:
         @classmethod
         def from_url(cls, url, **kwargs):
@@ -358,12 +358,21 @@ def test_bridge_startup_names_the_side_that_failed(monkeypatch, caplog, scheme):
     monkeypatch.setitem(sys.modules, "valkey.backoff", backoff)
     monkeypatch.setitem(sys.modules, "valkey.retry", retry)
     monkeypatch.setenv("BIGQMT_ACCOUNT_ID", " acct ")
+    monkeypatch.chdir(tmp_path)
+    dotenv_url = f"{scheme}://user:secret@127.0.0.1:6399/5"
+    argv = ["--valkey-url", dotenv_url]
+    if source == "dotenv":
+        monkeypatch.setenv("BIGQMT_SERIAL_VALKEY_URL", "valkey://wrong-host:6379/5")
+        monkeypatch.delenv("BIGQMT_ACCOUNT_ID")
+        (tmp_path / ".env").write_text(
+            f"BIGQMT_ACCOUNT_ID=acct\nBIGQMT_SERIAL_VALKEY_URL={dotenv_url}\n",
+            encoding="utf-8",
+        )
+        argv = []
 
     with caplog.at_level(logging.ERROR):
-        code = serial_valkey_bridge.main([
-            "--valkey-url", scheme + "://user:secret@127.0.0.1:6399/5",
-        ])
+        code = serial_valkey_bridge.main(argv)
 
     assert code == 1
-    assert "Cannot reach Valkey at 127.0.0.1:6399/5" in caplog.text
+    assert "无法连接 Valkey 127.0.0.1:6399/5" in caplog.text
     assert "secret" not in caplog.text

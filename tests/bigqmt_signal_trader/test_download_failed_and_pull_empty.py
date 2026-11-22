@@ -33,7 +33,7 @@ class _EmptyPullClient(FakeClient):
         self.call_params.append((method, params))
         if method == "download_history_data2":
             if self.download_error:
-                raise RuntimeError("download_history_data2 unavailable on this terminal")
+                raise RuntimeError("download_history_data2 下载服务不可用")
             return self.download_reply
         if method == "get_market_data_ex":
             import pandas as pd
@@ -57,7 +57,7 @@ class FailedDownloadWithEmptyPullTest(unittest.TestCase):
     def test_failed_download_and_empty_pull_raises_instead_of_finished(self):
         xt = self._xt()
         seen = []
-        with self.assertRaisesRegex(RuntimeError, "unavailable on this terminal") as caught:
+        with self.assertRaisesRegex(RuntimeError, "下载服务不可用") as caught:
             xt.download_history_data2(["600519.SH"], "tick", "20260910", "20260910",
                                       callback=seen.append, data_wait_seconds=0)
         # The message names the code that got nothing, so the caller can tell
@@ -100,7 +100,7 @@ class FailedDownloadWithEmptyPullTest(unittest.TestCase):
         from bigqmt_signal_trader.xtquant_compat import BigQmtXtData
         xt = BigQmtXtData(_EmptyPullClient(self.dir, download_error=False,
                                            download_reply=False))
-        with self.assertRaisesRegex(RuntimeError, "did not accept the download task"):
+        with self.assertRaisesRegex(RuntimeError, "没有受理这次下载任务"):
             xt.download_history_data2(["600519.SH"], "tick", "20260910", "20260910",
                                       data_wait_seconds=0)
 

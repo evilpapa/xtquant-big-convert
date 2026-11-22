@@ -174,7 +174,7 @@ def test_automatic_cache_write_failure_is_logged_without_losing_rpc_data(tmp_pat
     finally:
         logger.removeHandler(handler)
     assert result["X"] is frame
-    assert any("local cache write failed code=X period=5m: disk full" in r.getMessage()
+    assert any("本地缓存写入失败 code=X period=5m：disk full" in r.getMessage()
                for r in records)
 
 

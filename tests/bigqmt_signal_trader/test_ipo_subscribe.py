@@ -247,7 +247,7 @@ class MappingShapeTest(unittest.TestCase):
             data = compat.BigQmtXtTrader.query_ipo_data(trader, None)
 
         self.assertEqual(data, {})
-        self.assertIn("too old", "".join(caught.output))
+        self.assertIn("版本过旧", "".join(caught.output))
 
     def test_an_empty_response_logs_nothing(self):
         class _Client(object):

@@ -1,27 +1,19 @@
 # coding: utf-8
-"""Systematically test all RPC APIs and MiniQMT alias mapping (end-to-end validation).
+"""验证 RPC 和 MiniQMT 兼容接口的实际应答，包括委托和撤单。
 
-For each method: call it with sensible params, report ok/error, and VALIDATE the
-result is actually correct (not just "call succeeded"). Catches silent failures
-like:
-  - get_positions returns {} when the account HAS positions
-  - submit_order returns SUBMITTED but the order never entered the system
-  - query_orders returns [] because strategy_name didn't match
-
-Config is read from bigqmt_signal_trader_qmt_config (gitignored) or env vars;
-no credentials are hard-coded here. Run from a dir where that config module
-resolves, e.g.:
+记录调用状态和耗时，并查询委托是否进入系统。通过
+bigqmt_signal_trader_qmt_config 或环境变量配置连接。运行示例：
 
     PYTHONPATH="src;D:\\国金证券QMT交易端\\python" python test_all_apis.py
 
-or set BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST / BIGQMT_VALKEY_PORT /
-BIGQMT_VALKEY_DB / BIGQMT_VALKEY_PASSWORD env vars.
+可设置 BIGQMT_ACCOUNT_ID、BIGQMT_VALKEY_HOST、BIGQMT_VALKEY_PORT、
+BIGQMT_VALKEY_DB 和 BIGQMT_VALKEY_PASSWORD。
 """
 import os
 import sys
 import time
 
-# Add src to path so bigqmt_signal_trader resolves when run from repo root.
+# 从仓库运行时，将 src 加入模块搜索路径。
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
@@ -107,9 +99,9 @@ def data_summary(data):
                 len(data.get("records") or []),
             )
         keys = list(data.keys())[:3]
-        return "{%s%s: ...}(%d keys)" % (keys, "" if len(keys) < 3 else ", ...", len(data))
+        return "{%s%s: ...}（%d 个键）" % (keys, "" if len(keys) < 3 else ", ...", len(data))
     if isinstance(data, list):
-        return "[list len=%d]" % len(data)
+        return "[列表长度=%d]" % len(data)
     return repr(data)[:60]
 
 
@@ -118,7 +110,7 @@ def _is_empty(data):
 
 
 def _call(caller, method, params, timeout=12):
-    """Call and return (response, latency_ms, error_str)."""
+    """执行调用，返回应答、毫秒耗时和错误文本。"""
     t0 = time.time()
     try:
         resp = caller(method, params, timeout)
@@ -129,8 +121,8 @@ def _call(caller, method, params, timeout=12):
 
 def main():
     if not ACCOUNT:
-        raise SystemExit("ACCOUNT is empty: set BIGQMT_ACCOUNT_ID or configure bigqmt_signal_trader_qmt_config")
-    # Fill the account_id into the account-query test params now that we know it.
+        raise SystemExit("资金账号为空，请设置 BIGQMT_ACCOUNT_ID 或填写 QMT 端本地配置。")
+    # 为账户查询填入资金账号。
     for i, (method, params, label) in enumerate(TESTS):
         if "account_id" in params and params["account_id"] is None:
             params["account_id"] = ACCOUNT
@@ -185,7 +177,7 @@ def main():
 
     # === 端到端验证 4: 买入/卖出后委托必须进系统 ===
     print("\n--- 端到端验证: 买入/卖出 (仅交易时段) ---")
-    # 用极低价格买入 (确保不成交), 然后查委托确认进了系统
+    # 以低于昨收的限价尝试买入，再检查委托是否进入系统。
     # 先拿一只股票的现价
     tick_resp, _, tick_err = _call(caller, "get_full_tick", {"codes": ["600654.SH"]}, timeout=12)
     if tick_err or not tick_resp.get("ok"):
@@ -193,8 +185,8 @@ def main():
     else:
         d = (tick_resp.get("data") or {}).get("600654.SH", {})
         last_close = float(d.get("lastClose") or d.get("lastPrice") or 3.0)
-        buy_price = round(last_close * 0.8, 2)  # 跌停价, 确保不成交
-        print("  用 600654.SH @%.2f 买入 100 股 (跌停价, 不成交)" % buy_price)
+        buy_price = round(last_close * 0.8, 2)
+        print("  提交 600654.SH 限价买入委托，价格 %.2f，数量 100 股" % buy_price)
 
         # 下单前委托数
         ord_before, _, _ = _call(caller, "query_orders", {}, timeout=12)
@@ -212,7 +204,7 @@ def main():
             print("❌ submit_order 返回错误: %s" % sub_resp.get("error"))
         else:
             server_err = sub_resp.get("server_error") or ""
-            print("✅ submit_order OK (%.0fms)" % sub_ms)
+            print("✅ submit_order 已应答（%.0f 毫秒）" % sub_ms)
             if server_err:
                 print("   ⚠️ server_error: %s" % server_err)
 
@@ -243,7 +235,7 @@ def main():
                     if cancel_err:
                         print("⚠️  cancel_order 失败: %s" % cancel_err)
                     elif cancel_resp and cancel_resp.get("ok"):
-                        print("✅ cancel_order OK (%.0fms) — 已撤单" % cancel_ms)
+                        print("✅ cancel_order 已应答（%.0f 毫秒）" % cancel_ms)
                     else:
                         print("⚠️  cancel_order 返回: %s" % (cancel_resp or {}))
             else:
@@ -255,7 +247,7 @@ def main():
     print("\n" + "=" * 90)
     print("全量 API 测试")
     print("=" * 90)
-    print("%-22s %-8s %-8s %s" % ("method", "ok", "ms", "data summary"))
+    print("%-22s %-8s %-8s %s" % ("方法", "状态", "耗时（毫秒）", "数据摘要"))
     print("-" * 90)
 
     results = {"ok": [], "ok_empty": [], "fail": [], "timeout": []}
@@ -265,7 +257,7 @@ def main():
             is_timeout = "timeout" in err.lower()
             bucket = "timeout" if is_timeout else "fail"
             results[bucket].append((method, err[:60]))
-            print("%-22s %-8s %6.0f   %s" % (method, "TIMEOUT" if is_timeout else "ERROR", dt, err[:50]))
+            print("%-22s %-8s %6.0f   %s" % (method, "超时" if is_timeout else "错误", dt, err[:50]))
             continue
         ok = resp.get("ok")
         data = resp.get("data")
@@ -274,13 +266,13 @@ def main():
         empty = _is_empty(data)
         if ok and not empty:
             results["ok"].append(method)
-            status = "OK"
+            status = "成功"
         elif ok and empty:
             results["ok_empty"].append(method)
-            status = "EMPTY"
+            status = "结果为空"
         else:
             results["fail"].append((method, error))
-            status = "FAIL"
+            status = "失败"
         summary = data_summary(data) if ok else error[:50]
         if ok and method == "get_sector_list" and params.get("allow_fallback"):
             summary += " [允许常用板块兜底，可能不完整]"
@@ -290,10 +282,10 @@ def main():
 
     print("-" * 90)
     print("\n=== 汇总 ===")
-    print("有数据 (OK):     %d 个" % len(results["ok"]))
-    print("成功但空 (EMPTY): %d 个 %s" % (len(results["ok_empty"]), results["ok_empty"]))
-    print("失败 (FAIL):     %d 个 %s" % (len(results["fail"]), [m for m, _ in results["fail"]]))
-    print("超时 (TIMEOUT):  %d 个 %s" % (len(results["timeout"]), [m for m, _ in results["timeout"]]))
+    print("有数据：%d 个" % len(results["ok"]))
+    print("成功但为空：%d 个 %s" % (len(results["ok_empty"]), results["ok_empty"]))
+    print("失败：%d 个 %s" % (len(results["fail"]), [m for m, _ in results["fail"]]))
+    print("超时：%d 个 %s" % (len(results["timeout"]), [m for m, _ in results["timeout"]]))
 
 
 if __name__ == "__main__":

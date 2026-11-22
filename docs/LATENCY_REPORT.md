@@ -152,7 +152,7 @@ exec 时读的，`reload_deployment()` 刷不了），然后对 100 个只读方
 取中位。判断模式是否真的生效**只能看日志**：
 
 ```
-[bigqmt_rpc] started queue=... background_threads=False
+[bigqmt_rpc] 已启动 queue=... background_threads=False
 ```
 
 配置写了 `False` 不代表生效——0.3.28 之前 `_resolve_background_threads` 里有一张

@@ -132,7 +132,7 @@ class ErrorContractTest(unittest.TestCase):
         resp = _rpc_call(_handlers({}))
 
         self.assertFalse(resp["ok"])
-        self.assertIn("not bound", resp["error"])
+        self.assertIn("未绑定", resp["error"])
 
     def test_native_raise_propagates(self):
         def boom(*args):

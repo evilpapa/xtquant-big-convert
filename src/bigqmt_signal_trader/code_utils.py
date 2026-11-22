@@ -5,38 +5,35 @@ import re
 
 _DIGIT_CODE_RE = re.compile(r"^\d{6}$")
 
-# Tokens that name a whole exchange rather than one instrument.
+# 表示整个交易所而非某一只具体标的的交易所标识。
 #
-# Stock markets are what get_markets() reports, so they stay their own set.
-# Futures exchanges are listed separately because a futures exchange carries
-# only futures: the token already says what kind of instrument it holds, so
-# nothing has to be narrowed or asked of the caller there (issues #95, #104).
+# get_markets() 返回的交易所代码中包括股票市场，因此将它们放在独立集合中。
+# 期货交易所另列集合，因为期货交易所只交易期货：交易所标识本身已经说明了
+# 标的类型，因此无需缩小范围，也无需调用方额外指定（issues #95、#104）。
 STOCK_MARKET_CODES = frozenset({"SH", "SZ", "BJ", "HK"})
 OPTION_MARKET_CODES = frozenset({"SHO", "SZO"})
 FUTURES_MARKET_CODES = frozenset({"IF", "SF", "DF", "ZF", "INE", "GF"})
 EXCHANGE_TOKENS = STOCK_MARKET_CODES | OPTION_MARKET_CODES | FUTURES_MARKET_CODES
 
 
-# QMT ContextInfo uses market-specific suffixes for all instrument types.
+# QMT ContextInfo 对所有标的类型都使用交易所特定后缀。
 _QMT_SUFFIXES = (
-    ".SH", ".SZ", ".BJ", ".HK",            # Stock markets
+    ".SH", ".SZ", ".BJ", ".HK",            # 股票交易所
     ".HGT", ".SGT",                        # 港股通（沪/深）
-    ".SHO", ".SZO",                        # Options markets (8-digit codes)
-    ".SF", ".DF", ".IF", ".ZF", ".INE", ".GF",    # Futures markets
+    ".SHO", ".SZO",                        # 期权交易所（8 位代码）
+    ".SF", ".DF", ".IF", ".ZF", ".INE", ".GF",    # 期货交易所
 )
-# Futures symbols are case-sensitive: each exchange has its own convention, and
-# the two are not interchangeable -- "rb2401.SF" (SHFE, lower) is a different
-# string to QMT than "RB2401.SF", while CZCE writes "AP401.ZF" upper. Uppercasing
-# a lowercase futures symbol therefore produces a code QMT does not recognise,
-# which surfaces as an empty quote rather than an error (issue #95).
+# 期货代码区分大小写：各交易所使用自己的书写规则，两种写法不可互换；例如
+# “rb2401.SF”（SHFE，交易所标识前为小写）与 QMT 中的“RB2401.SF”是两个不同字符串，
+# 而郑商所的代码应写作大写的“AP401.ZF”。因此，将小写期货代码统一转为大写后，
+# 会生成 QMT 无法识别的代码，只会返回空行情，而不会报错（issue #95）。
 #
-# #68 fixed this for POSITION rows by bypassing this function; every other path
-# -- orders, quotes, the full-tick cache, the risk guard -- still came through
-# here and got uppercased.
+# issue #68 已通过绕过此函数修复 POSITION 行；其他所有路径（委托、行情、全量
+# tick 缓存、风控等）仍会经过此处，并会将代码转换为大写。
 _CASE_SENSITIVE_SUFFIXES = frozenset({".SF", ".DF", ".IF", ".ZF", ".INE", ".GF"})
 
 
-# 可转债 / 可交换债的代码段。两件事都要靠它：
+# 可转债 / 可交换债的代码段。以下两项都依赖该规则：
 #   1. 裸 6 位码推断市场 —— 沪市转债 110/111/113 是 "1" 开头，落不进 ("5","6")
 #      那条规则，会被判到深市；
 #   2. 最小申报量 —— 债券论「张」，10 张起，不是 100。
@@ -78,17 +75,17 @@ def normalize_stock_code(code):
     if not raw:
         return ""
     text = raw.upper()
-    # If the code already has a recognized suffix, pass it through unchanged —
-    # these are native ContextInfo codes that need no normalization.
+    # 如果代码已经包含可识别的后缀，则直接原样传递；
+    # 这些是无需标准化的原生 ContextInfo 代码。
     for suffix in _QMT_SUFFIXES:
         if text.endswith(suffix):
             prefix = text[:-len(suffix)]
             if prefix and (prefix.isdigit() or prefix[0].isalpha()):
                 if suffix in _CASE_SENSITIVE_SUFFIXES:
-                    # Normalise the suffix, keep the caller's symbol verbatim.
+                    # 规范化后缀，保留调用方传入的标的代码原样。
                     return raw[:-len(suffix)] + suffix
                 return text
-    # Original logic for 6-digit stock codes
+    # 6 位股票代码的原始处理逻辑
     if text.startswith("SH") and _DIGIT_CODE_RE.match(text[2:]):
         return f"{text[2:]}.SH"
     if text.startswith("SZ") and _DIGIT_CODE_RE.match(text[2:]):

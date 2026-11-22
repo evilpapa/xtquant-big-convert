@@ -123,7 +123,7 @@ class RenderedConfigTest(unittest.TestCase):
     def test_generated_files_warn_against_committing_them(self):
         for render in (init_config.render_server_config,
                        init_config.render_client_config):
-            self.assertIn("DO NOT COMMIT", render(_answers()))
+            self.assertIn("请勿提交到版本库", render(_answers()))
 
 
 class PromptFlowTest(unittest.TestCase):

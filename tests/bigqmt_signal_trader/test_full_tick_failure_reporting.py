@@ -90,7 +90,7 @@ class RaisesTheRealFailureTest(unittest.TestCase):
             result = _xtdata(client).get_full_tick(self.codes)
 
         self.assertEqual(len(result), 1)
-        self.assertIn("filtered to 1", " ".join(logs.output))
+        self.assertIn("筛选到 1 条", " ".join(logs.output))
 
 
 class StillRecoversTest(unittest.TestCase):

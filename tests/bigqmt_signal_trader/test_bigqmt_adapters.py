@@ -733,6 +733,6 @@ class UnparsableRowIsolationTest(unittest.TestCase):
             provider.get_positions("acct")
         output = buffer.getvalue()
 
-        self.assertEqual(output.count("skipping unparsable"), 1)
+        self.assertEqual(output.count("跳过无法解析的"), 1)
         self.assertIn("rb2401", output)
         self.assertIn("SHFE", output)

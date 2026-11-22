@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Measure end-to-end Valkey RPC latency."""
+"""测量 Valkey RPC 的端到端延迟。"""
 import argparse
 import os
 import statistics
@@ -11,7 +11,7 @@ from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
 
 
 def _load_valkey_config():
-    """Pull connection details from the local client config or env vars."""
+    """从客户端配置或环境变量读取连接参数。"""
     try:
         from bigqmt_signal_trader.xtquant_compat import load_client_config
 
@@ -29,7 +29,7 @@ def _stats(name, lats):
     lats = sorted(lats)
     n = len(lats)
     print(
-        "%-8s n=%d  min=%.2f  p50=%.2f  p90=%.2f  p99=%.2f  max=%.2f  avg=%.2f ms"
+        "%-8s 样本=%d  最小=%.2f  p50=%.2f  p90=%.2f  p99=%.2f  最大=%.2f  平均=%.2f 毫秒"
         % (
             name,
             n,
@@ -45,11 +45,11 @@ def _stats(name, lats):
 
 def bench_valkey(n):
     r = build_valkey_client(VALKEY)
-    # warmup + connectivity
+    # 预热并检查连通性
     try:
         call_valkey_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
     except Exception as e:
-        print("Valkey server not reachable, skipping valkey leg: %s" % e)
+        print("无法连接 Valkey，跳过该项测试：%s" % e)
         return
     lats = []
     for _ in range(n):
@@ -61,10 +61,10 @@ def bench_valkey(n):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("-n", "--count", type=int, default=100, help="requests per transport")
-    ap.add_argument("--skip-valkey", action="store_true", help="skip the valkey leg")
+    ap.add_argument("-n", "--count", type=int, default=100, help="每种传输方式的请求次数")
+    ap.add_argument("--skip-valkey", action="store_true", help="跳过 Valkey 测试")
     args = ap.parse_args()
-    print("=== transport latency comparison (n=%d each) ===" % args.count)
+    print("=== 传输延迟对比（每项 %d 次） ===" % args.count)
     if not args.skip_valkey:
         bench_valkey(args.count)
 

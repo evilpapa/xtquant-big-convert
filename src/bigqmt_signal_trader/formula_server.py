@@ -1,48 +1,43 @@
-"""Direct client for the Big QMT FormulaServer RPC (default port 58600).
+"""Big QMT FormulaServer RPC 的直接客户端（默认端口 58600）。
 
-Why this exists
+为何需要它
 ---------------
-The RPC bridge in :mod:`valkey_rpc` routes every read through the QMT *strategy*
-process: client -> valkey/zmq -> QMT python thread -> ContextInfo -> back. That
-costs ~13ms (valkey) or ~0.7ms-with-500ms-GIL-spikes (zmq), and every read
-competes for the QMT main-thread GIL against the strategy itself.
+:mod:`valkey_rpc` 中的 RPC 桥接会将所有读取操作都路由到 QMT *策略*进程：
+客户端 -> valkey/zmq -> QMT Python 线程 -> ContextInfo -> 返回。每次读取都需要约
+13 ms（valkey），或约 0.7 ms（zmq），但在 GIL 抛转 500 ms 的情况下会出现延迟，而且每次读取都会
+与策略自身争抢 QMT 主线程的 GIL。
 
-FormulaServer is the C++ quote/reference-data service inside the same QMT
-terminal, listening on the port named in ``config/formulaserver/formulaserver.ini``
-(``[server_formula] address``, default 58600). QMT ships its own client for it at
-``bin.x64/Lib/site-packages/qmt_api``. Talking to it directly bypasses the
-strategy process entirely: measured p50 **0.07ms**, and zero GIL contention.
+FormulaServer 是同一 QMT 终端内的 C++ 行情/参考数据服务，通过
+``config/formulaserver/formulaserver.ini`` 中的
+``[server_formula] address`` 指定监听端口（默认为 58600）。QMT 自带的客户端位于
+``bin.x64/Lib/site-packages/qmt_api``。直接通信可以完全绕过策略进程：实测 p50
+为 **0.07 ms**，且不存在 GIL 竞争。
 
-What it can and cannot do
+能做什么与不能做什么
 -------------------------
-FormulaServer serves market/reference data ONLY. Every account, position, order
-and trade method answers ``ErrorID 200005 未找到该服务``, as do ``getFullTick``
-and ``getQuote``. So this is a read fast-path, never a replacement for the RPC
-bridge — trading, account queries and 五档 snapshots stay on it.
+FormulaServer 仅提供行情/参考数据。所有账户、持仓、委托和成交方法都会返回
+``ErrorID 200005 未找到该服务``，``getFullTick`` 和 ``getQuote`` 也是如此。因此，
+这是只读快速通道，绝不能替代 RPC 桥接；交易、账户查询和五档快照仍应走桥接。
 
-Deliberately NOT routed here, despite FormulaServer exposing something similar:
+尽管 FormulaServer 暴露了类似接口，但以下方法仍被刻意排除在路由之外：
 
-* ``get_trading_dates`` — FormulaServer wants a *stock code* (``000001.SZ``);
-  passing a market (``SH``) silently returns ``[]``. Our callers pass markets.
-* ``get_instrument`` / ``get_instrument_detail`` — getInstrumentDetail here
-  answers the daily reference fields (TotalVolume, OpenDate) with zeros or
-  stale snapshots on the Guojin build while the bridge's ContextInfo path
-  answers correctly (#392). Contract metadata is a record of reference data,
-  not a quote; it reads through the bridge.
-* ``get_divid_factors`` / ``get_risk_free_rate`` — parameter semantics differ
-  (range vs single date, index vs timetag). A wrong calendar or dividend factor
-  is worse than a slow one.
-  Re-measured 2026-09-04 after someone (me) tried to route it anyway, on the
-  grounds that it is 40x faster and raises nothing: asked for 000001.SZ on
-  20260612 and on 20251015, FormulaServer returned the SAME record both
-  times -- ``{673113600000: [0.3, 0.4, ...]}``, a 1991 timestamp -- while the
-  bridge correctly answered 0.36 and 0.236 for those two ex-dividend days.
-  Speed and a clean return prove nothing about the answer; check the value.
-* Adjusted bars — see :func:`_market_data_params`; ``dividendType`` appears to
-  be ignored by the server, so only unadjusted requests are routed.
+* ``get_trading_dates``——FormulaServer 要求传入*股票代码*（如
+  ``000001.SZ``）；传入市场（如 ``SH``）会静默返回 ``[]``，而我们的调用方传入的正是市场。
+* ``get_instrument`` / ``get_instrument_detail``——在国金构建中，
+  此处的 getInstrumentDetail 返回的日参考字段（TotalVolume、OpenDate）为零或过期快照，
+  而桥接的 ContextInfo 路径能正确返回（#392）。合约元数据属于参考数据记录，
+  因此应通过桥接读取。
+* ``get_divid_factors`` / ``get_risk_free_rate``——参数语义不同
+  （区间与单个日期、index 与 timetag）。日历或股息因子一旦错误，比请求较慢更糟糕。
+  2026-09-04 曾有人（就是我本人）尝试将其路由过去，理由是速度快 40 候且不会抛异常：
+  查询 000001.SZ 在 20260612 和 20251015 的数据时，FormulaServer 两次都返回了相同记录
+  ``{673113600000: [0.3, 0.4, ...]}``，这是一个 1991 年的时间戳；而桥接在这两个除权日中
+  正确返回的是 0.36 和 0.236。速度快、没有异常都不能证明答案正确；必须校验数值。
+* 复权行情——参见 :func:`_market_data_params`；``dividendType`` 似乎被服务端忽略，
+  因此只路由不复权请求。
 
-Every failure here is non-fatal: :class:`FormulaServerRouter` reports the method
-as unroutable and the caller falls back to the normal RPC path.
+这里的每个失败都不影响主流程：:class:`FormulaServerRouter` 会将该方法报告为不可路由，
+调用方随后回退到普通 RPC 路径。
 """
 
 import os
@@ -660,7 +655,7 @@ class FormulaServerRouter(object):
     def _mark_unavailable(self, reason):
         self._unavailable_until = time.time() + self.failure_cooldown_seconds
         print(
-            "%s unavailable, falling back to RPC for %.0fs: %s"
+            "%s 暂不可用，接下来 %.0f 秒走 RPC：%s"
             % (self.print_prefix, self.failure_cooldown_seconds, reason)
         )
 
@@ -691,7 +686,7 @@ class FormulaServerRouter(object):
             if exc.error_id == ERROR_METHOD_NOT_FOUND:
                 self._unimplemented.add(method)
                 print(
-                    "%s %s not implemented by this terminal, using RPC from now on"
+                    "%s 此终端未实现 %s，后续调用走 RPC"
                     % (self.print_prefix, method)
                 )
             raise Unroutable("%s: %s" % (method, exc))
@@ -712,7 +707,7 @@ class FormulaServerRouter(object):
         if not self._announced:
             self._announced = True
             print(
-                "%s active at %s:%s (%d methods routed direct)"
+                "%s 已连接 %s:%s（%d 个方法可直读）"
                 % (self.print_prefix, self.client.host, self.client.port, len(self.methods))
             )
         return result

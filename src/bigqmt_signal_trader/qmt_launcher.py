@@ -211,7 +211,7 @@ def wait_until_ready(port=DEFAULT_READY_PORT, host="127.0.0.1", timeout_seconds=
     while time.time() < deadline:
         if port_is_listening(port, host):
             waited = time.time() - started
-            log.info("qmt ready after %.1fs (%s:%d listening)", waited, host, port)
+            log.info("QMT 已就绪，耗时 %.1f 秒（%s:%d 正在监听）", waited, host, port)
             return waited
         time.sleep(poll_interval)
     raise QmtLauncherError(
@@ -263,19 +263,19 @@ def close_qmt(install_dir, timeout_seconds=60.0, force_after_seconds=20.0):
     """
     targets = find_qmt_processes(install_dir)
     if not targets:
-        log.info("no QMT process under %s; nothing to close", install_dir)
+        log.info("目录 %s 下没有正在运行的 QMT 进程", install_dir)
         return 0
 
     for pid, name, _exe in targets:
-        log.info("closing %s (pid=%s)", name, pid)
+        log.info("正在关闭 %s（PID=%s）", name, pid)
         _terminate(pid, force=False)
 
     if wait_until_stopped(install_dir, timeout_seconds=force_after_seconds):
-        log.info("closed %d process(es) cleanly", len(targets))
+        log.info("已正常关闭 %d 个进程", len(targets))
         return len(targets)
 
     remaining = find_qmt_processes(install_dir)
-    log.warning("%d process(es) still alive after %.0fs; forcing",
+    log.warning("%d 个进程在等待 %.0f 秒后仍在运行，将强制结束",
                 len(remaining), force_after_seconds)
     for pid, name, _exe in remaining:
         _terminate(pid, force=True)
@@ -468,7 +468,7 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
         try:
             return classify_qmt_window(win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE))
         except Exception:
-            return "unknown"  # A disappearing/unreadable window is not logged in.
+            return "unknown"  # 窗口消失或无法读取时，不能确认登录状态。
 
     deadline = time.time() + appear_timeout_seconds
     handle = None
@@ -480,7 +480,7 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
                 handle = candidate
                 break
             if kind == "main":
-                log.info("main window already up (auto-login); skipping credentials")
+                log.info("主窗口已出现，QMT 已自动登录，跳过凭据输入")
                 return
         time.sleep(2.0)
     if not handle:
@@ -492,8 +492,8 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
     # 解锁前台保护并置顶：物理输入以「点击聚焦 + 逐段截图验证」为安全网，
     # GetForegroundWindow 只是辅助——它失败不等于不能输入（置顶 + 点击一样能聚焦），
     # 真正防误输的是后面的字段级像素验证。
-    user32.keybd_event(0x12, 0, 0, 0)   # Alt down — unlocks SetForegroundWindow
-    user32.keybd_event(0x12, 0, 2, 0)   # Alt up
+    user32.keybd_event(0x12, 0, 0, 0)   # 按下 Alt，解除 SetForegroundWindow 的前台限制。
+    user32.keybd_event(0x12, 0, 2, 0)   # 松开 Alt。
     time.sleep(0.2)
     win32gui.SetWindowPos(handle, win32con.HWND_TOPMOST, 0, 0, 0, 0,
                           win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
@@ -502,12 +502,11 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
     time.sleep(0.8)
     if user32.GetForegroundWindow() != handle:
         log.warning(
-            "could not foreground the login dialog (another window may hold focus); "
-            "proceeding with topmost + verified clicks anyway")
+            "无法将登录窗口切到前台，可能有其他窗口持有焦点。继续使用置顶和带验证的点击。")
 
     kind = _kind(handle)
     if kind == "main":
-        log.info("window is already the main interface (auto-login); skipping credentials")
+        log.info("当前窗口已是主界面，QMT 已自动登录，跳过凭据输入")
         return
     if kind != "login":
         raise QmtLauncherError("unsupported or unavailable QMT window; refusing credential input")
@@ -577,8 +576,8 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
             _select_all()
             _key(win32con.VK_DELETE)
 
-    # Never log the values themselves.
-    log.info("entering credentials into window %r (physical input)", prefix)
+    # 日志只记录窗口，不记录凭据值。
+    log.info("正在向窗口 %r 输入登录凭据（模拟键盘输入）", prefix)
 
     # 1) 账号：点击 → 全选 → 输入 → 验证账号区变了、密码区没跟着变
     acc_before = _region_pixels(account_region)
@@ -621,7 +620,7 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
 
     kind = _kind(handle)
     if kind == "main":
-        log.info("login dialog gone mid-entry (auto-login completed); skipping submit click")
+        log.info("输入途中登录窗口已消失且主窗口已出现，跳过提交")
         return
     if kind != "login":
         raise QmtLauncherError("QMT window changed or disappeared; refusing login submission")
@@ -636,7 +635,7 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
             "dialog may be showing a broker/network/credential error."
             % appear_timeout_seconds
         )
-    log.info("QMT login completed; main window detected")
+    log.info("QMT 登录完成，已检测到主窗口")
 
 
 def restart_qmt(install_dir, settle_seconds=5.0, **open_kwargs):
@@ -657,7 +656,7 @@ def restart_qmt(install_dir, settle_seconds=5.0, **open_kwargs):
     if closed:
         time.sleep(settle_seconds)
     waited = open_qmt(install_dir, **open_kwargs)
-    log.info("restart complete (closed=%d, ready in %.1fs)", closed, waited)
+    log.info("QMT 重启完成，关闭了 %d 个进程，启动后 %.1f 秒就绪", closed, waited)
     return waited
 
 
@@ -671,39 +670,38 @@ def main(argv=None):
     )
     parser.add_argument("action", choices=("open", "close", "restart", "status"))
     parser.add_argument("--dir", required=True,
-                        help="QMT root, its bin.x64, or a path to an exe inside it")
+                        help="QMT 根目录、bin.x64 目录或其中的可执行文件路径")
     parser.add_argument("--mode", default="auto",
                         choices=("auto", "bat", "linkmini", "exe", "login"))
-    parser.add_argument("--bat", default=None, help="batch file for --mode bat")
-    parser.add_argument("--exe", default=None, help="exe name for --mode exe/login")
+    parser.add_argument("--bat", default=None, help="--mode bat 使用的批处理文件")
+    parser.add_argument("--exe", default=None, help="--mode exe 或 login 使用的可执行文件名")
     parser.add_argument("--port", type=int, default=DEFAULT_READY_PORT)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--no-wait", action="store_true")
     parser.add_argument("--title-prefix", default=None,
-                        help="login window title prefix (--mode login)")
+                        help="登录窗口标题前缀，用于 --mode login")
     args = parser.parse_args(argv)
 
     if args.action == "status":
         procs = find_qmt_processes(args.dir)
         if not procs:
-            print("not running (%s)" % resolve_install_dir(args.dir))
+            print("QMT 未运行（%s）" % resolve_install_dir(args.dir))
             return 1
         for pid, name, exe in procs:
             print("%-16s pid=%-8s %s" % (name, pid, exe))
-        print("ready port %d: %s" % (
-            args.port, "listening" if port_is_listening(args.port) else "not listening"))
+        print("就绪端口 %d：%s" % (
+            args.port, "正在监听" if port_is_listening(args.port) else "未监听"))
         return 0
 
     credentials = None
     if args.mode == "login":
-        # Read from the environment so a password never reaches argv, where it
-        # would be visible to any process listing.
+        # 从环境变量读取凭据，避免密码出现在进程列表可见的命令行参数中。
         credentials = {"user": os.environ.get("BIGQMT_LOGIN_USER", ""),
                        "password": os.environ.get("BIGQMT_LOGIN_PASSWORD", "")}
 
     try:
         if args.action == "close":
-            print("closed %d process(es)" % close_qmt(args.dir))
+            print("已关闭 %d 个进程" % close_qmt(args.dir))
         else:
             kwargs = dict(mode=args.mode, bat_path=args.bat, exe_name=args.exe,
                           ready_port=args.port, ready_timeout_seconds=args.timeout,
@@ -713,9 +711,9 @@ def main(argv=None):
                 restart_qmt(args.dir, **kwargs)
             else:
                 open_qmt(args.dir, **kwargs)
-            print("ok")
+            print("操作成功")
     except QmtLauncherError as exc:
-        print("error: %s" % exc, file=sys.stderr)
+        print("错误：%s" % exc, file=sys.stderr)
         return 2
     return 0
 

@@ -1,14 +1,7 @@
-"""Server→client whole-quote push channel.
+"""服务端向客户端推送全推行情的通道。
 
-The RPC transport is request/response only; whole-quote data needs the opposite
-direction — the server pushes each incremental tick batch to every client
-subscribed to that combination. This module provides an abstract channel with
-* :class:`ValkeyQuotePushChannel` — valkey ``publish``/``subscribe`` on a
-  per-account, per-combination channel, for valkey deployments.
-
-Wire encoding is msgpack when available (smaller + faster for the
-``{code: {field: number}}`` payload shape), falling back to stdlib json so the
-channel stays usable without the optional dependency.
+Valkey 按账号和订阅组合发布增量行情。载荷优先用 MsgPack 编码，
+未安装 msgpack 时用 JSON。
 """
 
 import json
@@ -19,27 +12,23 @@ try:
     import msgpack
 
     _HAS_MSGPACK = True
-except Exception:  # pragma: no cover - depends on optional dependency
+except Exception:  # pragma: no cover - 取决于是否安装可选依赖
     msgpack = None
     _HAS_MSGPACK = False
 
 
 def encode_push_payload(payload):
-    """Encode a push payload dict to bytes (msgpack preferred, json fallback)."""
+    """将推送载荷编码为字节，优先使用 MsgPack，回退到 JSON。"""
     if _HAS_MSGPACK:
         return msgpack.packb(payload, use_bin_type=True)
     return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
 
 
 def decode_push_payload(blob):
-    """Inverse of :func:`encode_push_payload`. Accepts bytes or str.
+    """解码字节或字符串，兼容收发两端安装不同依赖的情况。
 
-    Encoding is not symmetric across deployments: a server without msgpack
-    falls back to json while a client with msgpack installed decodes with
-    msgpack — ``msgpack.unpackb`` then raises ``ExtraData`` on the json text
-    (its first byte ``{`` parses as an int, leaving trailing bytes). So try
-    msgpack first, and fall back to json when the bytes are not a single
-    valid msgpack object.
+JSON 的起始字节可被 MsgPack 解析为整数并留下多余字节；只有整个载荷
+是合法的单个 MsgPack 对象时才使用其结果。
     """
     if blob is None:
         return None
@@ -54,9 +43,7 @@ def decode_push_payload(blob):
 
 
 class QuotePushChannel(object):
-    """Abstract push channel. Server side: ``start_publisher`` + ``publish``.
-    Client side: ``start_subscriber(topics, on_msg)``. A single instance may act
-    as publisher or subscriber depending on which start method is called."""
+    """推送通道接口，实例可启动为发布端或订阅端。"""
 
     def start_publisher(self):
         raise NotImplementedError
@@ -72,10 +59,7 @@ class QuotePushChannel(object):
 
 
 class NullQuotePushChannel(QuotePushChannel):
-    """No-op push channel for deployments with no push wire (valkey
-    absent). Publishing is a silent no-op -- the alternative was
-    ValkeyQuotePushChannel(None), whose publish raised AttributeError per event.
-    """
+    """无推送通道时忽略发布操作。"""
 
     def start_publisher(self):
         pass
@@ -105,14 +89,8 @@ class ValkeyQuotePushChannel(QuotePushChannel):
         self.account_id = str(account_id or "")
         self.channel_template = channel_template
         self.print_prefix = print_prefix
-        # Every account this publisher speaks for (#315). The channel is
-        # keyed by account, and a single-instance multi-account bridge
-        # (BIGQMT_ACCOUNT_TYPE_MAP) serves several: a client configured with
-        # the secondary account subscribes bigqmt:quote_push:<secondary>:*,
-        # its subscribe RPC lands on the shared handlers and succeeds, and
-        # every push went to bigqmt:quote_push:<primary>:* -- "subscribed,
-        # no callbacks". Market data is not account-specific, so publish
-        # once per account. The client role uses account_id alone.
+        # 推送通道按账号区分。一个桥接服务支持多账号时，每个账号各发布一次，
+        # 避免附属账号订阅成功却收不到行情。订阅端只使用自己的账号（#315）。
         self.account_ids = _unique_accounts([self.account_id] + list(account_ids or []))
         self._running = False
         self._pubsub = None
@@ -123,9 +101,9 @@ class ValkeyQuotePushChannel(QuotePushChannel):
         return self.channel_template.format(
             account_id=self.account_id if account_id is None else account_id, topic=topic)
 
-    # -- server side ---------------------------------------------------------
+    # 发布端
     def start_publisher(self):
-        # Valkey publish needs no setup; present for interface symmetry.
+        # Valkey 发布无需额外初始化。
         self._running = True
 
     def publish(self, topic, data):
@@ -134,9 +112,9 @@ class ValkeyQuotePushChannel(QuotePushChannel):
             try:
                 self.valkey.publish(self._channel(topic, account_id), payload)
             except Exception as exc:
-                print("%s valkey publish failed: %s" % (self.print_prefix, exc))
+                print("%s 发布 Valkey 行情失败：%s" % (self.print_prefix, exc))
 
-    # -- client side ---------------------------------------------------------
+    # 订阅端
     def start_subscriber(self, topics, on_msg):
         self.stop()
         self._running = True
@@ -148,10 +126,9 @@ class ValkeyQuotePushChannel(QuotePushChannel):
         self._thread.start()
 
     def _sub_loop(self, topics, on_msg, stopped):
-        # This receiver owns reconnect and closes its own connections. Capture
-        # its stop event so a later start cannot revive an old blocked receiver.
+        # 接收线程负责重连和关闭连接，使用自己的停止事件，避免新一轮启动唤醒旧线程。
         channels = [self._channel(topic) for topic in topics]
-        failures = 0          # consecutive reconnect failures, for log throttling
+        failures = 0          # 连续重连失败次数，用于日志节流
         last_report = 0.0
         while not stopped.is_set():
             pubsub = None
@@ -174,23 +151,15 @@ class ValkeyQuotePushChannel(QuotePushChannel):
                     try:
                         on_msg(topic, payload_data)
                     except Exception as exc:
-                        print("%s subscriber callback failed: %s" % (self.print_prefix, exc))
+                        print("%s 行情订阅回调失败：%s" % (self.print_prefix, exc))
             except Exception as exc:
                 if not stopped.is_set():
-                    # Retry every second -- quotes should come back fast -- but
-                    # do NOT print every second. Valkey down over a weekend is
-                    # 3600 lines/hour, and this repo has been bitten by log
-                    # volume before (#139 wrote one line 16 times; #144 grew a
-                    # log without bound because rotation could never run). The
-                    # zmq ROUTER rebuild backs its reporting off for the same
-                    # reason (#240). Report attempts 1, 2, 4, 8 ... then at most
-                    # once a minute: the first failure stays loud and a long
-                    # outage stays readable.
+                    # 每秒重连，日志在第 1、2、4、8……次失败或距上次满一分钟时输出。
                     failures += 1
                     now = time.time()
                     if (failures & (failures - 1)) == 0 or now - last_report >= 60.0:
                         last_report = now
-                        print("%s valkey subscriber reconnecting (attempt %d): %s"
+                        print("%s 正在重新连接 Valkey 行情订阅（第 %d 次）：%s"
                               % (self.print_prefix, failures, exc))
             else:
                 failures = 0

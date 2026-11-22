@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
-dependencies = []
+dependencies = ["python-dotenv>=1.0,<2"]
 
 [project.optional-dependencies]
 # Pin the supported client major. RPUSH is not idempotent (#245), so RPC

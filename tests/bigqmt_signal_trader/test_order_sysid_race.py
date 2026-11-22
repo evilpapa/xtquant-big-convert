@@ -203,7 +203,7 @@ class DeadlineTest(_Service):
 
         source = inspect.getsource(xtquant_compat)
         self.assertIn('raise RpcServerRepliedError(', source)
-        self.assertIn('"Big QMT %s server_error: %s"', source)
+        self.assertIn('"大 QMT %s server_error: %s"', source)
         self.assertTrue(issubclass(xtquant_compat.RpcServerRepliedError, RuntimeError))
 
 

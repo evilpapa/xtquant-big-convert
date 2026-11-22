@@ -41,3 +41,4 @@ src/BIGQMT_DRYRUN_PIPE_FLAT_ALL_IN_ONE.py
 bigqmt_signal_trader_qmt_config.py
 bigqmt_signal_trader_client_config.py
 /src/BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py
+/.env

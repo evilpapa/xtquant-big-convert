@@ -93,13 +93,13 @@ class ShutdownIsQuietTest(unittest.TestCase):
     def test_pubsub_loop_prints_nothing_when_stopping(self):
         out, alive, _calls = _run("_listen_loop", running_when_it_raises=False)
         self.assertNotIn("Traceback", out)
-        self.assertNotIn("listener failed", out)
+        self.assertNotIn("监听器失败", out)
         self.assertFalse(alive, "the loop should have exited, not retried")
 
     def test_queue_loop_prints_nothing_when_stopping(self):
         out, alive, _calls = _run("_queue_loop", running_when_it_raises=False)
         self.assertNotIn("Traceback", out)
-        self.assertNotIn("queue listener failed", out)
+        self.assertNotIn("队列监听器失败", out)
         self.assertFalse(alive)
 
 
@@ -108,13 +108,13 @@ class RealFailuresStayLoudTest(unittest.TestCase):
 
     def test_pubsub_loop_still_reports_a_failure_while_running(self):
         out, _alive, calls = _run("_listen_loop", running_when_it_raises=True)
-        self.assertIn("listener failed", out)
+        self.assertIn("监听器失败", out)
         self.assertIn("Traceback", out)
         self.assertGreaterEqual(calls, 1)
 
     def test_queue_loop_still_reports_a_failure_while_running(self):
         out, _alive, calls = _run("_queue_loop", running_when_it_raises=True)
-        self.assertIn("queue listener failed", out)
+        self.assertIn("队列监听器失败", out)
         self.assertIn("Traceback", out)
         self.assertGreaterEqual(calls, 1)
 

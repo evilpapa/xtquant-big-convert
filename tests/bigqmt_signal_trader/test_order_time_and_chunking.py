@@ -111,7 +111,7 @@ class OrderTimeParsingTest(unittest.TestCase):
             _order_time_seconds(_order_row(m_strSomethingElse="x"))
         output = buffer.getvalue()
 
-        self.assertIn("order_time not found", output)
+        self.assertIn("未找到 order_time", output)
         self.assertIn("m_strSomethingElse", output)
 
     def test_missing_field_reported_once_not_per_row(self):
@@ -123,7 +123,7 @@ class OrderTimeParsingTest(unittest.TestCase):
             for _ in range(5):
                 _order_time_seconds(_order_row())
 
-        self.assertEqual(buffer.getvalue().count("order_time not found"), 1)
+        self.assertEqual(buffer.getvalue().count("未找到 order_time"), 1)
 
     def test_unparseable_date_yields_zero(self):
         self.assertEqual(

@@ -1,4 +1,4 @@
-"""Run outside QMT: forward the established Valkey RPC protocol over serial."""
+"""在 QMT 进程外运行，通过串口转发已有的 Valkey RPC 消息。"""
 
 import argparse
 import logging
@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from .adapters.valkey_common import normalize_valkey_url
 from .exec_events import EXEC_TOPICS, publish_exec_event
+from .local_env import local_serial_settings
 from .quote_push_channel import ValkeyQuotePushChannel
 from .valkey_rpc import METHOD_ALIASES, ORDER_METHODS
 from .transports.valkey_transport import ValkeyTransport, _loads
@@ -25,7 +26,7 @@ _MAX_INFLIGHT = 16
 
 
 def _valkey_endpoint(url):
-    """host:port/db without credentials, safe to log."""
+    """返回可写入日志的连接地址 host:port/db，省略凭据。"""
     try:
         parts = urlsplit(url)
         port = parts.port or 6379
@@ -38,7 +39,7 @@ def _valkey_endpoint(url):
 
 
 def _describe(exc):
-    """Exception type and message, plus the underlying cause chain."""
+    """返回异常类型、消息及其原因链。"""
     parts = []
     seen = set()
     while exc is not None and id(exc) not in seen and len(parts) < 4:
@@ -72,7 +73,7 @@ class SerialValkeyBridge:
             self._uncertain_writes[request_id] = now + 600
             if len(self._uncertain_writes) > 512:
                 self._uncertain_writes.popitem(last=False)
-        _log.warning("Serial response missing for %s; request will not be replayed", record[1])
+        _log.warning("未收到 %s 的串口应答，桥接不会重放该请求", record[1])
 
     def _reply_route(self, request_id, ttl):
         fields = {"account_id": self.account_id, "request_id": request_id}
@@ -101,7 +102,7 @@ class SerialValkeyBridge:
             if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
                 raise ValueError("invalid request_id")
         except (ValueError, TypeError, RecursionError) as exc:
-            _log.warning("Dropped malformed Valkey RPC request (%s)", type(exc).__name__)
+            _log.warning("已丢弃格式无效的 Valkey RPC 请求（%s）", type(exc).__name__)
             return
         if request_id in self._inflight:
             return
@@ -168,7 +169,7 @@ class SerialValkeyBridge:
             if session != self._session:
                 for request_id, record in list(self._inflight.items()):
                     self._forget_request(request_id, record, now)
-                _log.info("QMT serial session ready")
+                _log.info("QMT 串口会话已就绪")
             self._session = session
             self._last_hello = now
             return
@@ -234,25 +235,29 @@ class SerialValkeyBridge:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--account-id", help="account ID (defaults to BIGQMT_ACCOUNT_ID)")
+    parser.add_argument("--account-id", help="资金账号，默认读取本地 .env 或 BIGQMT_ACCOUNT_ID 环境变量")
     parser.add_argument("--port", default="COM11")
     parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
     parser.add_argument("--max-frame-bytes", type=int, default=DEFAULT_MAX_FRAME_BYTES)
-    parser.add_argument("--valkey-url",
-                        default=os.environ.get("BIGQMT_SERIAL_VALKEY_URL", "valkey://127.0.0.1:6379/5"))
+    parser.add_argument("--valkey-url")
     parser.add_argument("--valkey-pubsub", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    args.account_id = (args.account_id or "").strip() or os.environ.get("BIGQMT_ACCOUNT_ID", "").strip()
+    local_settings = local_serial_settings()
+    args.account_id = ((args.account_id or "").strip() or local_settings["account_id"]
+                       or os.environ.get("BIGQMT_ACCOUNT_ID", "").strip())
+    args.valkey_url = (args.valkey_url or local_settings["valkey_url"]
+                       or os.environ.get("BIGQMT_SERIAL_VALKEY_URL")
+                       or os.environ.get("BIGQMT_VALKEY_URL") or "valkey://127.0.0.1:6379/5")
     if not args.account_id:
-        _log.warning("No account configured; set BIGQMT_ACCOUNT_ID or pass --account-id.")
+        _log.warning("未配置资金账号。请在 .env 中设置 BIGQMT_ACCOUNT_ID，或传入 --account-id。")
         return 2
     try:
         from valkey import Valkey
         from valkey.backoff import NoBackoff
         from valkey.retry import Retry
     except ImportError:
-        parser.exit(1, "Install xtquant-big-convert[valkey,serial] in the bridge environment.\n")
+        parser.exit(1, "请在桥接进程的 Python 环境中安装 xtquant-big-convert[valkey,serial]。\n")
 
     client = port = None
     endpoint = _valkey_endpoint(args.valkey_url)
@@ -262,7 +267,7 @@ def main(argv=None):
         parser.error(str(exc))
 
     def describe(exc):
-        # Never echo credentials that may sit inside the Valkey URL.
+        # 从异常消息中移除 Valkey URL 可能包含的凭据。
         return _describe(exc).replace(args.valkey_url, endpoint).replace(url, endpoint)
 
     try:
@@ -272,20 +277,20 @@ def main(argv=None):
             client.ping()
         except Exception as exc:
             _log.error(
-                "Cannot reach Valkey at %s (%s). The bridge polls that Valkey for RPC requests; "
-                "point --valkey-url or BIGQMT_SERIAL_VALKEY_URL at the same Valkey and db as the "
-                "QMT strategy.", endpoint, describe(exc))
+                "无法连接 Valkey %s（%s）。桥接从该实例读取 RPC 请求，请通过 --valkey-url "
+                "或 BIGQMT_SERIAL_VALKEY_URL 指定实际发送请求的 Valkey 实例及数据库。",
+                endpoint, describe(exc))
             return 1
         try:
             port = open_serial(args.port, args.baudrate)
         except Exception as exc:
             _log.error(
-                "Cannot open serial port %s at %s baud (%s). Check the com0com pair, the port "
-                "name, and that no other process (QMT or another bridge) holds it.",
+                "无法打开串口 %s（波特率 %s，%s）。请检查 com0com 端口对和端口名称，"
+                "并确认 QMT 或其他桥接进程未占用该端口。",
                 args.port, args.baudrate, describe(exc))
             return 1
         bridge = SerialValkeyBridge(client, port, args.account_id, args.max_frame_bytes)
-        _log.info("Valkey serial bridge listening on %s at %s baud, valkey %s, account %s",
+        _log.info("Valkey 串口桥接已启动，串口 %s，波特率 %s，Valkey %s，账号 %s",
                   args.port, args.baudrate, endpoint, args.account_id)
         bridge.run(valkey_pubsub=args.valkey_pubsub)
     except KeyboardInterrupt:
@@ -293,15 +298,13 @@ def main(argv=None):
     except Exception as exc:
         module = type(exc).__module__ or ""
         if module.startswith("valkey"):
-            hint = (" The Valkey connection at %s failed while running; restart the bridge "
-                    "once Valkey is reachable, then restart the QMT strategy too." % endpoint)
+            hint = ("运行期间 Valkey %s 连接中断。连接恢复后，先重启桥接，再重启 QMT 策略。" % endpoint)
         elif module.startswith("serial"):
-            hint = (" Serial port %s failed while running; close the bridge and QMT, check the "
-                    "com0com pair, then restart both." % args.port)
+            hint = ("运行期间串口 %s 连接中断。请关闭桥接和 QMT，检查 com0com 端口对后重启两端。" % args.port)
         else:
             hint = ""
-        _log.error("Bridge stopped (%s). In-flight requests are not replayed; check orders and "
-                   "trades before retrying.%s", describe(exc), hint)
+        _log.error("桥接已停止（%s）。桥接不会重放已转发的请求，请先查询委托和成交再决定是否重试。%s",
+                   describe(exc), hint)
         return 1
     finally:
         if port is not None:

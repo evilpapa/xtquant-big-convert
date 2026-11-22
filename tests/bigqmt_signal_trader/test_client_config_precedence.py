@@ -28,6 +28,8 @@ import sys
 import unittest
 from types import ModuleType
 
+import pytest
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -145,6 +147,56 @@ class FormulaServerMergeTest(unittest.TestCase):
         self.assertFalse(client.formula_server_config["enabled"])
         self.assertEqual(2, client.formula_server_config["port"])
 
+
+def test_local_dotenv_overrides_implicit_config_but_not_explicit_arguments(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BIGQMT_ACCOUNT_ID", "process-account")
+    monkeypatch.setenv("BIGQMT_VALKEY_URL", "valkey://process-host:6379/5")
+    monkeypatch.setenv("BIGQMT_VALKEY_HOST", "process-host")
+    (tmp_path / ".env").write_text(
+        'BIGQMT_ACCOUNT_ID=000123\n'
+        'BIGQMT_VALKEY_HOST=file-host\n'
+        'BIGQMT_VALKEY_PORT=6381\n'
+        'BIGQMT_VALKEY_DB=0\n'
+        'BIGQMT_VALKEY_PASSWORD="a#b=${UNCHANGED}"\n'
+        'BIGQMT_RPC_TIMEOUT_SECONDS=7\n'
+        'BIGQMT_LOCAL_CACHE_ENABLED=0\n',
+        encoding="utf-8-sig",
+    )
+    with _WithModule(BIGQMT_ACCOUNT_ID="module-account", BIGQMT_RPC_TIMEOUT_SECONDS=2,
+                     BIGQMT_CONFIG={"url": "valkey://module-host:6379/5"},
+                     BIGQMT_LOCAL_CACHE_CONFIG={"enabled": True}):
+        client = BigQmtRpcClient()
+        explicit = BigQmtRpcClient(account_id="explicit-account",
+                                   valkey_config={"url": "valkey://explicit-host:6379/5",
+                                                  "local_cache_enabled": True},
+                                   timeout_seconds=3)
+
+    assert client.account_id == "000123"
+    assert client._valkey_url is None
+    assert client.valkey_config["host"] == "file-host"
+    assert client.valkey_config["port"] == 6381
+    assert client.valkey_config["db"] == 0
+    assert client.valkey_config["password"] == "a#b=${UNCHANGED}"
+    assert client.timeout_seconds == 7
+    assert client.local_cache_config["enabled"] is False
+    assert explicit.account_id == "explicit-account"
+    assert explicit._valkey_url == "valkey://explicit-host:6379/5"
+    assert explicit.timeout_seconds == 3
+    assert explicit.local_cache_config["enabled"] is True
+    assert os.environ["BIGQMT_ACCOUNT_ID"] == "process-account"
+
+
+@pytest.mark.parametrize("loader_marker", [True, False])
+def test_only_the_external_client_reads_dotenv(tmp_path, monkeypatch, loader_marker):
+    from bigqmt_signal_trader import xtquant_compat
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BIGQMT_ACCOUNT_ID", "process-account")
+    (tmp_path / ".env").write_text("BIGQMT_ACCOUNT_ID=file-account\n", encoding="utf-8")
+    if loader_marker:
+        monkeypatch.setattr(xtquant_compat, "__bigqmt_load_local_module", object(), raising=False)
+    assert BigQmtRpcClient().account_id == ("process-account" if loader_marker else "file-account")
 
 class OtherKeysFollowTheSameOrderTest(unittest.TestCase):
     def test_full_tick_ttl_from_explicit_beats_module(self):

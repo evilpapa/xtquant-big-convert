@@ -86,10 +86,10 @@ class HollowRuntimeWarningTest(unittest.TestCase):
         self.assertEqual(len(log.warnings), 1, log.warnings)
         message = log.warnings[0]
         self.assertIn("get_assure_contract", message)
-        self.assertIn("every field empty", message)
-        self.assertIn("thread", message)
+        self.assertIn("所有字段均为空", message)
+        self.assertIn("线程", message)
         # 必须说清楚「调用没失败」，否则读日志的人会去查错方向
-        self.assertIn("did NOT fail", message)
+        self.assertIn("调用并未失败", message)
         self.assertIn("#204", message)
 
     def test_real_rows_are_silent(self):

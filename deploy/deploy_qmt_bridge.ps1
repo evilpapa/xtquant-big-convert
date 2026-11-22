@@ -1,20 +1,20 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  One-shot deployment of the xtquant_big_convert Valkey bridge on a fresh Windows box.
+  在 Windows 上部署 xtquant-big-convert 的 Valkey 桥接。
 .DESCRIPTION
-  Target: 2C4G Windows server with Big QMT installed and logged in.
-  Idempotent - safe to re-run. Skips completed steps.
-.PARAMETER QmtDir   Big QMT install root, e.g. C:\JianghaiQMT
-.PARAMETER QmtPython Python executable used by the QMT strategy (default: <QmtDir>\bin.x64\python.exe)
-.PARAMETER Account  Capital account id (digits), e.g. 1234567890
-.PARAMETER WorkDir  Deployment root (default C:\qmt_bridge)
-.PARAMETER ValkeyZip Offline Cygwin archive with ValkeyService.exe
-.PARAMETER ValkeyUrl Alternate download URL for the Valkey Windows archive
-.PARAMETER ValkeyPort Loopback port for the Valkey service (default 6379)
-.PARAMETER BridgePackage Path to the bridge wheel or source checkout
-.PARAMETER Proxy    HTTP proxy for downloads, e.g. http://127.0.0.1:7897
-.PARAMETER AllowOrders  Enable order RPCs in the generated server config (off by default)
+  适用于已安装并登录大 QMT 的 2 核 4 GB Windows 服务器。
+  可重复运行，脚本会跳过已完成的步骤。
+.PARAMETER QmtDir   大 QMT 安装目录，例如 C:\JianghaiQMT
+.PARAMETER QmtPython QMT 策略使用的 Python 解释器（默认 <QmtDir>\bin.x64\python.exe）
+.PARAMETER Account  资金账号，例如 1234567890
+.PARAMETER WorkDir  部署目录（默认 C:\qmt_bridge）
+.PARAMETER ValkeyZip 包含 ValkeyService.exe 的 Cygwin 离线压缩包
+.PARAMETER ValkeyUrl Valkey Windows 压缩包的备用下载地址
+.PARAMETER ValkeyPort Valkey 服务的本机端口（默认 6379）
+.PARAMETER BridgePackage 桥接安装包或源码仓库的路径
+.PARAMETER Proxy    下载使用的 HTTP 代理，例如 http://127.0.0.1:7897
+.PARAMETER AllowOrders  在服务端配置中启用远程下单和撤单（默认关闭）
 #>
 param(
     [Parameter(Mandatory=$true)][string]$QmtDir,
@@ -53,60 +53,60 @@ function Info($m) { Write-Host ("   .. " + $m) }
 
 function Assert-PythonVersion([string]$Executable, [string]$Role) {
     & $Executable -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
-    if ($LASTEXITCODE -ne 0) { throw "$Role requires Python 3.12 or newer. Check the interpreter at $Executable." }
+    if ($LASTEXITCODE -ne 0) { throw "${Role}需要 Python 3.12 或更高版本。请检查解释器 $Executable。" }
 }
 
-# ---- 0. preconditions -----------------------------------------------------
-Step "0/7 preconditions"
+# ---- 0. 检查部署条件 -----------------------------------------------------
+Step "0/7 检查部署条件"
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin -and -not $CheckOnly) { throw "Please run from an elevated (Administrator) PowerShell." }
+if (-not $isAdmin -and -not $CheckOnly) { throw "请以管理员身份运行 PowerShell。" }
 if ($CheckOnly) {
-    Info "check-only mode: reporting state, no writes"
+    Info "检查模式，仅显示当前部署状态"
     $items = [ordered]@{
-        "QMT dir"            = Test-Path "$QmtDir\bin.x64\XtItClient.exe"
-        "xtquant lib"        = Test-Path "$QmtDir\bin.x64\Lib\site-packages\xtquant"
-        "server files"       = Test-Path "$QmtDir\python\BIGQMT_VALKEY_DRYRUN.py"
-        "server local config"= Test-Path "$QmtDir\python\bigqmt_signal_trader_qmt_config.py"
-        "client env"         = ((Test-Path "$WorkDir\envs\bigqmt-client\Scripts\python.exe") -or (Test-Path "$WorkDir\envs\bigqmt\python.exe"))
-        "valkey binaries"     = (Test-Path $valkeyService) -and (Test-Path $valkeyCli)
-        "valkey password file"= Test-Path $pwFile
-        "valkey config"       = Test-Path $conf
-        "valkey service"      = (Get-Service $serviceName -ErrorAction SilentlyContinue).Status -eq "Running"
-        "client config"      = Test-Path "$WorkDir\client\bigqmt_signal_trader_client_config.py"
+        "QMT 安装目录"            = Test-Path "$QmtDir\bin.x64\XtItClient.exe"
+        "xtquant 库"        = Test-Path "$QmtDir\bin.x64\Lib\site-packages\xtquant"
+        "服务端文件"       = Test-Path "$QmtDir\python\BIGQMT_VALKEY_DRYRUN.py"
+        "服务端配置"= Test-Path "$QmtDir\python\bigqmt_signal_trader_qmt_config.py"
+        "客户端环境"         = ((Test-Path "$WorkDir\envs\bigqmt-client\Scripts\python.exe") -or (Test-Path "$WorkDir\envs\bigqmt\python.exe"))
+        "Valkey 程序"     = (Test-Path $valkeyService) -and (Test-Path $valkeyCli)
+        "Valkey 密码文件"= Test-Path $pwFile
+        "Valkey 配置"       = Test-Path $conf
+        "Valkey 服务"      = (Get-Service $serviceName -ErrorAction SilentlyContinue).Status -eq "Running"
+        "客户端配置"      = Test-Path "$WorkDir\client\bigqmt_signal_trader_client_config.py"
         "qmt_cli"            = Test-Path "$WorkDir\client\qmt_cli.py"
     }
     $missing = 0
     foreach ($k in $items.Keys) {
-        $mark = if ($items[$k]) { "[ok]     " } else { "[missing]"; $missing++ }
+        $mark = if ($items[$k]) { "[ok]     " } else { "[缺失]"; $missing++ }
         Write-Host ("   $mark $k")
     }
-    if ($missing -gt 0) { Write-Host "   $missing item(s) missing -> run without -CheckOnly (as Administrator)" }
-    else { Write-Host "   deployment complete" }
+    if ($missing -gt 0) { Write-Host "   缺少 $missing 项。请以管理员身份去掉 -CheckOnly 后重新运行。" }
+    else { Write-Host "   部署已完成" }
     return
 }
-if (-not (Test-Path "$QmtDir\bin.x64\XtItClient.exe")) { throw "Big QMT not found under $QmtDir" }
+if (-not (Test-Path "$QmtDir\bin.x64\XtItClient.exe")) { throw "在 $QmtDir 下找不到大 QMT" }
 if (-not (Test-Path "$QmtDir\bin.x64\Lib\site-packages\xtquant")) {
-    throw "xtquant library missing. Open QMT and run its 'download python libraries' first."
+    throw "缺少 xtquant 库。请先在 QMT 中执行「下载 Python 库」。"
 }
 if (-not $QmtPython) { $QmtPython = "$QmtDir\bin.x64\python.exe" }
 if (-not (Test-Path -LiteralPath $QmtPython -PathType Leaf)) {
-    throw "Pass -QmtPython with the executable used by the QMT strategy."
+    throw "请用 -QmtPython 指定 QMT 策略实际使用的解释器。"
 }
-Assert-PythonVersion $QmtPython "The QMT strategy"
+Assert-PythonVersion $QmtPython "QMT 策略"
 & $QmtPython -c "from valkey import Valkey; from valkey.backoff import NoBackoff; from valkey.retry import Retry"
-if ($LASTEXITCODE -ne 0) { throw 'Install valkey in the QMT strategy environment: python -m pip install "valkey>=6.1,<7".' }
+if ($LASTEXITCODE -ne 0) { throw '请在 QMT 策略环境安装 Valkey 客户端：python -m pip install "valkey>=6.1,<7"' }
 if (-not (Get-Service $serviceName -ErrorAction SilentlyContinue) -and
     (Get-NetTCPConnection -State Listen -LocalPort $ValkeyPort -ErrorAction SilentlyContinue)) {
-    throw "Port $ValkeyPort is already listening. Choose an unused -ValkeyPort for Valkey."
+    throw "端口 $ValkeyPort 已被占用，请用 -ValkeyPort 指定空闲端口。"
 }
 $pyExe = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $pyExe -and -not $Conda) { throw "System Python not found on PATH (>= 3.12), or pass -Conda to use miniconda." }
-Ok "QMT found; xtquant present; python: $pyExe"
+if (-not $pyExe -and -not $Conda) { throw "PATH 中找不到 Python。请安装 Python 3.12 或更高版本，或用 -Conda 使用 Miniconda。" }
+Ok "已找到 QMT 和 xtquant。系统 Python：$pyExe"
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
 
-# ---- 1. client environment (conda py313 or venv) --------------------------
-Step "1/7 client env (xtquant-big-convert + pandas)"
+# ---- 1. 准备客户端环境（Conda 或 venv） --------------------------
+Step "1/7 准备客户端环境（xtquant-big-convert 和 pandas）"
 if ($Conda) {
     $condaExe = (Get-Command conda -ErrorAction SilentlyContinue).Source
     if (-not $condaExe) {
@@ -117,9 +117,9 @@ if ($Conda) {
         }
     }
     if (-not $condaExe) {
-        Info "conda not found - auto-installing Miniconda into $WorkDir\miniconda3"
+        Info "找不到 Conda，正在安装 Miniconda 到 $WorkDir\miniconda3"
         $condaHome = "$WorkDir\miniconda3".TrimEnd("\\")
-        if ($condaHome.Contains(" ")) { throw "WorkDir path contains spaces; Miniconda silent install cannot handle it - choose a space-free -WorkDir." }
+        if ($condaHome.Contains(" ")) { throw "Miniconda 静默安装要求路径不含空格，请更换 -WorkDir。" }
         $condaExe  = "$condaHome\Scripts\conda.exe"
         $installer = "$WorkDir\Miniconda3-latest-Windows-x86_64.exe"
         if (-not (Test-Path $installer)) {
@@ -127,40 +127,39 @@ if ($Conda) {
             $dlArgs = @("-L","--max-time","900","-o",$installer,$url)
             if ($Proxy) { $dlArgs = @("-x",$Proxy) + $dlArgs }
             & curl.exe @dlArgs
-            if ($LASTEXITCODE -ne 0) { throw "miniconda download failed (offline? pre-download and pass -MinicondaUrl <local exe path>, or add -Proxy http://...)" }
+            if ($LASTEXITCODE -ne 0) { throw "Miniconda 下载失败。可用 -MinicondaUrl <本地安装程序路径> 或 -Proxy http://... 重试。" }
         }
-        # silent install; /D= must be the LAST argument, unquoted, no trailing backslash
+        # 静默安装时，/D= 必须是最后一个参数，路径不加引号，末尾不加反斜杠。
         Start-Process -FilePath $installer -ArgumentList "/InstallationType=JustMe","/AddToPath=0","/RegisterPython=0","/S","/D=$condaHome" -Wait
-        if (-not (Test-Path $condaExe)) { throw "miniconda silent install failed - $condaExe missing" }
-        Ok "miniconda installed: $condaHome"
+        if (-not (Test-Path $condaExe)) { throw "Miniconda 静默安装失败，找不到 $condaExe" }
+        Ok "Miniconda 已安装到 $condaHome"
     }
     $venv = "$WorkDir\envs\bigqmt"
     $vpy  = "$venv\python.exe"
     if (-not (Test-Path $vpy)) {
         New-Item -ItemType Directory -Force "$WorkDir\envs" | Out-Null
         if ($Proxy) { $env:HTTP_PROXY = $Proxy; $env:HTTPS_PROXY = $Proxy }
-        # conda >= 25 requires accepting defaults-channel ToS before
-        # non-interactive use; older builds lack the subcommand (ignore errors).
+        # Conda 25 及以上版本需先接受默认频道的服务条款。旧版本可能没有此子命令。
         foreach ($ch in @("https://repo.anaconda.com/pkgs/main",
                           "https://repo.anaconda.com/pkgs/r",
                           "https://repo.anaconda.com/pkgs/msys2")) {
             & $condaExe tos accept --override-channels --channel $ch *> $null
         }
         & $condaExe create -y -p $venv -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main --override-channels python=3.13
-        if ($LASTEXITCODE -ne 0) { throw "conda create failed" }
+        if ($LASTEXITCODE -ne 0) { throw "Conda 环境创建失败" }
     }
-    Ok "conda env: $venv (python 3.13)"
+    Ok "Conda 环境：$venv（Python 3.13）"
 } else {
     $venv = "$WorkDir\envs\bigqmt-client"
     $vpy  = "$venv\Scripts\python.exe"
     if (-not (Test-Path $vpy)) {
-        Assert-PythonVersion $pyExe "The system Python used to create the client environment"
+        Assert-PythonVersion $pyExe "创建客户端环境的系统 Python"
         New-Item -ItemType Directory -Force "$WorkDir\envs" | Out-Null
         & $pyExe -m venv $venv
-        if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
+        if ($LASTEXITCODE -ne 0) { throw "venv 创建失败" }
     }
 }
-Assert-PythonVersion $vpy "The client environment"
+Assert-PythonVersion $vpy "客户端环境"
 & $vpy -m pip --version *> $null
 if ($LASTEXITCODE -ne 0) { & $vpy -m ensurepip --upgrade }
 $pipArgs = @("-m","pip","install","-i",$PipIndex,"--upgrade","pip")
@@ -173,26 +172,26 @@ if (-not $BridgePackage) {
 $installArgs = @("-m","pip","install","-i",$PipIndex,"${BridgePackage}[valkey]","pandas")
 if ($Proxy) { $installArgs += @("--proxy",$Proxy) }
 & $vpy @installArgs
-if ($LASTEXITCODE -ne 0) { throw "pip install failed (check -BridgePackage and network/proxy)" }
+if ($LASTEXITCODE -ne 0) { throw "pip 安装失败，请检查 -BridgePackage 和网络或代理。" }
 & $vpy -c "import valkey; import importlib.util; assert importlib.util.find_spec('BIGQMT_VALKEY_DRYRUN')"
-if ($LASTEXITCODE -ne 0) { throw "A Valkey-enabled bridge build is required. Pass -BridgePackage with the source checkout or wheel." }
-Ok "venv ready: $vpy"
+if ($LASTEXITCODE -ne 0) { throw "需要支持 Valkey 的桥接包。请用 -BridgePackage 指定源码仓库或 wheel 文件。" }
+Ok "客户端环境已就绪：$vpy"
 
-# ---- 2. server files into QMT python dir ----------------------------------
-Step "2/7 copy bridge server files into QMT python dir"
+# ---- 2. 安装服务端文件 ----------------------------------
+Step "2/7 复制桥接服务端文件到 QMT 的 python 目录"
 $src = (& $vpy -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(m.__file__))").Trim()
 $dst = "$QmtDir\python"
 if ($src -eq $dst) {
-    throw ("source resolved to the QMT python dir itself (" + $src + ") - the import picked up already-deployed files. Run the script from any other directory (e.g. the deploy folder).")
+    throw ("导入到已部署的文件，源目录与 QMT 的 python 目录相同（" + $src + "）。请切换到其他目录运行此脚本，例如 deploy 目录。")
 }
 foreach ($item in @("bigqmt_signal_trader","bigqmt_signal_trader_strategy.py",
                     "bigqmt_signal_trader_valkey_rpc_runtime.py","BIGQMT_VALKEY_DRYRUN.py")) {
     Copy-Item (Join-Path $src $item) (Join-Path $dst $item) -Recurse -Force
 }
-Ok "copied to $dst"
+Ok "已复制到 $dst"
 
-# ---- 3. Valkey download / unzip -------------------------------------------
-Step "3/7 Valkey $valkeyRelease for Windows"
+# ---- 3. 下载并解压 Valkey -------------------------------------------
+Step "3/7 准备 Windows 版 Valkey $valkeyRelease"
 $zip = "$rdir\$archiveName.zip"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Test-ValkeyZip([string]$Path) {
@@ -210,15 +209,11 @@ function Test-ValkeyZip([string]$Path) {
 $explicitZip = [bool]$ValkeyZip
 if (-not $ValkeyZip) { $ValkeyZip = $zip }
 if (-not (Test-ValkeyZip $ValkeyZip)) {
-    # An explicitly passed archive is the caller's: never download over it.
-    # The default path is ours: missing means first run, broken means an
-    # interrupted download -- both go to the download below.
-    if ($explicitZip) { throw "Expected the $archiveName.zip release archive: $ValkeyZip" }
+    # 保留调用方指定的压缩包。默认压缩包缺失或损坏时重新下载。
+    if ($explicitZip) { throw "压缩包无效，请提供 $archiveName.zip：$ValkeyZip" }
     New-Item -ItemType Directory -Force $rdir | Out-Null
     $downloadZip = "$zip.download"
-    # Windows PowerShell 5.1 (what the README runs this with) has no
-    # if-expression: `(if ...)` inside an array is parsed as a command
-    # named "if". Pick the source first, then build the argument list.
+    # 兼容 Windows PowerShell 5.1，先确定下载地址，再构造参数数组。
     $source = "https://github.com/valkey-windows/valkey-windows/releases/download/$valkeyRelease/$archiveName.zip"
     if ($ValkeyUrl) { $source = $ValkeyUrl }
     $dlArgs = @("-L","--connect-timeout","20","--retry","3","--retry-delay","2","--max-time","1800",
@@ -226,7 +221,7 @@ if (-not (Test-ValkeyZip $ValkeyZip)) {
     if ($Proxy) { $dlArgs = @("-x",$Proxy) + $dlArgs }
     & curl.exe @dlArgs
     if ($LASTEXITCODE -ne 0 -or -not (Test-ValkeyZip $downloadZip)) {
-        throw "Valkey download failed or incomplete (pass -ValkeyZip <path> for offline use, -ValkeyUrl <mirror> for an alternate source, or add -Proxy http://...)"
+        throw "Valkey 下载失败或文件不完整。可用 -ValkeyZip <路径>、-ValkeyUrl <备用地址> 或 -Proxy http://... 重试。"
     }
     Move-Item -LiteralPath $downloadZip -Destination $ValkeyZip -Force
 }
@@ -234,14 +229,14 @@ if (-not (Test-Path $valkeyService) -or -not (Test-Path $valkeyCli) -or
     -not (Test-Path "$binDir\valkey-server.exe")) {
     Expand-Archive -LiteralPath $ValkeyZip -DestinationPath $rdir -Force
 }
-Ok "Valkey binaries: $binDir"
+Ok "Valkey 程序目录：$binDir"
 
-# ---- 4. valkey password / conf / service -----------------------------------
-Step "4/7 Valkey service (bind 127.0.0.1 + password + 192mb cap)"
+# ---- 4. 配置 Valkey 服务及密码 -----------------------------------
+Step "4/7 配置 Valkey 服务（监听 127.0.0.1，启用密码，内存上限 192 MB）"
 New-Item -ItemType Directory -Force $dataDir | Out-Null
 $svc = Get-Service $serviceName -ErrorAction SilentlyContinue
 if ($svc -and (-not (Test-Path $pwFile) -or -not (Test-Path $conf))) {
-    throw "$serviceName exists but its config or password file is missing from $rdir."
+    throw "服务 $serviceName 已存在，但 $rdir 中缺少配置或密码文件。"
 }
 if (Test-Path $pwFile) { $pw = (Get-Content $pwFile -Raw).Trim() }
 else {
@@ -252,7 +247,7 @@ else {
     $pw = [BitConverter]::ToString($secretBytes).Replace("-", "").ToLowerInvariant()
     Set-Content $pwFile $pw -NoNewline -Encoding ASCII
 }
-if ($pw -notmatch '\A[0-9a-f]{48}\z') { throw "Invalid Valkey password file: $pwFile" }
+if ($pw -notmatch '\A[0-9a-f]{48}\z') { throw "Valkey 密码文件无效：$pwFile" }
 if (-not $svc) {
     @"
 bind 127.0.0.1
@@ -262,9 +257,9 @@ maxmemory 192mb
 maxmemory-policy noeviction
 "@ | Set-Content -LiteralPath $conf -Encoding ASCII
     & $valkeyService install -c $conf --dir $dataDir --port $ValkeyPort --service-name $serviceName
-    if ($LASTEXITCODE -ne 0) { throw "Valkey service installation failed" }
+    if ($LASTEXITCODE -ne 0) { throw "Valkey 服务安装失败" }
 } elseif (-not (Select-String -LiteralPath $conf -Pattern "^\s*port\s+$ValkeyPort\s*$" -Quiet)) {
-    throw "$serviceName already exists with a different port. Use the port in $conf."
+    throw "服务 $serviceName 已使用其他端口，请以 $conf 中的端口为准。"
 }
 $svc = Get-Service $serviceName
 if ($svc.Status -ne "Running") { Start-Service $serviceName }
@@ -273,18 +268,16 @@ try {
     $env:VALKEYCLI_AUTH = $pw
     $pong = & $valkeyCli -h 127.0.0.1 -p $ValkeyPort -n 5 PING
     if ($LASTEXITCODE -ne 0 -or $pong -ne "PONG") {
-        throw "Cannot authenticate to Valkey at 127.0.0.1:$ValkeyPort."
+        throw "Valkey 身份验证失败（127.0.0.1:$ValkeyPort）。"
     }
 } finally {
     $env:VALKEYCLI_AUTH = $previousAuth
 }
-Ok "Valkey service verified at 127.0.0.1:$ValkeyPort"
+Ok "Valkey 服务验证通过（127.0.0.1:$ValkeyPort）"
 
-# ---- 5. server-side config -------------------------------------------------
-Step "5/7 write server-side local config"
-# Order RPCs stay OFF unless -AllowOrders is given -- the repo's safety
-# default: a fresh bridge answers queries only, order placement is an
-# explicit human decision (qmt-trader SKILL.md 安全须知).
+# ---- 5. 生成服务端配置 -------------------------------------------------
+Step "5/7 写入服务端配置"
+# 新部署默认只允许查询，传入 -AllowOrders 才启用远程下单和撤单。
 $allowOrdersPy = if ($AllowOrders) { "True" } else { "False" }
 $localCfg = @"
 # coding: utf-8
@@ -312,12 +305,12 @@ BIGQMT_CONFIG = {
 Set-Content "$dst\bigqmt_signal_trader_qmt_config.py" $localCfg -Encoding UTF8
 Ok "$dst\bigqmt_signal_trader_qmt_config.py"
 
-# ---- 6. client config + CLI ------------------------------------------------
-Step "6/7 client config + CLI"
+# ---- 6. 安装客户端配置和命令行工具 ------------------------------------------------
+Step "6/7 安装客户端配置和命令行工具"
 $cdir = "$WorkDir\client"
 New-Item -ItemType Directory -Force $cdir | Out-Null
 $cliSrc = Join-Path $PSScriptRoot "qmt_cli.py"
-if (-not (Test-Path $cliSrc)) { throw "qmt_cli.py must sit next to this script (deploy bundle)." }
+if (-not (Test-Path $cliSrc)) { throw "请将部署包中的 qmt_cli.py 放在本脚本旁。" }
 Copy-Item $cliSrc "$cdir\qmt_cli.py" -Force
 $clientCfg = @"
 # coding: utf-8
@@ -344,32 +337,32 @@ BIGQMT_LOCAL_CACHE_CONFIG = {
 }
 "@
 Set-Content "$cdir\bigqmt_signal_trader_client_config.py" $clientCfg -Encoding UTF8
-Ok "client config + qmt_cli.py in $cdir"
+Ok "客户端配置和 qmt_cli.py 已写入 $cdir"
 
-# ---- 7. optional: strategy folder -----------------------------------------
+# ---- 7. 复制自定义策略目录（可选） -----------------------------------------
 if ($WithStrategy) {
-    Step "7/7 strategy folder"
-    if (-not $StrategySrc -or -not (Test-Path $StrategySrc)) { throw "-WithStrategy needs -StrategySrc <dir>" }
+    Step "7/7 复制自定义策略目录"
+    if (-not $StrategySrc -or -not (Test-Path $StrategySrc)) { throw "使用 -WithStrategy 时须传入 -StrategySrc <目录>。" }
     Copy-Item "$StrategySrc\*" "$WorkDir\my_code" -Recurse -Force
-    Ok "strategy copied to $WorkDir\my_code (check order_config.json account_num)"
+    Ok "策略已复制到 $WorkDir\my_code，请检查 order_config.json 中的 account_num。"
 }
 
-# ---- done: manual steps ----------------------------------------------------
+# ---- 部署后的手动操作 ----------------------------------------------------
 Write-Host ""
-Write-Host "================ DEPLOYMENT DONE - manual steps left ================" -ForegroundColor Yellow
+Write-Host "================ 部署文件已就绪，请完成以下操作 ================" -ForegroundColor Yellow
 Write-Host @"
-1. In QMT: model trading -> add strategy -> load
+1. 在 QMT 的「模型交易」中添加策略，加载
    $dst\BIGQMT_VALKEY_DRYRUN.py
-   set run mode to LIVE (实盘), start it.
-   Output panel must show: [bigqmt_rpc] started channel=bigqmt:rpc:req:$Account
-2. Verify from outside:
+   将运行模式设为「实盘」并启动策略。
+   在输出面板确认 RPC 已启动（[bigqmt_rpc]）。
+2. 从 QMT 进程外验证：
    & "$vpy" "$cdir\qmt_cli.py" ping
    & "$vpy" "$cdir\qmt_cli.py" asset
-3. valkey password saved at: $pwFile
-4. Memory budget on 2C4G: QMT ~1.5G + valkey <=192M + python ~400M. Close QMT panels you do not use.
+3. Valkey 密码文件： $pwFile
+4. 2 核 4 GB 服务器的内存预算：QMT 约 1.5 GB，Valkey 上限 192 MB，Python 约 400 MB。可关闭闲置的 QMT 面板。
 "@ -ForegroundColor Yellow
 if ($AllowOrders) {
-    Write-Host "5. order RPCs: ENABLED (-AllowOrders). buy/sell/cancel will work." -ForegroundColor Yellow
+    Write-Host "5. 远程下单和撤单已开启（-AllowOrders），可调用 buy、sell 和 cancel。" -ForegroundColor Yellow
 } else {
-    Write-Host "5. order RPCs: OFF (default). buy/sell/cancel answer ORDER_DISABLED; re-run with -AllowOrders or set rpc_allow_order_methods=True in $dst\bigqmt_signal_trader_qmt_config.py and restart the strategy." -ForegroundColor Yellow
+    Write-Host "5. 远程下单和撤单默认关闭，buy、sell、cancel 返回 ORDER_DISABLED。可传入 -AllowOrders 重新部署，或在 $dst\bigqmt_signal_trader_qmt_config.py 中设置 rpc_allow_order_methods=True 后重启策略。" -ForegroundColor Yellow
 }

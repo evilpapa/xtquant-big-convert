@@ -191,7 +191,7 @@ class RpcSurfaceTest(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             self._handlers()._handle_reload_deployment({})
 
-        self.assertIn("restart the strategy once", str(caught.exception))
+        self.assertIn("请同步并重启一次", str(caught.exception))
 
     def test_status_forwards_too(self):
         handlers = self._handlers(reload_status_hook=lambda: {"ok": True})

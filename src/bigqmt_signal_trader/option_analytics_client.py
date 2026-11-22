@@ -356,7 +356,7 @@ def _resolve_market_prices(data_client, stock_codes, price_period="1m"):
             ) or {}
         except Exception as exc:
             log.warning(
-                "option price %s close batch failed for %d code(s): %s",
+                "批量读取期权 %s 收盘价失败，标的数=%d：%s",
                 requested_period, len(target_codes), exc,
             )
             return
@@ -379,7 +379,7 @@ def _resolve_market_prices(data_client, stock_codes, price_period="1m"):
             ) or {}
         except Exception as exc:
             log.warning(
-                "option price tick batch failed for %d code(s): %s",
+                "批量读取期权实时行情失败，标的数=%d：%s",
                 len(target_codes), exc,
             )
             return

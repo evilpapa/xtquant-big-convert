@@ -1,18 +1,17 @@
-"""Async, chunked download jobs for Big QMT.
+"""Big QMT 的异步分块下载任务。
 
-A client submits a download job (fire-and-forget) into a Valkey queue and polls
-its status. The Big QMT strategy thread drains one job at a time and downloads a
-bounded slice of symbols per tick (``chunk_size`` symbols, capped by a wall-clock
-budget), so a long ``download_history_data2`` never blocks the strategy thread /
-RPC pump. Historical bars land in the Big QMT machine's local store; clients then
-read them back with fast ``get_local_data`` / ``get_market_data`` calls.
+客户端将下载任务（发射后不等待）提交到 Valkey 队列，并轮询任务状态。
+Big QMT 策略线程一次只处理一个任务，每个 tick 最多下载固定数量的
+标的（``chunk_size`` 个标的，并受运行时间预算限制），因此耗时较长的
+``download_history_data2`` 不会阻塞策略线程或 RPC 泵。历史 K 线会落到
+Big QMT 机器的本地存储中；客户端随后可通过快速的 ``get_local_data`` /
+``get_market_data`` 调用读取这些数据。
 
-Valkey layout (per account). All stored VALUES are digit-free encoded (see _enc)
-so the QMT terminal's valkey compliance filter never trips on stock codes in the
-job data the pump reads back:
-- ``bigqmt:dljob:pending:{account_id}``      list of pending job ids (RPUSH/LPOP)
-- ``bigqmt:dljob:item:{account_id}:{job_id}`` encoded job blob incl. progress
-- ``bigqmt:dljob:active:{account_id}``        id of the job being processed now
+Valkey 布局（按账户区分）。所有存储的 VALUE 都采用无数字编码（见 _enc），
+避免 QMT 终端的 Valkey 合规过滤器因泵回读任务数据中的股票代码而拦截：
+- ``bigqmt:dljob:pending:{account_id}``      待读取任务 ID 列表（RPUSH/LPOP）
+- ``bigqmt:dljob:item:{account_id}:{job_id}`` 包含进度的编码任务数据
+- ``bigqmt:dljob:active:{account_id}``        当前正在处理的任务 ID
 """
 
 import json

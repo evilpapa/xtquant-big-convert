@@ -39,7 +39,7 @@ class OptionListAliasTest(unittest.TestCase):
         self.assertTrue(self.client.calls[-1][1]["isavailavle"])
 
     def test_conflicting_keywords_are_rejected(self):
-        with self.assertRaisesRegex(ValueError, "must not conflict"):
+        with self.assertRaisesRegex(ValueError, "不能同时提供"):
             self.market_data.get_option_list(
                 "510050.SH",
                 "20260909",
@@ -47,7 +47,7 @@ class OptionListAliasTest(unittest.TestCase):
                 available=False,
             )
 
-        with self.assertRaisesRegex(ValueError, "must not conflict"):
+        with self.assertRaisesRegex(ValueError, "不能同时提供"):
             self.market_data.get_option_list(
                 "510050.SH",
                 "20260909",
