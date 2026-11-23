@@ -1,6 +1,7 @@
 """大 QMT 桥接的文件日志和标准输出。
 
-午夜轮转，默认保留 7 天，可通过 BIGQMT_LOG_RETENTION_DAYS 调整。
+内嵌单文件策略使用标准输出。外部进程的文件日志午夜轮转，默认保留 7 天，
+可通过 BIGQMT_LOG_RETENTION_DAYS 调整。
 BIGQMT_LOG_ENABLED 和 BIGQMT_LOG_TO_STDOUT 分别控制日志启用和标准输出。
 """
 
@@ -19,6 +20,7 @@ except ImportError:
 
 _LOGGER_NAME = "bigqmt"
 _initialized = False
+_EMBEDDED_STRATEGY = "__bigqmt_load_local_module" in globals()
 
 
 def _env_bool(name, default=True):
@@ -30,6 +32,8 @@ def _env_bool(name, default=True):
 
 def _resolve_log_dir():
     """查找可写的日志目录，优先使用 QMT 的 python 目录，其次使用用户缓存。"""
+    if _EMBEDDED_STRATEGY:
+        return None
     candidates = []
     for entry in sys.path:
         try:

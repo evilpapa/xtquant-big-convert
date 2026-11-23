@@ -1,4 +1,4 @@
-"""Big QMT order gateway.
+"""Big QMT 订单网关。
 
 The passorder signature follows src/api/qmt_jq_trade.
 """

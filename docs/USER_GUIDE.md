@@ -713,12 +713,26 @@ python tools/build_single_file.py
 
 | 生成器 | 产物 | 内嵌方式 | 用于 |
 |---|---|---|---|
-| `build_single_file.py` | `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py` | base64 | Valkey |
+| `build_single_file.py` | `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py` | base64 | 串口（默认） |
 
 
 **用法**：编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_CONFIG`，把这**一个文件**拷进 QMT 的 python 目录当策略加载即可。策略启动时读取环境变量 `BIGQMT_ACCOUNT_ID`；未设置或只有空白时会提示。首次验证请将 `rpc_allow_order_methods` 设为 `False`，需要远程下单或撤单时再打开。
 
 产物约 900KB / 700KB，已加入 `.gitignore`——**用时重新生成，不要提交**。改动包内代码后需重新运行生成器。
+
+### 本地模拟运行单文件策略
+
+在仓库根目录用 Python 3.12 或更高版本运行模拟器。省略文件路径时，模拟器用当前源码临时构建并执行单文件。也可以传入准备部署的串口单文件，复查同一份产物。
+
+```bash
+python tools/simulate_qmt.py
+python tools/simulate_qmt.py src/BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py
+python tools/simulate_qmt.py --rpc get_full_tick --params '{"codes":["000001.SZ"]}'
+```
+
+默认检查策略初始化、K 线回调、主策略线程上的 `adjust`、模拟资产和行情查询，以及委托、成交回报和策略退出。RPC 走实际的串口分帧和策略处理逻辑，串口两端都在内存中。模拟器使用 `qmt-simulator` 账号和固定数据，不需要启动 Windows QMT、Valkey 或打开 COM 端口。
+
+可以在 IDE 中以 `tools/simulate_qmt.py` 为调试入口，或用 `python -m pdb tools/simulate_qmt.py --timeout 60`，在 `namespace["init"](context)` 所在行设断点，再单步进入内嵌策略。`--timeout` 控制每条消息的等待时间。检查失败时退出码为 `1`，策略即使捕获了模拟器拦截的文件或 Socket 操作，模拟器也会报告这些尝试。定时器由模拟器主动驱动，Windows QMT 的原生接口、实际调度间隔和券商运行限制仍需在目标终端验证。
 
 ### 委托/成交查询的 strategy_name 陷阱（重要）
 

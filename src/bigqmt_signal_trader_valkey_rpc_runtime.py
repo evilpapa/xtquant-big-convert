@@ -10,19 +10,20 @@ import sys
 
 # QMT 通过 exec 加载策略，__file__ 可能未定义。检查脚本目录和工作目录等候选位置，
 # 将包含 bigqmt_signal_trader_strategy.py 的目录加到 sys.path 开头，供导入策略和配置。
-_CANDIDATE_DIRS = []
-try:
-    _CANDIDATE_DIRS.append(os.path.dirname(os.path.abspath(__file__)))
-except Exception:
-    pass
-_CANDIDATE_DIRS.append(os.getcwd())
-for _up in (".", ".."):
-    _CANDIDATE_DIRS.append(os.path.abspath(os.path.join(os.getcwd(), _up)))
-for _dir in _CANDIDATE_DIRS:
-    if os.path.exists(os.path.join(_dir, "bigqmt_signal_trader_strategy.py")):
-        if _dir not in sys.path:
-            sys.path.insert(0, _dir)
-        break
+if "__bigqmt_load_local_module" not in globals():
+    _CANDIDATE_DIRS = []
+    try:
+        _CANDIDATE_DIRS.append(os.path.dirname(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    _CANDIDATE_DIRS.append(os.getcwd())
+    for _up in (".", ".."):
+        _CANDIDATE_DIRS.append(os.path.abspath(os.path.join(os.getcwd(), _up)))
+    for _dir in _CANDIDATE_DIRS:
+        if os.path.exists(os.path.join(_dir, "bigqmt_signal_trader_strategy.py")):
+            if _dir not in sys.path:
+                sys.path.insert(0, _dir)
+            break
 
 
 from bigqmt_signal_trader.adapters.valkey_common import local_valkey_config

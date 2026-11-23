@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xtquant-big-convert"
-version = "0.4.0"
+version = "0.5.1"
 description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (Valkey and serial)"
 readme = "README.md"
 requires-python = ">=3.12"

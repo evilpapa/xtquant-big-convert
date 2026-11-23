@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -77,7 +78,7 @@ class ConfigBlockTest(unittest.TestCase):
     def test_account_id_is_read_when_the_strategy_runs(self):
         for kind in BUILDERS:
             path, source = build(kind)
-            config = compile(source.split("# ========================= embedded sources")[0], path, "exec")
+            config = compile(source.split("_EMBEDDED_SOURCES = {", 1)[0], path, "exec")
             for value in (None, "  ", "  test-account  "):
                 with self.subTest(kind=kind, value=value), patch.dict(os.environ):
                     if value is None:
@@ -175,6 +176,65 @@ class EmbeddedContentTest(unittest.TestCase):
                 package_dir, top_dir, excluded=("valkey_common.py",))
 
     pass
+
+
+class SimulatorTest(unittest.TestCase):
+    def run_simulator(self, *args):
+        return subprocess.run(
+            [sys.executable, os.path.join(TOOLS, "simulate_qmt.py"), *args],
+            cwd=ROOT,
+            env=dict(os.environ, BIGQMT_ACCOUNT_ID="ignored", BIGQMT_VALKEY_PORT="invalid"),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", timeout=15,
+        )
+
+    def test_simulator_builds_and_runs_lifecycle_and_serial_demo(self):
+        completed = self.run_simulator()
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        for check in ("ping", "get_asset", "get_full_tick", "order_callback", "deal_callback"):
+            self.assertIn(f"{check} OK", completed.stdout)
+        self.assertIn("策略已停止", completed.stdout)
+
+    def test_simulator_sends_rpc_to_an_existing_artifact(self):
+        path, _source = build("valkey")
+        completed = self.run_simulator(
+            path, "--rpc", "get_full_tick", "--params", '{"codes":["000001.SZ"]}')
+        self.assertEqual(completed.returncode, 0, completed.stdout)
+        self.assertIn('"lastPrice": 10.0', completed.stdout)
+
+    def test_simulator_reports_io_even_when_strategy_catches_it(self):
+        _path, source = build("valkey")
+        probe = """
+import socket
+for attempt in (lambda: open('unexpected-file'), socket.socket):
+    try:
+        attempt()
+    except OSError:
+        pass
+"""
+        with tempfile.NamedTemporaryFile(suffix=".py", delete_on_close=False) as artifact:
+            artifact.close()
+            Path(artifact.name).write_text(source + probe, encoding="utf-8")
+            completed = self.run_simulator(artifact.name, "--rpc", "ping")
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("检测到策略尝试外部 I/O", completed.stdout)
+        self.assertIn("  open ", completed.stdout)
+        self.assertIn("  socket.__new__ ", completed.stdout)
+
+    def test_serial_startup_failure_does_not_fall_back_to_external_io(self):
+        _path, source = build("valkey")
+        probe = """
+import serial
+def unavailable_port(**options):
+    raise OSError('simulated port unavailable')
+serial.Serial = unavailable_port
+"""
+        with tempfile.NamedTemporaryFile(suffix=".py", delete_on_close=False) as artifact:
+            artifact.close()
+            Path(artifact.name).write_text(source + probe, encoding="utf-8")
+            completed = self.run_simulator(artifact.name, "--timeout", "0.2")
+        self.assertEqual(completed.returncode, 1, completed.stdout)
+        self.assertIn("simulated port unavailable", completed.stdout)
+        self.assertNotIn("检测到策略尝试外部 I/O", completed.stdout)
 
 
 def tearDownModule():

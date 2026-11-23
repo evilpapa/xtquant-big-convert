@@ -51,13 +51,13 @@ SECTOR_BY_TYPE = {
 
 
 def normalize_market_or_stock_code(code):
-    """Market token, or a normalised instrument code.
+    """市场标记或标准化后的合约代码。
 
-    Only the market-token test uppercases. Handing an uppercased string to
-    normalize_stock_code would defeat its case preservation, which is what kept
-    the #95 fix from reaching get_full_tick: "rb2610.SF" arrived there as
-    "RB2610.SF", a code QMT does not recognise. Futures symbols follow each
-    exchange's own convention and the spellings are not interchangeable.
+    只有市场标记的判断会转换为大写。直接将大写字符串交给
+    normalize_stock_code 会破坏大小写保留规则，而这正是导致 #95 修复
+    未能传递到 get_full_tick 的原因："rb2610.SF" 会被变成
+    "RB2610.SF"，但该代码并不是 QMT 可识别的格式。期货符号遵循各交易所
+    自身的约定，不同大小写形式也不可互换。
     """
     text = str(code or "").strip()
     if text.upper() in EXCHANGE_TOKENS:
@@ -89,11 +89,10 @@ def _int_or_default(value, default):
 
 
 def _bool_flag(value):
-    """A request flag as a bool, with JSON's spellings of false honoured.
+    """一个请求标记的布尔值，JSON 的 false 拼写也会被识别。
 
-    ``bool("false")`` is True, which is how a diagnostic switch turns itself
-    permanently on. Params arrive over RPC as JSON, so a caller writing
-    ``"false"`` or ``"0"`` has to mean it.
+    ``bool("false")`` 是 True，这就是诊断开关永久开启的原因。
+    参数通过 RPC 以 JSON 形式传入，因此调用方写入 ``"false"`` 或 ``"0"`` 必须意味着它。
     """
     if isinstance(value, str):
         return value.strip().lower() not in ("", "0", "false", "no", "none")
@@ -101,12 +100,11 @@ def _bool_flag(value):
 
 
 def _row_day(row):
-    """The YYYYMMDD a bar belongs to, from whichever time column it carries.
+    """数据条（bar）所属的日期（格式为 YYYYMMDD），该日期取自数据条中包含的任一时间列。
 
-    Bars come back keyed on stime/time/date depending on the build, and the
-    value may be a millisecond epoch, a 'YYYY-MM-DD ...' string, or already a
-    plain YYYYMMDD. Only the day matters here (issue #165 probes one day at a
-    time), so normalise to that and give up quietly on anything else.
+    根据构建版本的不同，返回的数据条可能以 stime、time 或 date 作为索引键；
+    其对应的值可能是毫秒级时间戳、'YYYY-MM-DD ...' 格式的字符串，也可能直接就是 YYYYMMDD 格式。
+    此处仅关注日期部分（问题 #165 的逻辑是每次处理一天的数据），因此需将其统一标准化为 YYYYMMDD 格式；若遇到其他格式，则直接忽略。
     """
     for key in ("stime", "time", "date", "datetime", "timetag"):
         raw = row.get(key)
@@ -127,11 +125,11 @@ def _row_day(row):
 
 
 def _frame_rows(frame):
-    """A market-data frame as a list of row dicts, whatever shape it arrived in.
+    """一个行情数据帧，转换为行字典列表，无论其原始形态如何。
 
-    pandas DataFrame, this bridge's serialisable marker, a list of dicts, or a
-    dict of column arrays -- the same four shapes quote_utils deals with. No
-    pandas import: this also runs inside QMT's embedded Python.
+    pandas DataFrame，该桥的可序列化标记，字典列表或
+    列数组的字典——与 quote_utils 处理的四个形状相同。否
+    pandas import：这也在 QMT 的嵌入式 Python 中运行。
     """
     if frame is None:
         return []
@@ -164,18 +162,18 @@ def _raw_frame_columns(field_list):
 
 
 def _records_have_rows(records):
-    """True when ``records`` carries at least one bar.
+    """当``records`` 至少带有一个小节时为真。
 
-    ``get_market_data_ex_ori`` answers two empty shapes:
+    ``get_market_data_ex_ori`` 回答两个空形状：
 
-    * a list of rows (``[]``)
-    * a dict of column arrays whose every array has length 0
+    *行列表 (``[]``)
+    *一个由列数组组成的字典，每个数组的长度都为 0
 
-    The column-dict is truthy in Python. On Guojin 2.0.8.0 that is the
-    empty answer for 1mon+ (12 keys, all length 0, measured 2026-09-11).
-    ``if records:`` treated it as data, so #237's rescue never ran: the
-    primary was kept, ``synth_fallback_only=True`` (which skips it) still
-    answered 10 rows from ``ContextInfo.get_market_data``.
+    Python 中的列字典是真的。在Guojin 2.0.8.0上是
+    1mon+ 的空答案（12 个键，所有长度为 0，于 2026 年 9 月 11 日测量）。
+    “如果记录：”将其视为数据，因此 #237 的救援从未运行：
+    Primary 被保留，``synth_fallback_only=True`` （跳过它）仍然
+    从``ContextInfo.get_market_data`` 回答了 10 行。
     """
     if records is None:
         return False
@@ -197,13 +195,13 @@ def _records_have_rows(records):
 
 
 def _market_data_answer_empty(answer):
-    """True when no code in the answer carries a single row.
+    """当答案中没有代码携带单行时为 true。
 
-    Covers both shapes get_market_data_ex can return: the raw path's
-    serialisable marker dict (records list *or* a dict of column arrays)
-    and the plain path's pandas frames (index length). Anything
-    unrecognised counts as an answer rather than as empty -- a retry must
-    never replace data with nothing.
+    涵盖两种形状 get_market_data_ex 可以返回：原始路径的
+    可序列化标记字典（记录列表*或*列数组的字典）
+    和普通路径的 pandas 框架（索引长度）。任何东西
+    无法识别的算作答案而不是空的——必须重试
+    永远不要用空东西替换数据。
     """
     if not isinstance(answer, dict) or not answer:
         return True
@@ -922,7 +920,7 @@ class BigQmtMarketDataProvider:
         if not any(str(kind).strip().lower() == "all" for kind in wanted):
             expanded = []
             for code in normalized_codes:
-                # A futures exchange lists only futures, so its token already
+                # A futures exchange lists only futures, so其 token already
                 # says what it holds -- there is nothing to narrow and no
                 # A-share sector to narrow it with.
                 narrowable = code in MARKET_CODES and code not in FUTURES_MARKET_CODES
@@ -1213,7 +1211,7 @@ class BigQmtMarketDataProvider:
     # terminal's own reference; an empty retry still means empty.
     #
     # Since #237 this tuple gates two things: the field retry above, and the
-    # get_local_data rescue below (which fires for an explicit field list too,
+    # get_local_data rescue below (which fires for an explicit field list too，
     # because the broken build answers 0 for the 6-column list as well). Both
     # stay off daily and intraday periods, where an empty answer is usually
     # the truth.
@@ -1299,10 +1297,10 @@ class BigQmtMarketDataProvider:
         them are what bind. The marker below reports which one actually
         answered rather than assuming.
 
-        Deliberately narrow:
+        Deliberately narrow：
 
-        * only the synthesized periods. An empty daily/minute answer is
-          usually truthful, and a second RPC per empty call is not free.
+        * only the synthesized periods. An empty daily/minute answer是
+          通常真实的，而第二个 RPC 在空调用时的开销并不小。
         * only after the primary and the #219 retry have both come up empty
           (or when the caller explicitly asked for the rescue alone).
         * **one code per call.** Asked for several codes at once the servant
@@ -1314,7 +1312,7 @@ class BigQmtMarketDataProvider:
           dict)`` guard threw every rescued row away.
         * the servant serves 6 of the 11 columns (see
           ``_SYNTH_RESCUE_SERVED_FIELDS``), so a request for all fields comes
-          back with OHLCV only, and ``fill_data`` does not reach it at all --
+          back with OHLCV only, and ``fill_data`` does不reach it at all --
           its signature has ``skip_paused`` instead. Both are disclosed: in
           the ``__bigqmt_partial__`` marker on the answer, and in the operator
           WARNING.
@@ -1375,7 +1373,7 @@ class BigQmtMarketDataProvider:
             # way when the window starts before the terminal's local coverage
             # (#335: 601318.SH 1mon from 20250901 with 1d data anchored at
             # 2025-12-10 -- three head rows flat at 68.40, the first real
-            # close, zero turnover; MiniQMT returns no rows for those months).
+            # close, zero turnover; MiniQMT returns no rows for those months）。
             # There is no count to fall short of, so every leading flat
             # zero-turnover row at the head of a window is pad. The servant
             # is called with its default skip_paused=True, so a genuinely
@@ -2016,8 +2014,7 @@ class BigQmtMarketDataProvider:
     # QMT 2.1.19.0 terminal (2026-09-11). Two of the original thirteen came
     # back empty and are corrected below: the A-share halves are spelt 上证 /
     # 深证 on this terminal, while 沪市A股 / 深市A股 return 0 rows. Funds go
-    # the other way -- 沪市基金 / 深市基金 answer and 上证基金 / 深证基金 do
-    # not -- so the spelling cannot be inferred, only measured. 中金所 also
+    # the other way -- 沪市基金 / 深市基金答案而上证基金 / 深证基金不 -- so the spelling cannot be inferred, only measured. 中金所 also
     # returned 0 on a STOCK account, which reads as a permission gap rather
     # than a wrong name, so it stays.
     _FALLBACK_SECTORS = (
@@ -2045,8 +2042,8 @@ class BigQmtMarketDataProvider:
         believing it, which is the whole argument for raising instead.
 
         Pass ``allow_fallback=True`` to opt into the curated names -- they are
-        still useful for driving ``get_stock_list_in_sector``, which does work.
-        Asking for them is fine; being handed them unasked is not.
+        still useful for driving ``get_stock_list_in_sector``, which does工作。
+        Asking for them is fine；被交给它们是不行的。
         """
         def _via_context():
             return self._call_context("get_sector_list")

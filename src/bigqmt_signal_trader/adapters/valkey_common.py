@@ -115,11 +115,11 @@ def streams_dead():
 
 
 def note_stream_failure(exc, log=None):
-    """True when the endpoint reports that XADD is unavailable.
+    """当端点报告 XADD 不可用时为 true。
 
-    The first such failure logs once and marks streams dead process-wide.
-    Any other exception returns False and changes nothing (transient valkey
-    issues stay retried).
+    第一个此类故障会记录一次，并将流标记为进程范围内的死亡。
+    任何其他异常都会返回 False 并且不会更改任何内容（瞬态 valkey
+    问题仍需重试）。
     """
     global _STREAMS_DEAD
     if "unknown command" not in str(exc or "").lower():

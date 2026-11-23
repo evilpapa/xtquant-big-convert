@@ -131,7 +131,7 @@ import warnings
 if sys.version_info < (3, 12):
     raise RuntimeError("xtquant-big-convert 需要 Python 3.12 或更高版本。")
 
-# =========================== config block ===========================
+# =========================== 配置区 ===========================
 BIGQMT_ACCOUNT_ID = os.environ.get("BIGQMT_ACCOUNT_ID", "").strip()
 if not BIGQMT_ACCOUNT_ID:
     warnings.warn("BIGQMT_ACCOUNT_ID 未设置或为空，当前未配置账户。", RuntimeWarning)
@@ -147,11 +147,10 @@ BIGQMT_CONFIG = {
     # "db": 5,
     # "username": "",
     # "password": "",
-    # Keep order RPC disabled unless you explicitly want remote order/cancel.
-    "rpc_allow_order_methods": False,
-    # Requests drain through QMT's run_time("adjust", ...) callback, on the main
-    # strategy thread. get_trade_detail_data returns EMPTY off that thread, so
-    # order/query methods must not be moved to a background thread.
+    "rpc_allow_order_methods": False, # 除非您明确想要远程下单/撤单，否则请保持订单 RPC 禁用。
+    # 请求通过 QMT 的 run_time("adjust", ...) 回调在主策略线程中排队。
+    # get_trade_detail_data 在其他线程中返回 EMPTY，因此
+    # 订单/查询方法不得移至后台线程。
     "rpc_process_in_listener": True,
     "rpc_listener_methods": ("*",),
     "rpc_background_threads": False,
@@ -174,9 +173,9 @@ BIGQMT_CONFIG = {
 # ===================================================================
 
 
-# ========================= embedded sources ========================
+# ========================= 内嵌源码 ========================
 __EMBEDDED_SOURCES_BLOCK__
-# bigqmt_signal_trader_qmt_config is generated from the config block.
+# bigqmt_signal_trader_qmt_config 从上述配置区生成。
 # ===================================================================
 
 
@@ -190,7 +189,7 @@ _ORIGINAL_IMPORT = _builtins.__import__
 _ORIGINAL_IMPORT_MODULE = _importlib.import_module
 _ORIGINAL_RELOAD = _importlib.reload
 
-# QMT runs the strategy via exec, where __file__ may be absent; fall back safely.
+# QMT 通过 exec 执行策略，此时可能不存在 __file__；安全地回退处理。
 _STRATEGY_FILE_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", os.getcwd())))
 
 
@@ -238,9 +237,9 @@ def _load_local_module(name):
     if "." in name:
         _load_local_module(name.rsplit(".", 1)[0])
     module = types.ModuleType(name)
-    # Point __file__ under the strategy file dir so adapters that walk up the
-    # tree (e.g. market_bigqmt locating the native xtdata SDK) still work when
-    # this file lives inside a QMT python directory.
+    # 将 __file__ 指向策略文件所在目录，使适配器可以向上查找目录
+    # （例如 market_bigqmt 定位原生 xtdata SDK），即使该文件位于
+    # QMT 的 Python 目录中也能正常工作。
     module.__file__ = os.path.join(_STRATEGY_FILE_DIR, source_path.replace("/", os.sep))
     module.__package__ = name if is_package else name.rpartition(".")[0]
     if is_package:
@@ -383,9 +382,8 @@ stop = _runtime.stop
 adjust = _runtime.adjust
 order_callback = _runtime.order_callback
 deal_callback = _runtime.deal_callback
-# Credit-account counter query callback. QMT only calls back into the
-# namespace of the file it mounted, so the single-file entry has to
-# re-export it too or query_credit_account can never answer (#202).
+# 信用账户计数器查询回调。QMT 只会回调到其挂载的文件所在的命名空间，因此
+# 单文件入口也必须重新导出该回调，否则 query_credit_account 将无法响应（#202）。
 credit_account_callback = _runtime.credit_account_callback
 '''
 
