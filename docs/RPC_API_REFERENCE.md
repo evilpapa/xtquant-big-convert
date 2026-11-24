@@ -2,7 +2,7 @@
 
 本文档列出大 QMT RPC 服务对外暴露的全部方法、参数、返回值，以及每个方法在大 QMT 内部的实现来源与注意事项。
 
-> 方法集合的权威定义在 `src/bigqmt_signal_trader/valkey_rpc.py`：
+> 方法集合的权威定义在 `../src/bigqmt_signal_trader/vk_rpc.py`：
 > `READ_METHODS`（只读白名单）、`ORDER_METHODS`（下单白名单）、`MARKET_DATA_METHODS`（转发给行情适配器）、`METHOD_ALIASES`（MiniQMT 风格别名）。
 
 ---
@@ -31,7 +31,7 @@
 - **参数**：无
 - **返回**：`{"pong": True, "account_id": "...", "account_type": "STOCK", "account_types": ["STOCK", ...], "server_time": "YYYY-MM-DD HH:MM:SS"}`——`account_types` 是这个账号可按哪些类型查（`BIGQMT_ACCOUNT_TYPE` 写成列表时不止一个，港股通）
 - **用途**：探活、确认 RPC 服务在线与归属账号。
-- **历史测量**：迁移 Valkey 之前，Redis RPC 的 p50 约 13ms。
+- **历史测量**：迁移 VK 之前，Redis RPC 的 p50 约 13ms。
 
 ### `get_request_outcome`
 - **参数**：`request_id`(str, 必填)——当初那次下单请求的信封 `request_id`
@@ -79,11 +79,11 @@
 
 ## 2.5 全推行情订阅（server 推送，对齐 miniqmt `subscribe_whole_quote`）
 
-这三个方法只管理**订阅生命周期与心跳**；行情数据本身走独立的 server→client 推送通道（Valkey pub/sub，msgpack 编码、json 兜底），**不经过 RPC 响应**。多 client 订阅同一组合（`frozenset` 规范化）共享一个服务端订阅组：普通代码使用 `ContextInfo.subscribe_whole_quote`，显式 `.SHO/.SZO` 合约逐只使用 `ContextInfo.subscribe_quote(..., result_type="list")`。引用计数归零（全部退订或全部心跳超时）才退订组内全部大 QMT 句柄。详见 `docs/SUBSCRIBE_WHOLE_QUOTE_PUSH.md`。
+这三个方法只管理**订阅生命周期与心跳**；行情数据本身走独立的 server→client 推送通道（VK pub/sub，msgpack 编码、json 兜底），**不经过 RPC 响应**。多 client 订阅同一组合（`frozenset` 规范化）共享一个服务端订阅组：普通代码使用 `ContextInfo.subscribe_whole_quote`，显式 `.SHO/.SZO` 合约逐只使用 `ContextInfo.subscribe_quote(..., result_type="list")`。引用计数归零（全部退订或全部心跳超时）才退订组内全部大 QMT 句柄。详见 `docs/SUBSCRIBE_WHOLE_QUOTE_PUSH.md`。
 
 ### `subscribe_whole_quote`
 - **参数**：`client_id`（str，必填，client 进程级稳定 id）、`sub_id`（str，必填，client 侧订阅号）、`codes`（list[str]，必填）：市场代码（`["SH","SZ"]`）或品种代码列表。
-- **返回**：`{"combo_key": str, "topic": str, "push_endpoint": str}`。`topic` 即推送通道的过滤主题；（valkey 推送时为空，client 本地推导 channel 名）。
+- **返回**：`{"combo_key": str, "topic": str, "push_endpoint": str}`。`topic` 即推送通道的过滤主题；（VK 推送时为空，client 本地推导 channel 名）。
 - **语义**：首个 client 订阅该组合时建立大 QMT 订阅；同组合后续 client 共享。幂等（重复 subscribe 不重复建订阅，用于 server 重启后 client 重放恢复）。
 
 ### `unsubscribe_whole_quote`
@@ -415,7 +415,7 @@ FormulaServer 直连不认这个参数，带上它会强制回落到 RPC 桥（�
 - **只是「已排期」**：执行它要调 `reset_app()`，那会停掉正在应答这个请求的 RPC
   服务，所以回复必须先发出去。真正的重载在下一个 adjust tick 上做，
   轮询 `reload_status` 看结果。期间会有约 1 秒查询超时（服务正在重建）。
-- **刷新不了的**：`bigqmt_signal_trader_strategy.py` 和 `BIGQMT_VALKEY_DRYRUN.py`
+- **刷新不了的**：`bigqmt_signal_trader_strategy.py` 和 `BIGQMT_VK_DRYRUN.py`
   —— QMT 自己 exec 这两个文件，**模块没法 reload 自己所在的模块**。改这两个
   仍然要重启策略。
 - **客户端**：`xt_trader.reload_deployment("why")` / `xt_trader.reload_status()`
@@ -493,8 +493,8 @@ FormulaServer 直连不认这个参数，带上它会强制回落到 RPC 桥（�
 ### `sync_positions`
 - **参数**：`account_id`(可选) `reason`(str, 默认 "rpc")
 - **返回**：`AccountSnapshot`（含 asset + positions）
-- **用途**：主动触发把当前持仓快照写入 Valkey（key `bigqmt:positions:{account_id}`），供客户端缓存。
-- **注意**：属 `LISTENER_DEFERRED_METHODS`，在 valkey 传输 + listener 模式下会延迟到 adjust 线程执行（避免阻塞收包线程）。
+- **用途**：主动触发把当前持仓快照写入 VK（key `bigqmt:positions:{account_id}`），供客户端缓存。
+- **注意**：属 `LISTENER_DEFERRED_METHODS`，在 VK 传输 + listener 模式下会延迟到 adjust 线程执行（避免阻塞收包线程）。
 
 ---
 

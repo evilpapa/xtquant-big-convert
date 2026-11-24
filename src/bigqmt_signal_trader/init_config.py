@@ -5,7 +5,7 @@
     python -m bigqmt_signal_trader.init_config
 
 可生成 QMT 端配置、客户端配置或内嵌配置的单文件策略（#56）。
-配置文件会保存 Valkey 密码。QMT 登录密码默认由启动器从
+配置文件会保存 VK 密码。QMT 登录密码默认由启动器从
 BIGQMT_LOGIN_PASSWORD 环境变量读取；环境变量为空时启动器会读启动目录的 .env。
 """
 
@@ -28,7 +28,7 @@ DEPLOYMENT_LABELS = {
 }
 
 BUILDERS = {
-    "single_file": ("build_single_file.py", "BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py", "utf-8"),
+    "single_file": ("build_single_file.py", "BIGQMT_VK_DRYRUN_ALL_IN_ONE.py", "utf-8"),
 }
 
 DEFAULTS = {
@@ -63,7 +63,7 @@ def render_server_config(answers):
         '"""QMT 策略的本地私有配置。',
         "",
         "由 bigqmt-init 生成。",
-        "此文件含账号和 Valkey 凭据，请勿提交到版本库。",
+        "此文件含账号和 VK 凭据，请勿提交到版本库。",
         '"""',
         "",
         "BIGQMT_ACCOUNT_ID = %r" % str(answers["account_id"]),
@@ -118,7 +118,7 @@ def render_client_config(answers):
         '"""客户端的本地私有配置。',
         "",
         "由 bigqmt-init 生成。",
-        "此文件含账号和 Valkey 凭据，请勿提交到版本库。",
+        "此文件含账号和 VK 凭据，请勿提交到版本库。",
         '"""',
         "",
         "BIGQMT_ACCOUNT_ID = %r" % str(answers["account_id"]),
@@ -277,16 +277,16 @@ def prompt_answers(write, read, read_secret=None):
         write, read, "传输方式", default="valkey", choices=TRANSPORTS)
 
     if answers["transport"] == "valkey":
-        answers["host"] = _ask(write, read, "Valkey 地址",
-                               local_env.get("BIGQMT_VALKEY_HOST") or DEFAULTS["host"])
-        answers["port"] = _ask_int(write, read, "Valkey 端口",
-                                   local_env.get("BIGQMT_VALKEY_PORT") or DEFAULTS["port"])
-        answers["db"] = _ask_int(write, read, "Valkey 数据库编号",
-                                 local_env.get("BIGQMT_VALKEY_DB") or DEFAULTS["db"])
-        answers["username"] = _ask(write, read, "Valkey 用户名（无则回车）",
-                                   local_env.get("BIGQMT_VALKEY_USERNAME", ""))
+        answers["host"] = _ask(write, read, "VK 地址",
+                               local_env.get("BIGQMT_VK_HOST") or DEFAULTS["host"])
+        answers["port"] = _ask_int(write, read, "VK 端口",
+                                   local_env.get("BIGQMT_VK_PORT") or DEFAULTS["port"])
+        answers["db"] = _ask_int(write, read, "VK 数据库编号",
+                                 local_env.get("BIGQMT_VK_DB") or DEFAULTS["db"])
+        answers["username"] = _ask(write, read, "VK 用户名（无则回车）",
+                                   local_env.get("BIGQMT_VK_USERNAME", ""))
         answers["password"] = _ask(
-            write, read, "Valkey 密码（输入不回显）", local_env.get("BIGQMT_VALKEY_PASSWORD", ""),
+            write, read, "VK 密码（输入不回显）", local_env.get("BIGQMT_VK_PASSWORD", ""),
             secret=True, read_secret=read_secret)
 
     write("\n远程下单/撤单默认关闭。打开后，任何能连上这条通道的程序都可以下单。\n")
@@ -337,7 +337,7 @@ def _materialize_packaged_builder(script):
     if not data:
         return None
     tmpdir = tempfile.mkdtemp(prefix="bigqmt-builder-")
-    # 同时解包所选构建脚本及其可能依赖的 Valkey 构建脚本。
+    # 同时解包所选构建脚本及其可能依赖的 VK 构建脚本。
     for name in {script, BUILDERS["single_file"][0]}:
         payload = pkgutil.get_data(
             "bigqmt_signal_trader", "_singlefile/%s.txt" % name)
@@ -421,7 +421,7 @@ def _report(write, answers, written):
 
     if answers["deployment"] == "package":
         write("\n下一步：把 src/ 下的包同步到 QMT 的 python 目录，"
-              "在策略编辑器里加载 BIGQMT_VALKEY_DRYRUN.py。\n")
+              "在策略编辑器里加载 BIGQMT_VK_DRYRUN.py。\n")
     else:
         write("\n下一步：把生成的单文件拷进 QMT 的 python 目录并作为策略加载，"
               "不需要一并拷贝整个包。\n")

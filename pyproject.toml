@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xtquant-big-convert"
-version = "0.5.1"
-description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (Valkey and serial)"
+version = "0.5.3"
+description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (VK and serial)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -22,7 +22,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Office/Business :: Financial :: Investment",
 ]
-dependencies = ["python-dotenv>=1.0,<2"]
+dependencies = [
+    "pandas==2.3.3",
+    "pytest>=9.2.0",
+    "python-dotenv>=1.0,<2",
+]
 
 [project.optional-dependencies]
 # Pin the supported client major. RPUSH is not idempotent (#245), so RPC
@@ -38,7 +42,7 @@ dev = [
 
 [project.scripts]
 bigqmt-init = "bigqmt_signal_trader.init_config:main"
-bigqmt-serial-bridge = "bigqmt_signal_trader.serial_valkey_bridge:main"
+bigqmt-serial-bridge = "bigqmt_signal_trader.serial_vk_bridge:main"
 
 [project.urls]
 Homepage = "https://github.com/litaolemo/xtquant_big_convert"
@@ -48,10 +52,10 @@ Issues = "https://github.com/litaolemo/xtquant_big_convert/issues"
 [tool.setuptools]
 package-dir = {"" = "src"}
 py-modules = [
-    "BIGQMT_VALKEY_DRYRUN",
+    "BIGQMT_VK_DRYRUN",
     "bigqmt_signal_trader_strategy",
-    "bigqmt_signal_trader_valkey_rpc_runtime",
-    "bigqmt_signal_trader_valkey_dryrun",
+    "bigqmt_signal_trader_vk_rpc_runtime",
+    "bigqmt_signal_trader_vk_dryrun",
     "bigqmt_signal_trader_dryrun",
     "bigqmt_signal_trader_diagnostic",
 ]

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""验证原生行情开关以及未配置 Valkey 时的客户端连接行为。"""
+"""验证原生行情开关以及未配置 VK 时的客户端连接行为。"""
 import os
 import sys
 import types
@@ -13,7 +13,7 @@ from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
 from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
     BigQmtXtTrader, _build_quote_push_channel,
 )
-from bigqmt_signal_trader.quote_push_channel import ValkeyQuotePushChannel  # noqa: E402
+from bigqmt_signal_trader.quote_push_channel import VkQuotePushChannel  # noqa: E402
 
 
 class NativeXtdataGateTest(unittest.TestCase):
@@ -67,23 +67,23 @@ class RpcHandlerNativeGateTest(unittest.TestCase):
     pass
 
 
-class ClientValkeyGateTest(unittest.TestCase):
+class ClientVkGateTest(unittest.TestCase):
     def _trader(self, transport, explicit):
         trader = BigQmtXtTrader(account_id="acct")
         trader.client = types.SimpleNamespace(
             transport_name=transport,
             account_id="acct",
-            _valkey_explicit=explicit,
-            _valkey=lambda: (_ for _ in ()).throw(AssertionError("must not build")),
+            _vk_explicit=explicit,
+            _vk=lambda: (_ for _ in ()).throw(AssertionError("must not build")),
         )
         return trader
 
-    def test_valkey_transport_always_probes(self):
+    def test_vk_transport_always_probes(self):
         reachable = types.SimpleNamespace(ping=lambda: True)
         trader = self._trader("valkey", explicit=False)
-        trader.client._valkey = lambda: reachable
+        trader.client._vk = lambda: reachable
 
-        self.assertIs(trader._exec_events_valkey_or_none(), reachable)
+        self.assertIs(trader._exec_events_vk_or_none(), reachable)
 
 
 class QuoteChannelGateTest(unittest.TestCase):

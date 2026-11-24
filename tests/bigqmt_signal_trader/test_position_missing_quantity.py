@@ -40,13 +40,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapters.position_bigqmt import BigQmtPositionProvider  # noqa: E402
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     BigQmtRpcHandlers,
-    ValkeyPubSubRpcService,
+    VkPubSubRpcService,
     to_jsonable,
 )
 
-from test_valkey_rpc import FakeMarketData, FakeValkey  # noqa: E402  -- established fakes
+from test_vk_rpc import FakeMarketData, FakeVk  # noqa: E402  -- established fakes
 
 BASE = {
     "m_strInstrumentID": "600000", "m_strExchangeID": "SH",
@@ -121,25 +121,25 @@ class RpcEnvelopeTest(unittest.TestCase):
     """The refusal must cross the wire as the #229/#230 error shape."""
 
     def _service(self, *natives):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         handlers = BigQmtRpcHandlers(
             account_id="acct", market_data=FakeMarketData(),
             position_provider=_provider(*natives))
-        service = ValkeyPubSubRpcService(valkey_client, handlers, account_id="acct")
-        return valkey_client, service
+        service = VkPubSubRpcService(vk_client, handlers, account_id="acct")
+        return vk_client, service
 
-    def _ask(self, service, valkey_client, method, params=None):
+    def _ask(self, service, vk_client, method, params=None):
         service.enqueue_payload({"request_id": "req-1", "account_id": "acct",
                                  "method": method, "params": params or {}})
         service.drain_pending()
-        return json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:req-1"])
+        return json.loads(vk_client.kv["bigqmt:rpc:resp:acct:req-1"])
 
     def test_get_positions_answers_ok_false_with_the_reason(self):
         missing = dict(BASE)
         del missing["m_nVolume"]
-        valkey_client, service = self._service(missing)
+        vk_client, service = self._service(missing)
 
-        response = self._ask(service, valkey_client, "get_positions")
+        response = self._ask(service, vk_client, "get_positions")
 
         self.assertFalse(response["ok"])
         self.assertIsNone(response.get("data"))
@@ -149,18 +149,18 @@ class RpcEnvelopeTest(unittest.TestCase):
     def test_query_stock_position_for_one_code_fails_the_same_way(self):
         missing = dict(BASE)
         del missing["m_nCanUseVolume"]
-        valkey_client, service = self._service(missing)
+        vk_client, service = self._service(missing)
 
-        response = self._ask(service, valkey_client, "query_stock_position",
+        response = self._ask(service, vk_client, "query_stock_position",
                              {"stock_code": "600000.SH"})
 
         self.assertFalse(response["ok"])
         self.assertIn("carries no available", response["error"])
 
     def test_a_complete_row_still_answers_ok_true(self):
-        valkey_client, service = self._service(BASE)
+        vk_client, service = self._service(BASE)
 
-        response = self._ask(service, valkey_client, "get_positions")
+        response = self._ask(service, vk_client, "get_positions")
 
         self.assertTrue(response["ok"])
         self.assertEqual(100, response["data"]["600000.SH"]["volume"])

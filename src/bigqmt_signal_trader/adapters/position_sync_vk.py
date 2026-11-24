@@ -1,25 +1,25 @@
-"""Publish Big QMT position snapshots to Valkey."""
+"""Publish Big QMT position snapshots to VK."""
 
 import datetime as _dt
 import json
 
 
-class ValkeyPositionSyncSink:
+class VkPositionSyncSink:
     def __init__(
         self,
-        valkey_client,
+        vk_client,
         key_template="bigqmt:positions:{account_id}",
         event_stream_template="bigqmt:position_events:{account_id}",
         ttl_seconds=120,
         publish_events=True,
         stream_ttl_seconds=None,
     ):
-        self.valkey = valkey_client
+        self.vk = vk_client
         self.key_template = key_template
         self.event_stream_template = event_stream_template
         self.ttl_seconds = int(ttl_seconds)
         self.publish_events = bool(publish_events)
-        from .valkey_common import EVENT_STREAM_TTL_SECONDS
+        from .vk_common import EVENT_STREAM_TTL_SECONDS
 
         self.stream_ttl_seconds = int(
             EVENT_STREAM_TTL_SECONDS if stream_ttl_seconds is None else stream_ttl_seconds)
@@ -89,18 +89,18 @@ class ValkeyPositionSyncSink:
         if unchanged:
             if self.ttl_seconds > 0:
                 try:
-                    self.valkey.expire(key, self.ttl_seconds)
+                    self.vk.expire(key, self.ttl_seconds)
                 except Exception:
                     pass
             return None
         self._last_material = material
 
         if self.ttl_seconds > 0:
-            self.valkey.setex(key, self.ttl_seconds, payload)
+            self.vk.setex(key, self.ttl_seconds, payload)
         else:
-            self.valkey.set(key, payload)
+            self.vk.set(key, payload)
         if self.publish_events:
-            from .valkey_common import (
+            from .vk_common import (
                 note_stream_failure, streams_dead, touch_stream_ttl,
             )
 
@@ -112,9 +112,9 @@ class ValkeyPositionSyncSink:
             # raising every tick (issue #163).
             if not streams_dead():
                 try:
-                    self.valkey.xadd(stream_key, {"payload": payload}, maxlen=2000, approximate=True)
+                    self.vk.xadd(stream_key, {"payload": payload}, maxlen=2000, approximate=True)
                     # maxlen 挡的是单键膨胀，挡不住键永远不消失。续期一次，
                     # 停写的流自然过期（#213）。
-                    touch_stream_ttl(self.valkey, stream_key, self.stream_ttl_seconds)
+                    touch_stream_ttl(self.vk, stream_key, self.stream_ttl_seconds)
                 except Exception as exc:
                     note_stream_failure(exc)

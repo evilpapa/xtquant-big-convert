@@ -4,7 +4,7 @@
 复制为 bigqmt_signal_trader_client_config.py，放在客户端脚本旁或 Python
 模块搜索路径中。可用 BIGQMT_CLIENT_CONFIG_MODULE 显式指定模块名。
 找不到客户端配置时，回退到 bigqmt_signal_trader_qmt_config。
-真实配置可能含账号和 Valkey 凭据，请勿提交到版本库。
+真实配置可能含账号和 VK 凭据，请勿提交到版本库。
 """
 
 BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
@@ -13,14 +13,14 @@ BIGQMT_DOWNLOAD_WAIT_SECONDS = 1800
 BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS = 0.5
 
 BIGQMT_CONFIG = {
-    # 账户查询（持仓/资产）失败时，是否用 valkey 里的上一份快照作答。
+    # 账户查询（持仓/资产）失败时，是否用 VK 里的上一份快照作答。
     # 默认 False —— 查询失败就抛给调用方。打开它等于接受
     # 「拿旧持仓当当前持仓」，策略据此算仓位是会出事的（#243）。
     # 打开后仍要求快照带 updated_at 且在时限内，否则照样抛。
     # "account_cache_fallback": False,
     # "account_cache_max_age_seconds": 30,
 
-    "host": "YOUR_VALKEY_HOST",
+    "host": "YOUR_VK_HOST",
     "port": 6379,
     "db": 5,
     "username": "",
@@ -29,7 +29,7 @@ BIGQMT_CONFIG = {
     "transport": "valkey",
 }
 
-# get_full_tick 默认走 RPC。开启后，客户端读取按需刷新的 Valkey 快照。
+# get_full_tick 默认走 RPC。开启后，客户端读取按需刷新的 VK 快照。
 BIGQMT_FULL_TICK_CACHE_CONFIG = {
     "enabled": False,
     "demand_ttl_seconds": 10,
@@ -63,7 +63,7 @@ BIGQMT_FORMULA_SERVER_CONFIG = {
     # "failure_cooldown_seconds": 30.0,  # 失败后暂停直读的秒数
 }
 
-# 全推订阅 xtdata.subscribe_whole_quote 通过 RPC 管理订阅，通过独立的 Valkey
+# 全推订阅 xtdata.subscribe_whole_quote 通过 RPC 管理订阅，通过独立的 VK
 # 发布订阅通道推送增量行情。装有 msgpack 时用 MsgPack，否则用 JSON。
 # 服务端按 (client_id, sub_id) 计数，所有客户端退订或超时后释放共享订阅。
 # 默认在 ~/.cache/bigqmt/quote_client_id 保存订阅者标识，供重启后恢复。

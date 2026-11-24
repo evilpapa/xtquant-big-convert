@@ -1,4 +1,4 @@
-"""Valkey-backed snapshot refresh and download jobs for the external serial bridge."""
+"""Snapshot refresh and download jobs backed by VK for the external serial bridge."""
 
 import datetime
 import math
@@ -14,7 +14,7 @@ from .download_jobs import (
 from .full_tick_cache import (
     MARKET_CODES, full_tick_request_id, iter_active_full_tick_demands, write_full_tick_cache,
 )
-from .valkey_rpc import READ_METHODS
+from .vk_rpc import READ_METHODS
 
 
 DOWNLOAD_METHODS = READ_METHODS & {
@@ -80,8 +80,8 @@ def _has_history(frame, price_field, start, end):
 
 
 class SerialBridgeFeatures:
-    def __init__(self, valkey, account_id):
-        self.valkey = valkey
+    def __init__(self, vk_client, account_id):
+        self.vk = vk_client
         self.account_id = account_id
         self.active_key = current_key(account_id) + ":serial"
         self._waiters = {}
@@ -92,7 +92,7 @@ class SerialBridgeFeatures:
 
     def _submit(self, method, params, request_id):
         job_id = uuid.uuid5(uuid.NAMESPACE_OID, request_id).hex[:16]
-        existing = read_download_status(self.valkey, self.account_id, job_id)
+        existing = read_download_status(self.vk, self.account_id, job_id)
         if existing is not None:
             return existing
         if method == "submit_download_history_data":
@@ -117,7 +117,7 @@ class SerialBridgeFeatures:
             incrementally=params.get("incrementally"), chunk_size=chunk_size,
         )
         job.update(accepted=0, job_ttl_seconds=ttl)
-        with self.valkey.pipeline(transaction=True) as pipe:
+        with self.vk.pipeline(transaction=True) as pipe:
             _write_job(pipe, self.account_id, job, ttl)
             pipe.rpush(queue_key(self.account_id), _enc(job_id))
             pipe.execute()
@@ -130,7 +130,7 @@ class SerialBridgeFeatures:
         job_id = params.get("job_id")
         if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
             raise ValueError("a valid job_id is required")
-        status = read_download_status(self.valkey, self.account_id, job_id)
+        status = read_download_status(self.vk, self.account_id, job_id)
         if method == "get_download_status":
             if status is None:
                 raise KeyError("download job not found or expired: %s" % job_id)
@@ -155,7 +155,7 @@ class SerialBridgeFeatures:
             if now < min(deadline, next_poll):
                 continue
             if job_id not in statuses:
-                statuses[job_id] = read_download_status(self.valkey, self.account_id, job_id)
+                statuses[job_id] = read_download_status(self.vk, self.account_id, job_id)
             status = statuses[job_id]
             if now >= deadline or status is None or status["state"] in _TERMINAL_STATES:
                 del self._waiters[request_id]
@@ -167,7 +167,7 @@ class SerialBridgeFeatures:
         if now < self._next_snapshot_scan:
             return False
         self._next_snapshot_scan = now + 0.2
-        demands = iter_active_full_tick_demands(self.valkey, self.account_id)
+        demands = iter_active_full_tick_demands(self.vk, self.account_id)
         candidates = {}
         for demand in demands:
             codes = demand["codes"]
@@ -188,7 +188,7 @@ class SerialBridgeFeatures:
                 if (response.get("ok") and isinstance(data, dict) and data
                         and demand["expires_at_ts"] > time.time()):
                     write_full_tick_cache(
-                        self.valkey, self.account_id, demand["codes"], data,
+                        self.vk, self.account_id, demand["codes"], data,
                         cache_ttl_seconds=min(60, demand["cache_ttl_seconds"]),
                     )
 
@@ -200,9 +200,9 @@ class SerialBridgeFeatures:
         ttl = job.get("job_ttl_seconds", DEFAULT_JOB_TTL_SECONDS)
         if job["state"] == RUNNING:
             ttl = max(ttl, _DOWNLOAD_TIMEOUT + _VERIFY_WINDOW + 5)
-        _write_job(self.valkey, self.account_id, job, ttl)
+        _write_job(self.vk, self.account_id, job, ttl)
         if job["state"] in _TERMINAL_STATES:
-            self.valkey.lpop(self.active_key)
+            self.vk.lpop(self.active_key)
 
     def _fail_job(self, job, error):
         job.update(state=FAILED, error=error)
@@ -212,14 +212,14 @@ class SerialBridgeFeatures:
         if now < self._next_download_poll:
             return False
         self._next_download_poll = now + 0.1
-        token = self.valkey.lindex(self.active_key, 0)
+        token = self.vk.lindex(self.active_key, 0)
         if token is None:
-            token = self.valkey.lmove(queue_key(self.account_id), self.active_key, "LEFT", "RIGHT")
+            token = self.vk.lmove(queue_key(self.account_id), self.active_key, "LEFT", "RIGHT")
         if token is None:
             return False
-        job = read_download_status(self.valkey, self.account_id, _dec(token))
+        job = read_download_status(self.vk, self.account_id, _dec(token))
         if not job or job["state"] not in (PENDING, RUNNING):
-            self.valkey.lpop(self.active_key)
+            self.vk.lpop(self.active_key)
             return False
         if job.get("phase") == "submitting":
             self._fail_job(job, "bridge restarted before QMT confirmed the batch; submission outcome unknown")

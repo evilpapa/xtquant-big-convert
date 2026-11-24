@@ -36,14 +36,14 @@ from bigqmt_signal_trader.account_type_map import (  # noqa: E402
 )
 from bigqmt_signal_trader.adapters.position_bigqmt import BigQmtPositionProvider  # noqa: E402
 from bigqmt_signal_trader.models import OrderSubmitResult  # noqa: E402
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers  # noqa: E402
 from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
     BigQmtXtTrader,
     _with_account_type,
 )
 from xtquant.xttype import StockAccount  # noqa: E402
 
-from test_valkey_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
+from test_vk_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
 
 
 def _config(**attrs):

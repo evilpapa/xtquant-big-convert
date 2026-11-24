@@ -2,7 +2,7 @@
 """Identity read-back must survive QMT's response filter and a fresh process.
 
 The filter below reproduces the broker's historical client response regexes,
-including its different bytes and MGET formatting. A normal in-memory Valkey
+including its different bytes and MGET formatting. A normal in-memory VK
 fake misses #393: the stored JSON is present but QMT refuses to return it.
 """
 
@@ -25,7 +25,7 @@ from bigqmt_signal_trader.exec_events import (
     remember_order_identity,
 )
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
 
 ACCOUNT = "test-account"
@@ -88,8 +88,8 @@ def _bytes(value):
     return value.encode("utf-8") if isinstance(value, str) else value
 
 
-class FilteredValkey(object):
-    """Only fake the supported Valkey contract; real Lua gets a separate probe."""
+class FilteredVk(object):
+    """Only fake the supported VK contract; real Lua gets a separate probe."""
 
     def __init__(self, decode_responses=False, guard=True):
         self.decode_responses = decode_responses
@@ -154,7 +154,7 @@ class FilteredValkey(object):
     def eval(self, script, numkeys, *keys_and_args):
         from bigqmt_signal_trader.exec_events import _MIGRATE_ORDER_IDENTITY
         if script != _MIGRATE_ORDER_IDENTITY:
-            raise NotImplementedError("batch scripting covered by real Valkey tests")
+            raise NotImplementedError("batch scripting covered by real VK tests")
         self.evals.append((script, numkeys, keys_and_args))
         if self.eval_error is not None:
             raise self.eval_error
@@ -181,12 +181,12 @@ class FilteredValkey(object):
         return self._response(self._value(key))
 
 
-def _handlers(valkey_client):
+def _handlers(vk_client):
     # A new handler has no submit-time memory, as after a real restart.
     handlers = BigQmtRpcHandlers.__new__(BigQmtRpcHandlers)
     handlers.account_id = ACCOUNT
-    handlers.order_identity_valkey_client = valkey_client
-    handlers.download_job_valkey_client = None
+    handlers.order_identity_vk_client = vk_client
+    handlers.download_job_vk_client = None
     handlers._order_identity_local = {}
     return handlers
 
@@ -212,53 +212,53 @@ def test_filter_can_combine_stock_and_operation_matches_across_mget_values():
 
 @pytest.mark.parametrize("decode_responses", [False, True])
 def test_new_identity_survives_filtered_mget_without_a_migration(decode_responses):
-    valkey = FilteredValkey(decode_responses)
-    payload = remember_order_identity(valkey, ACCOUNT, REMARK, NAME, "600036.SH")
+    vk = FilteredVk(decode_responses)
+    payload = remember_order_identity(vk, ACCOUNT, REMARK, NAME, "600036.SH")
 
-    found = order_identity_map(valkey, ACCOUNT, [REMARK])
+    found = order_identity_map(vk, ACCOUNT, [REMARK])
 
     assert found.get(REMARK) == payload
     assert found[REMARK]["user_order_id"] == REMARK
-    assert list(valkey.values) == [order_identity_key(ACCOUNT, REMARK)]
-    assert valkey.evals == []
-    assert valkey.gets == []
-    assert len(valkey.mgets) == 1
+    assert list(vk.values) == [order_identity_key(ACCOUNT, REMARK)]
+    assert vk.evals == []
+    assert vk.gets == []
+    assert len(vk.mgets) == 1
 
 
 @pytest.mark.parametrize("stock_code", ["600036.SH", "cu2610.SF"])
 def test_storage_preserves_chinese_strategy_and_futures_case(stock_code):
-    valkey = FilteredValkey()
+    vk = FilteredVk()
     strategy_name = "中文策略_T4_D1"
-    remember_order_identity(valkey, ACCOUNT, REMARK, strategy_name, stock_code)
+    remember_order_identity(vk, ACCOUNT, REMARK, strategy_name, stock_code)
 
-    found = order_identity_map(valkey, ACCOUNT, [REMARK]).get(REMARK)
+    found = order_identity_map(vk, ACCOUNT, [REMARK]).get(REMARK)
 
     assert found is not None
     assert found["strategy_name"] == strategy_name
     assert found["stock_code"] == stock_code
     assert found["account_id"] == ACCOUNT
     assert found["user_order_id"] == REMARK
-    stored = valkey.values[order_identity_key(ACCOUNT, REMARK)].decode("ascii")
+    stored = vk.values[order_identity_key(ACCOUNT, REMARK)].decode("ascii")
     assert stored.startswith(PREFIX)
     assert not any(character.isdigit() for character in stored)
 
 
 def test_event_enrichment_reads_safe_identity_and_keeps_remark():
-    valkey = FilteredValkey()
-    remember_order_identity(valkey, ACCOUNT, REMARK, NAME, "600036.SH")
+    vk = FilteredVk()
+    remember_order_identity(vk, ACCOUNT, REMARK, NAME, "600036.SH")
     event = {"remark": REMARK, "strategy_name": "QMT_BRIDGE", "stock_code": ""}
 
-    enriched = enrich_order_identity(valkey, ACCOUNT, event)
+    enriched = enrich_order_identity(vk, ACCOUNT, event)
 
     assert enriched["strategy_name"] == NAME
     assert enriched["stock_code"] == "600036.SH"
     assert enriched["remark"] == REMARK
 
 
-def test_fresh_handler_attributes_from_valkey_and_probe_reports_the_hit():
-    valkey = FilteredValkey()
-    remember_order_identity(valkey, ACCOUNT, REMARK, NAME, "600036.SH")
-    handlers = _handlers(valkey)
+def test_fresh_handler_attributes_from_vk_and_probe_reports_the_hit():
+    vk = FilteredVk()
+    remember_order_identity(vk, ACCOUNT, REMARK, NAME, "600036.SH")
+    handlers = _handlers(vk)
     row = SimpleNamespace(user_order_id=REMARK, strategy_name="QMT_BRIDGE")
 
     attributed = handlers._attribute_to_strategies(ACCOUNT, [row])
@@ -270,38 +270,38 @@ def test_fresh_handler_attributes_from_valkey_and_probe_reports_the_hit():
     assert probe["local_hit"] is False
     assert probe["local_journal_size"] == 0
     assert "lookup_error" not in probe
-    assert valkey.evals == []
+    assert vk.evals == []
 
 
 def test_first_named_identity_survives_blank_and_other_strategy_reuse():
-    valkey = FilteredValkey()
-    remember_order_identity(valkey, ACCOUNT, REMARK, NAME, "600036.SH")
+    vk = FilteredVk()
+    remember_order_identity(vk, ACCOUNT, REMARK, NAME, "600036.SH")
     key = order_identity_key(ACCOUNT, REMARK)
-    first_value = valkey.values[key]
-    first_expiry = valkey.expires_ms[key]
-    valkey.now_ms += 60000
+    first_value = vk.values[key]
+    first_expiry = vk.expires_ms[key]
+    vk.now_ms += 60000
 
-    remember_order_identity(valkey, ACCOUNT, REMARK, "", "600036.SH")
-    remember_order_identity(valkey, ACCOUNT, REMARK, "OTHER_T2_D3", "600036.SH")
+    remember_order_identity(vk, ACCOUNT, REMARK, "", "600036.SH")
+    remember_order_identity(vk, ACCOUNT, REMARK, "OTHER_T2_D3", "600036.SH")
 
-    assert order_identity_map(valkey, ACCOUNT, [REMARK])[REMARK]["strategy_name"] == NAME
-    assert valkey.values[key] == first_value
-    assert valkey.expires_ms[key] == first_expiry
-    assert valkey.evals == []
+    assert order_identity_map(vk, ACCOUNT, [REMARK])[REMARK]["strategy_name"] == NAME
+    assert vk.values[key] == first_value
+    assert vk.expires_ms[key] == first_expiry
+    assert vk.evals == []
 
 
 @pytest.mark.parametrize("next_name", ["OTHER_T2_D3", ""])
-def test_fresh_handler_reused_remark_keeps_valkey_owner_in_local_attribution(next_name):
-    valkey = FilteredValkey()
-    remember_order_identity(valkey, ACCOUNT, REMARK, NAME, "600036.SH")
+def test_fresh_handler_reused_remark_keeps_vk_owner_in_local_attribution(next_name):
+    vk = FilteredVk()
+    remember_order_identity(vk, ACCOUNT, REMARK, NAME, "600036.SH")
     key = order_identity_key(ACCOUNT, REMARK)
-    before = (valkey.values[key], valkey.expires_ms[key])
+    before = (vk.values[key], vk.expires_ms[key])
     gateway = DryRunOrderGateway()
     handlers = BigQmtRpcHandlers(
         account_id=ACCOUNT, market_data=SimpleNamespace(),
         position_provider=SimpleNamespace(), order_gateway=gateway,
         allow_order_methods=True)
-    handlers.order_identity_valkey_client = valkey
+    handlers.order_identity_vk_client = vk
     assert not handlers._order_identity_local
 
     handlers._handle_submit_order({
@@ -315,7 +315,7 @@ def test_fresh_handler_reused_remark_keeps_valkey_owner_in_local_attribution(nex
     assert attributed[0].strategy_name == NAME
     assert attributed[0].user_order_id == REMARK
     assert handlers._order_identity_local[(ACCOUNT, REMARK)][1] == NAME
-    assert (valkey.values[key], valkey.expires_ms[key]) == before
+    assert (vk.values[key], vk.expires_ms[key]) == before
     # Attribution does not rewrite what the caller actually submitted.
     assert gateway.submitted[0].strategy_name == next_name
     assert gateway.submitted[0].remark == REMARK
@@ -323,93 +323,93 @@ def test_fresh_handler_reused_remark_keeps_valkey_owner_in_local_attribution(nex
 
 
 def test_an_unnamed_safe_identity_can_yield_to_the_first_named_submit():
-    valkey = FilteredValkey()
-    remember_order_identity(valkey, ACCOUNT, REMARK, "", "600036.SH")
+    vk = FilteredVk()
+    remember_order_identity(vk, ACCOUNT, REMARK, "", "600036.SH")
 
-    remember_order_identity(valkey, ACCOUNT, REMARK, NAME, "600036.SH")
+    remember_order_identity(vk, ACCOUNT, REMARK, NAME, "600036.SH")
 
-    assert order_identity_map(valkey, ACCOUNT, [REMARK])[REMARK]["strategy_name"] == NAME
-    assert valkey.evals == []
+    assert order_identity_map(vk, ACCOUNT, [REMARK])[REMARK]["strategy_name"] == NAME
+    assert vk.evals == []
 
 
 def test_reused_remark_keeps_the_name_in_a_blocked_legacy_record():
-    valkey = FilteredValkey()
+    vk = FilteredVk()
     key = order_identity_key(ACCOUNT, REMARK)
-    valkey.seed(key, _legacy())
-    expiry = valkey.expires_ms[key]
+    vk.seed(key, _legacy())
+    expiry = vk.expires_ms[key]
 
     result = remember_order_identity(
-        valkey, ACCOUNT, REMARK, "OTHER_T2_D3", "600036.SH")
+        vk, ACCOUNT, REMARK, "OTHER_T2_D3", "600036.SH")
 
     assert result is None
-    assert order_identity_map(valkey, ACCOUNT, [REMARK])[REMARK]["strategy_name"] == NAME
-    assert valkey.expires_ms[key] == expiry
-    assert valkey.sets == []
-    assert len(valkey.evals) == 1
+    assert order_identity_map(vk, ACCOUNT, [REMARK])[REMARK]["strategy_name"] == NAME
+    assert vk.expires_ms[key] == expiry
+    assert vk.sets == []
+    assert len(vk.evals) == 1
 
 
 @pytest.mark.parametrize("decode_responses", [False, True])
 def test_unfiltered_legacy_json_remains_readable_without_eval(decode_responses):
-    valkey = FilteredValkey(decode_responses, guard=False)
+    vk = FilteredVk(decode_responses, guard=False)
     key = order_identity_key(ACCOUNT, REMARK)
     raw = _legacy()
-    valkey.seed(key, raw)
+    vk.seed(key, raw)
 
-    found = order_identity_map(valkey, ACCOUNT, [REMARK])
-    enriched = enrich_order_identity(valkey, ACCOUNT, {"user_order_id": REMARK})
+    found = order_identity_map(vk, ACCOUNT, [REMARK])
+    enriched = enrich_order_identity(vk, ACCOUNT, {"user_order_id": REMARK})
 
     assert found[REMARK] == json.loads(raw)
     assert enriched["strategy_name"] == NAME
-    assert valkey.values[key] == raw.encode("utf-8")
-    assert valkey.evals == []
+    assert vk.values[key] == raw.encode("utf-8")
+    assert vk.evals == []
 
 
 def test_mget_cross_record_rejection_falls_back_without_migrating_readable_json():
-    valkey = FilteredValkey()
+    vk = FilteredVk()
     first = _legacy(remark="first", name="alpha")
     second = _legacy(remark="second", stock_code="688001.SH")
-    valkey.seed(order_identity_key(ACCOUNT, "first"), first)
-    valkey.seed(order_identity_key(ACCOUNT, "second"), second)
+    vk.seed(order_identity_key(ACCOUNT, "first"), first)
+    vk.seed(order_identity_key(ACCOUNT, "second"), second)
 
-    found = order_identity_map(valkey, ACCOUNT, ["first", "second"])
+    found = order_identity_map(vk, ACCOUNT, ["first", "second"])
 
     assert found["first"] == json.loads(first)
     assert found["second"] == json.loads(second)
-    assert len(valkey.mgets) == 1
-    assert len(valkey.gets) == 2
-    assert valkey.evals == []
+    assert len(vk.mgets) == 1
+    assert len(vk.gets) == 2
+    assert vk.evals == []
 
 
 @pytest.mark.parametrize("decode_responses", [False, True])
 @pytest.mark.parametrize("ttl_ms", [123456, None])
 def test_blocked_legacy_identity_is_recovered_without_changing_expiry(
         decode_responses, ttl_ms):
-    valkey = FilteredValkey(decode_responses)
+    vk = FilteredVk(decode_responses)
     key = order_identity_key(ACCOUNT, REMARK)
     raw = _legacy()
-    valkey.seed(key, raw, ttl_ms)
-    expiry = valkey.expires_ms[key]
+    vk.seed(key, raw, ttl_ms)
+    expiry = vk.expires_ms[key]
 
-    found = order_identity_map(valkey, ACCOUNT, [REMARK])
+    found = order_identity_map(vk, ACCOUNT, [REMARK])
 
     assert found.get(REMARK) == json.loads(raw)
-    assert valkey.expires_ms[key] == expiry
-    assert valkey.sets == []
-    assert len(valkey.evals) == 1
-    assert valkey.values[key].startswith(PREFIX.encode("ascii"))
+    assert vk.expires_ms[key] == expiry
+    assert vk.sets == []
+    assert len(vk.evals) == 1
+    assert vk.values[key].startswith(PREFIX.encode("ascii"))
     # A second read is now ordinary MGET and must not run the script again.
-    assert order_identity_map(valkey, ACCOUNT, [REMARK]) == found
-    assert len(valkey.evals) == 1
+    assert order_identity_map(vk, ACCOUNT, [REMARK]) == found
+    assert len(vk.evals) == 1
 
 
 @pytest.mark.parametrize("read_path", ["event", "attribution", "probe"])
 def test_each_read_path_can_recover_an_existing_blocked_legacy_identity(read_path):
-    valkey = FilteredValkey()
-    valkey.seed(order_identity_key(ACCOUNT, REMARK), _legacy())
-    handlers = _handlers(valkey)
+    vk = FilteredVk()
+    vk.seed(order_identity_key(ACCOUNT, REMARK), _legacy())
+    handlers = _handlers(vk)
 
     if read_path == "event":
-        result = enrich_order_identity(valkey, ACCOUNT, {"remark": REMARK})
+        result = enrich_order_identity(vk, ACCOUNT, {"remark": REMARK})
         assert result.get("strategy_name") == NAME
         assert result["remark"] == REMARK
     elif read_path == "attribution":
@@ -422,61 +422,61 @@ def test_each_read_path_can_recover_an_existing_blocked_legacy_identity(read_pat
         assert result["valkey_hit"] is True
         assert result["local_hit"] is False
         assert "lookup_error" not in result
-    assert len(valkey.evals) == 1
+    assert len(vk.evals) == 1
 
 
 def test_eval_rejection_leaves_existing_json_unchanged_and_probe_diagnosable():
-    valkey = FilteredValkey()
+    vk = FilteredVk()
     key = order_identity_key(ACCOUNT, REMARK)
-    valkey.seed(key, _legacy())
-    before = (valkey.values[key], valkey.expires_ms[key])
-    valkey.eval_error = RuntimeError("NOPERM EVAL is disabled")
+    vk.seed(key, _legacy())
+    before = (vk.values[key], vk.expires_ms[key])
+    vk.eval_error = RuntimeError("NOPERM EVAL is disabled")
 
-    assert order_identity_map(valkey, ACCOUNT, [REMARK]) == {}
-    probe = _handlers(valkey)._handle_probe_order_identity({"remark": REMARK})
+    assert order_identity_map(vk, ACCOUNT, [REMARK]) == {}
+    probe = _handlers(vk)._handle_probe_order_identity({"remark": REMARK})
 
-    assert (valkey.values[key], valkey.expires_ms[key]) == before
-    assert len(valkey.evals) >= 1
+    assert (vk.values[key], vk.expires_ms[key]) == before
+    assert len(vk.evals) >= 1
     assert probe["valkey_hit"] is None
     assert probe.get("lookup_error")
-    assert valkey.sets == []
+    assert vk.sets == []
 
 
-def test_unrelated_valkey_failure_does_not_attempt_legacy_migration():
-    valkey = FilteredValkey()
+def test_unrelated_vk_failure_does_not_attempt_legacy_migration():
+    vk = FilteredVk()
     key = order_identity_key(ACCOUNT, REMARK)
-    valkey.seed(key, _legacy())
-    valkey.read_error = RuntimeError("connection timed out")
-    before = (valkey.values[key], valkey.expires_ms[key])
+    vk.seed(key, _legacy())
+    vk.read_error = RuntimeError("connection timed out")
+    before = (vk.values[key], vk.expires_ms[key])
 
-    assert order_identity_map(valkey, ACCOUNT, [REMARK]) == {}
-    assert _handlers(valkey)._handle_probe_order_identity(
+    assert order_identity_map(vk, ACCOUNT, [REMARK]) == {}
+    assert _handlers(vk)._handle_probe_order_identity(
         {"remark": REMARK})["valkey_hit"] is None
-    assert (valkey.values[key], valkey.expires_ms[key]) == before
-    assert valkey.evals == []
+    assert (vk.values[key], vk.expires_ms[key]) == before
+    assert vk.evals == []
 
 
 def test_expired_legacy_identity_is_not_resurrected_by_a_query():
-    valkey = FilteredValkey()
+    vk = FilteredVk()
     key = order_identity_key(ACCOUNT, REMARK)
-    valkey.seed(key, _legacy(), ttl_ms=1)
-    valkey.now_ms += 2
+    vk.seed(key, _legacy(), ttl_ms=1)
+    vk.now_ms += 2
 
-    assert order_identity_map(valkey, ACCOUNT, [REMARK]) == {}
-    assert key not in valkey.values
-    assert valkey.evals == []
-    assert valkey.sets == []
+    assert order_identity_map(vk, ACCOUNT, [REMARK]) == {}
+    assert key not in vk.values
+    assert vk.evals == []
+    assert vk.sets == []
 
 
 @pytest.mark.parametrize("wrong_field", ["account", "remark"])
 def test_blocked_legacy_payload_with_wrong_identity_is_never_migrated(wrong_field):
-    valkey = FilteredValkey()
+    vk = FilteredVk()
     key = order_identity_key(ACCOUNT, REMARK)
     raw = (_legacy(account="another-account") if wrong_field == "account"
            else _legacy(remark="another-remark"))
-    valkey.seed(key, raw)
-    before = (valkey.values[key], valkey.expires_ms[key])
+    vk.seed(key, raw)
+    before = (vk.values[key], vk.expires_ms[key])
 
-    assert order_identity_map(valkey, ACCOUNT, [REMARK]) == {}
-    assert (valkey.values[key], valkey.expires_ms[key]) == before
-    assert valkey.sets == []
+    assert order_identity_map(vk, ACCOUNT, [REMARK]) == {}
+    assert (vk.values[key], vk.expires_ms[key]) == before
+    assert vk.sets == []

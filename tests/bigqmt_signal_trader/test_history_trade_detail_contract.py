@@ -25,12 +25,12 @@ from types import SimpleNamespace
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     BigQmtRpcHandlers,
-    ValkeyPubSubRpcService,
+    VkPubSubRpcService,
 )
 
-import bigqmt_signal_trader.valkey_rpc as _rpc_module  # noqa: E402
+import bigqmt_signal_trader.vk_rpc as _rpc_module  # noqa: E402
 
 # Lazy: the fix introduces this function; importing it at module level would
 # make the pre-fix run a collection error instead of the behavioral failures
@@ -38,10 +38,10 @@ import bigqmt_signal_trader.valkey_rpc as _rpc_module  # noqa: E402
 _normalize_grouped_detail_rows = getattr(
     _rpc_module, "_normalize_grouped_detail_rows", None)
 
-from test_valkey_rpc import (  # noqa: E402  -- the established fakes
+from test_vk_rpc import (  # noqa: E402  -- the established fakes
     FakeMarketData,
     FakePositionProvider,
-    FakeValkey,
+    FakeVk,
 )
 
 
@@ -70,7 +70,7 @@ def _handlers(qmt_api):
 def _rpc_call(handlers):
     """Through the service layer, so the ok/error contract is what the
     client actually sees."""
-    service = ValkeyPubSubRpcService(FakeValkey(), handlers, account_id="acct")
+    service = VkPubSubRpcService(FakeVk(), handlers, account_id="acct")
     return service.process_request({
         "request_id": "r1", "account_id": "acct",
         "method": "get_history_trade_detail_data",
@@ -123,7 +123,7 @@ class GroupedShapeTest(unittest.TestCase):
 
     @staticmethod
     def _normalize_detail_row_helper():
-        from bigqmt_signal_trader.valkey_rpc import _normalize_detail_rows
+        from bigqmt_signal_trader.vk_rpc import _normalize_detail_rows
         return _normalize_detail_rows([_deal("T1")])[0]
 
 

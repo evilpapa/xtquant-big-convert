@@ -64,7 +64,7 @@ class LandsLateClient(object):
         # configuration the report was filed against.
         self.local_cache_config = {"enabled": True, "dir": cache_dir, "fallback_rpc": False}
 
-    def _valkey(self):
+    def _vk(self):
         return None
 
     def call(self, method, params=None, account_id=None, timeout_seconds=None, **kw):

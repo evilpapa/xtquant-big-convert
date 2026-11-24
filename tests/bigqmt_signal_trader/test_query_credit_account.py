@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapters.market_bigqmt import BigQmtMarketDataProvider
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
 
 class _CreditResult(object):
@@ -175,7 +175,7 @@ class QueryCreditAccountTest(unittest.TestCase):
         self.assertLess(time.time() - t0, 2.0)
 
     def test_default_ceiling_bounds_the_main_thread_hold(self):
-        from bigqmt_signal_trader.valkey_rpc import (
+        from bigqmt_signal_trader.vk_rpc import (
             CREDIT_ACCOUNT_DEFAULT_WAIT_SECONDS, CREDIT_ACCOUNT_MAX_WAIT_SECONDS,
         )
         self.assertLessEqual(CREDIT_ACCOUNT_DEFAULT_WAIT_SECONDS, 2.0)
@@ -244,7 +244,7 @@ class QueryCreditAccountTest(unittest.TestCase):
 
     def test_default_does_not_block_the_adjust_thread(self):
         """默认不等回调 —— handler 跑在 adjust 主线程上，等待可能把回调堵在门外。"""
-        from bigqmt_signal_trader.valkey_rpc import CREDIT_ACCOUNT_DEFAULT_WAIT_SECONDS
+        from bigqmt_signal_trader.vk_rpc import CREDIT_ACCOUNT_DEFAULT_WAIT_SECONDS
 
         self.assertEqual(CREDIT_ACCOUNT_DEFAULT_WAIT_SECONDS, 0.0)
 
@@ -368,7 +368,7 @@ class StaleCacheGuardTest(unittest.TestCase):
         return handlers
 
     def test_default_max_age_is_two_minutes(self):
-        from bigqmt_signal_trader.valkey_rpc import CREDIT_ACCOUNT_MAX_AGE_SECONDS
+        from bigqmt_signal_trader.vk_rpc import CREDIT_ACCOUNT_MAX_AGE_SECONDS
         self.assertEqual(CREDIT_ACCOUNT_MAX_AGE_SECONDS, 120.0)
         self.assertEqual(_handlers(None).credit_account_max_age_seconds, 120.0)
 
@@ -427,7 +427,7 @@ class StaleCacheGuardTest(unittest.TestCase):
 class MethodRegistrationTest(unittest.TestCase):
 
     def test_method_is_whitelisted_and_deferred_to_the_main_thread(self):
-        from bigqmt_signal_trader.valkey_rpc import (
+        from bigqmt_signal_trader.vk_rpc import (
             LISTENER_DEFERRED_METHODS, READ_METHODS,
         )
         # query_credit_account 需要 ContextInfo 和主线程上下文，必须走 drain
@@ -441,9 +441,9 @@ class CreditCallbackWiringTest(unittest.TestCase):
 
     # 仓库里跟踪着的入口文件。
     ENTRY_FILES = (
-        "src/BIGQMT_VALKEY_DRYRUN.py",
-        "src/bigqmt_signal_trader_valkey_rpc_runtime.py",
-        "src/bigqmt_signal_trader_valkey_dryrun.py",
+        "src/BIGQMT_VK_DRYRUN.py",
+        "src/bigqmt_signal_trader_vk_rpc_runtime.py",
+        "src/bigqmt_signal_trader_vk_dryrun.py",
         "src/bigqmt_signal_trader_dryrun.py",
     )
 
@@ -453,7 +453,7 @@ class CreditCallbackWiringTest(unittest.TestCase):
     # 脚本是跟踪着的——所以事实来源是它们，不是产物。
     GENERATED_ENTRIES = (
         ("tools/build_single_file.py",
-         "src/BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py"),
+         "src/BIGQMT_VK_DRYRUN_ALL_IN_ONE.py"),
     )
 
     def _missing_credit_export(self, rel):

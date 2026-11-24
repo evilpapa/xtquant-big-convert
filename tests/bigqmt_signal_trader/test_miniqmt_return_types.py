@@ -53,8 +53,8 @@ class FakeClient(object):
             return {"success": self._cancel_ok}
         return {}
 
-    def _valkey(self):
-        raise AssertionError("valkey not expected here")
+    def _vk(self):
+        raise AssertionError("VK not expected here")
 
 
 def _trader(**kwargs):

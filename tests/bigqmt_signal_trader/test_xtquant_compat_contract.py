@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.xtquant_compat import BigQmtXtTrader
 from bigqmt_signal_trader.models import OrderSnapshot, TradeSnapshot
-from bigqmt_signal_trader.valkey_rpc import to_jsonable
+from bigqmt_signal_trader.vk_rpc import to_jsonable
 
 
 class _RecordingCallback:
@@ -287,7 +287,7 @@ class CallbackContractTest(unittest.TestCase):
 class QueryStockTradesDefaultContractTest(unittest.TestCase):
     """客户端默认不过滤策略名。
 
-    服务端语义 (valkey_rpc._handle_query_trades): 空策略名返回账户全部成交。
+    服务端语义 (vk_rpc._handle_query_trades): 空策略名返回账户全部成交。
     默认 "bigqmt_signal_trader" 会把用其他策略名下的成交全部过滤掉,
     无参调用 query_stock_trades(account) 依赖默认值, 应返回全部成交。
     """
@@ -330,7 +330,7 @@ class QueryPathSerializationContractTest(unittest.TestCase):
     """服务端快照 -> RPC 序列化 -> 客户端映射 的端到端字段契约。
 
     锁定两条真实路径的字段取值依据：查询路径（adapters/order_bigqmt.py
-    构建 OrderSnapshot/TradeSnapshot，valkey_rpc.to_jsonable 序列化后到
+    构建 OrderSnapshot/TradeSnapshot，vk_rpc.to_jsonable 序列化后到
     达客户端）；实时路径由 exec_events.normalize_*_event 的 dict 直接
     覆盖（本文件其它用例的 event dict 即按该结构构造）。
     """

@@ -1,5 +1,5 @@
 """frozen_cash must survive the whole chain: QMT row -> AssetSnapshot -> RPC
-serialization -> client CompatObject, plus the Valkey cached-asset fallback.
+serialization -> client CompatObject, plus the VK cached-asset fallback.
 
 Field names follow MiniQMT's XtAsset(account_id, cash, frozen_cash,
 market_value, total_asset), where total_asset = cash + frozen_cash + market_value.
@@ -17,9 +17,9 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapters import position_bigqmt
 from bigqmt_signal_trader.adapters.position_bigqmt import BigQmtPositionProvider
-from bigqmt_signal_trader.adapters.position_sync_valkey import ValkeyPositionSyncSink
+from bigqmt_signal_trader.adapters.position_sync_vk import VkPositionSyncSink
 from bigqmt_signal_trader.models import AccountSnapshot, AssetSnapshot, PositionSnapshot
-from bigqmt_signal_trader.valkey_rpc import to_jsonable
+from bigqmt_signal_trader.vk_rpc import to_jsonable
 from bigqmt_signal_trader.xtquant_compat import BigQmtXtTrader, StockAccount
 
 
@@ -132,7 +132,7 @@ class RpcSerializationTest(unittest.TestCase):
         self.assertEqual(payload["market_value"], 850.0)
 
 
-class FakeValkey:
+class FakeVk:
     def __init__(self):
         self.kv = {}
         self.streams = {}
@@ -153,8 +153,8 @@ class FakeValkey:
 
 class PositionSyncTest(unittest.TestCase):
     def test_cached_snapshot_includes_frozen_cash(self):
-        valkey_client = FakeValkey()
-        ValkeyPositionSyncSink(valkey_client).publish(
+        vk_client = FakeVk()
+        VkPositionSyncSink(vk_client).publish(
             AccountSnapshot(
                 account_id="acct",
                 asset=AssetSnapshot("acct", 100.0, 1000.0, frozen_cash=50.0, market_value=850.0),
@@ -164,7 +164,7 @@ class PositionSyncTest(unittest.TestCase):
             )
         )
 
-        payload = json.loads(valkey_client.kv["bigqmt:positions:acct"])
+        payload = json.loads(vk_client.kv["bigqmt:positions:acct"])
 
         self.assertEqual(payload["asset"]["frozen_cash"], 50.0)
         self.assertEqual(payload["asset"]["market_value"], 850.0)

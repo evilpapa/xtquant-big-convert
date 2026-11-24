@@ -1,4 +1,4 @@
-"""在 QMT 进程外运行，通过串口转发已有的 Valkey RPC 消息。"""
+"""在 QMT 进程外运行，通过串口转发已有的 VK RPC 消息。"""
 
 import argparse
 import logging
@@ -11,13 +11,13 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from .adapters.valkey_common import normalize_valkey_url
+from .adapters.vk_common import normalize_vk_url
 from .exec_events import EXEC_TOPICS, publish_exec_event
 from .local_env import local_serial_settings
-from .quote_push_channel import ValkeyQuotePushChannel
+from .quote_push_channel import VkQuotePushChannel
 from .serial_bridge_features import DOWNLOAD_METHODS, SerialBridgeFeatures
-from .valkey_rpc import METHOD_ALIASES, ORDER_METHODS
-from .transports.valkey_transport import ValkeyTransport, _loads
+from .vk_rpc import METHOD_ALIASES, ORDER_METHODS
+from .transports.vk_transport import VkTransport, _loads
 from .transports.serial_transport import (
     DEFAULT_BAUDRATE, DEFAULT_MAX_FRAME_BYTES, SerialFrames, open_serial,
 )
@@ -48,15 +48,15 @@ class _InFlight:
     background: bool = False
 
 
-def _valkey_endpoint(url):
+def _vk_endpoint(url):
     """返回可写入日志的连接地址 host:port/db，省略凭据。"""
     try:
         parts = urlsplit(url)
         port = parts.port or 6379
     except ValueError:
-        return "the configured Valkey URL"
+        return "the configured VK URL"
     if not parts.hostname:
-        return "the configured Valkey URL"
+        return "the configured VK URL"
     db = (parts.path or "/0").strip("/") or "0"
     return "%s:%s/%s" % (parts.hostname, port, db)
 
@@ -76,16 +76,16 @@ def _describe(exc):
     return " <- ".join(parts)
 
 
-class SerialValkeyBridge:
-    def __init__(self, valkey_client, port, account_id, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
-        self.valkey = valkey_client
+class SerialVkBridge:
+    def __init__(self, vk_client, port, account_id, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
+        self.vk = vk_client
         self.account_id = str(account_id or "").strip()
         if not self.account_id or len(self.account_id) > 128:
             raise ValueError("a valid account_id is required")
         self.wire = SerialFrames(port, max_frame_bytes)
-        self.replies = ValkeyTransport(valkey_client, account_id=self.account_id)
-        self.quotes = ValkeyQuotePushChannel(valkey_client, account_id=self.account_id)
-        self.features = SerialBridgeFeatures(valkey_client, self.account_id)
+        self.replies = VkTransport(vk_client, account_id=self.account_id)
+        self.quotes = VkQuotePushChannel(vk_client, account_id=self.account_id)
+        self.features = SerialBridgeFeatures(vk_client, self.account_id)
         self._inflight = {}
         self._uncertain_writes = OrderedDict()
         self._session = None
@@ -146,7 +146,7 @@ class SerialValkeyBridge:
             if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
                 raise ValueError("invalid request_id")
         except (ValueError, TypeError, RecursionError) as exc:
-            _log.warning("已丢弃格式无效的 Valkey RPC 请求（%s）：%s", type(exc).__name__, _preview(raw))
+            _log.warning("已丢弃格式无效的 VK RPC 请求（%s）：%s", type(exc).__name__, _preview(raw))
             return
         method = str(request.get("method") or "").strip()
         params = request.get("params")
@@ -188,11 +188,11 @@ class SerialValkeyBridge:
             return
         valid_timestamp = math.isfinite(sent_at) and 0 < sent_at <= now + 1
         if canonical in ORDER_METHODS and not valid_timestamp:
-            self._refuse(route, method, "Serial order requires a fresh Valkey RPC client timestamp; check client version and clock")
+            self._refuse(route, method, "Serial order requires a fresh VK RPC client timestamp; check client version and clock")
             return
         submitted_at = min(now, sent_at) if valid_timestamp else now
         if submitted_at + timeout <= now:
-            self._refuse(route, method, "RequestExpired: queued in Valkey past the client timeout; NOT dispatched")
+            self._refuse(route, method, "RequestExpired: queued in VK past the client timeout; NOT dispatched")
             return
         if canonical in DOWNLOAD_METHODS:
             try:
@@ -249,7 +249,7 @@ class SerialValkeyBridge:
                 event_type = data.get("event_type")
                 if (isinstance(event_type, str) and EXEC_TOPICS.get(event_type) == topic
                         and str(data.get("account_id") or "") == self.account_id):
-                    publish_exec_event(self.valkey, self.account_id, data)
+                    publish_exec_event(self.vk, self.account_id, data)
             else:
                 self.quotes.publish(topic, data)
 
@@ -271,7 +271,7 @@ class SerialValkeyBridge:
                 if message and message.get("type") == "message":
                     raw = message.get("data")
             if raw is None:
-                raw = self.valkey.lpop(self.replies.request_queue)
+                raw = self.vk.lpop(self.replies.request_queue)
             if raw is not None:
                 self._forward_request(raw)
             elif not self._inflight:
@@ -279,11 +279,11 @@ class SerialValkeyBridge:
         sent = self.wire.write_step()
         return bool(frames or raw is not None or sent or background)
 
-    def run(self, valkey_pubsub=False):
+    def run(self, vk_pubsub=False):
         pubsub = None
         try:
-            if valkey_pubsub:
-                pubsub = self.valkey.pubsub(ignore_subscribe_messages=True)
+            if vk_pubsub:
+                pubsub = self.vk.pubsub(ignore_subscribe_messages=True)
                 pubsub.subscribe(self.replies.request_channel)
             while True:
                 if not self.step(pubsub):
@@ -299,16 +299,16 @@ def main(argv=None):
     parser.add_argument("--port", default="COM11")
     parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
     parser.add_argument("--max-frame-bytes", type=int, default=DEFAULT_MAX_FRAME_BYTES)
-    parser.add_argument("--valkey-url")
-    parser.add_argument("--valkey-pubsub", action="store_true")
+    parser.add_argument("--vk-url")
+    parser.add_argument("--vk-pubsub", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     local_settings = local_serial_settings()
     args.account_id = ((args.account_id or "").strip() or local_settings["account_id"]
                        or os.environ.get("BIGQMT_ACCOUNT_ID", "").strip())
-    args.valkey_url = (args.valkey_url or local_settings["valkey_url"]
-                       or os.environ.get("BIGQMT_SERIAL_VALKEY_URL")
-                       or os.environ.get("BIGQMT_VALKEY_URL") or "valkey://127.0.0.1:6379/5")
+    args.vk_url = (args.vk_url or local_settings["vk_url"]
+                       or os.environ.get("BIGQMT_SERIAL_VK_URL")
+                       or os.environ.get("BIGQMT_VK_URL") or "valkey://127.0.0.1:6379/5")
     if not args.account_id:
         _log.warning("未配置资金账号。请在 .env 中设置 BIGQMT_ACCOUNT_ID，或传入 --account-id。")
         return 2
@@ -320,15 +320,15 @@ def main(argv=None):
         parser.exit(1, "请在桥接进程的 Python 环境中安装 xtquant-big-convert[valkey,serial]。\n")
 
     client = port = None
-    endpoint = _valkey_endpoint(args.valkey_url)
+    endpoint = _vk_endpoint(args.vk_url)
     try:
-        url = normalize_valkey_url(args.valkey_url)
+        url = normalize_vk_url(args.vk_url)
     except ValueError as exc:
         parser.error(str(exc))
 
     def describe(exc):
-        # 从异常消息中移除 Valkey URL 可能包含的凭据。
-        return _describe(exc).replace(args.valkey_url, endpoint).replace(url, endpoint)
+        # 从异常消息中移除 VK URL 可能包含的凭据。
+        return _describe(exc).replace(args.vk_url, endpoint).replace(url, endpoint)
 
     try:
         client = Valkey.from_url(url, socket_timeout=2, socket_connect_timeout=2,
@@ -337,8 +337,8 @@ def main(argv=None):
             client.ping()
         except Exception as exc:
             _log.error(
-                "无法连接 Valkey %s（%s）。桥接从该实例读取 RPC 请求，请通过 --valkey-url "
-                "或 BIGQMT_SERIAL_VALKEY_URL 指定实际发送请求的 Valkey 实例及数据库。",
+                "无法连接 VK %s（%s）。桥接从该实例读取 RPC 请求，请通过 --vk-url "
+                "或 BIGQMT_SERIAL_VK_URL 指定实际发送请求的 VK 实例及数据库。",
                 endpoint, describe(exc))
             return 1
         try:
@@ -349,16 +349,16 @@ def main(argv=None):
                 "并确认 QMT 或其他桥接进程未占用该端口。",
                 args.port, args.baudrate, describe(exc))
             return 1
-        bridge = SerialValkeyBridge(client, port, args.account_id, args.max_frame_bytes)
-        _log.info("Valkey 串口桥接已启动，串口 %s，波特率 %s，Valkey %s，账号 %s",
+        bridge = SerialVkBridge(client, port, args.account_id, args.max_frame_bytes)
+        _log.info("VK 串口桥接已启动，串口 %s，波特率 %s，VK %s，账号 %s",
                   args.port, args.baudrate, endpoint, args.account_id)
-        bridge.run(valkey_pubsub=args.valkey_pubsub)
+        bridge.run(vk_pubsub=args.vk_pubsub)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
         module = type(exc).__module__ or ""
         if module.startswith("valkey"):
-            hint = ("运行期间 Valkey %s 连接中断。连接恢复后，先重启桥接，再重启 QMT 策略。" % endpoint)
+            hint = ("运行期间 VK %s 连接中断。连接恢复后，先重启桥接，再重启 QMT 策略。" % endpoint)
         elif module.startswith("serial"):
             hint = ("运行期间串口 %s 连接中断。请关闭桥接和 QMT，检查 com0com 端口对后重启两端。" % args.port)
         else:

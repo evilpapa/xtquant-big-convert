@@ -558,9 +558,9 @@ def main(argv=None):
     except Exception as exc:
         print("连不上桥，体检没跑：%s: %s" % (exc.__class__.__name__, exc))
         print("")
-        print("这个脚本要能找到账号和 valkey/zmq 配置，方式任选其一：")
+        print("请用以下任一方式提供账号和 VK / zmq 配置。")
         print("  1. 在有 bigqmt_signal_trader_client_config.py 的目录下运行；")
-        print("  2. 在当前目录 .env 或环境变量中设置 BIGQMT_ACCOUNT_ID 和 Valkey 连接参数；")
+        print("  2. 在当前目录 .env 或环境变量中设置 BIGQMT_ACCOUNT_ID 和 VK 连接参数；")
         print("  3. 加 --account <账号> 参数。")
         print("确认 QMT 终端开着、策略在跑，再重试。")
         try:

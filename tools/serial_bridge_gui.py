@@ -1,9 +1,9 @@
 # coding: utf-8
 """Big QMT 串口桥接控制台（tkinter GUI）。
 
-启动 / 停止 / 重启 serial_valkey_bridge 和大 QMT，并实时 tail 两路日志：
+启动 / 停止 / 重启 serial_vk_bridge 和大 QMT，并实时 tail 两路日志：
 
-1. 桥接子进程的 stdout/stderr（``serial_valkey_bridge 的启动日志``）；
+1. 桥接子进程的 stdout/stderr（``serial_vk_bridge 的启动日志``）；
 2. ``<QMT>/userdata/log/XtClient_FormulaOutput_YYYYMMDD.log``（QMT 策略日志）。
 
 源码运行：
@@ -93,7 +93,7 @@ class LogPane(ttk.Frame):
 
 
 class SettingsDialog(tk.Toplevel):
-    """串口 / 账户 / QMT / Valkey 设置；保存到 .env，密码只写入文件不回显。"""
+    """串口 / 账户 / QMT / VK 设置；保存到 .env，密码只写入文件不回显。"""
 
     def __init__(self, app):
         super().__init__(app.root)
@@ -136,11 +136,11 @@ class SettingsDialog(tk.Toplevel):
         self.qmt_dir = tk.StringVar(value=cfg.qmt_root)
         self.qmt_mode = tk.StringVar(value=cfg.qmt_mode)
         self.qmt_exe = tk.StringVar(value=cfg.qmt_exe)
-        self.valkey_host = tk.StringVar(value=cfg.valkey_host)
-        self.valkey_port = tk.StringVar(value=str(cfg.valkey_port))
-        self.valkey_db = tk.StringVar(value=str(cfg.valkey_db))
-        self.valkey_user = tk.StringVar(value=cfg.valkey_username)
-        self.valkey_password = tk.StringVar(value=cfg.valkey_password)
+        self.vk_host = tk.StringVar(value=cfg.vk_host)
+        self.vk_port = tk.StringVar(value=str(cfg.vk_port))
+        self.vk_db = tk.StringVar(value=str(cfg.vk_db))
+        self.vk_user = tk.StringVar(value=cfg.vk_username)
+        self.vk_password = tk.StringVar(value=cfg.vk_password)
 
         row = 0
         serial = ttk.LabelFrame(frame, text="串口", padding=8)
@@ -149,7 +149,7 @@ class SettingsDialog(tk.Toplevel):
         self._label_entry(serial, 0, "串口", self.port)
         self._label_entry(serial, 1, "波特率", self.baudrate)
         self._label_entry(serial, 2, "单帧上限（字节）", self.max_frame)
-        ttk.Checkbutton(serial, text="客户端用 Valkey pub/sub 发请求（--valkey-pubsub）",
+        ttk.Checkbutton(serial, text="客户端用 VK pub/sub 发请求（--vk-pubsub）",
                         variable=self.pubsub).grid(row=3, column=0, columnspan=2,
                                                  sticky="w", pady=(4, 0))
 
@@ -179,15 +179,15 @@ class SettingsDialog(tk.Toplevel):
                                              sticky="w", pady=(4, 0))
 
         row += 1
-        valkey = ttk.LabelFrame(frame, text="Valkey", padding=8)
-        valkey.grid(row=row, column=0, sticky="ew", pady=(0, 8))
-        valkey.columnconfigure(1, weight=1)
-        self._label_entry(valkey, 0, "地址 / 主机", self.valkey_host)
-        self._label_entry(valkey, 1, "端口", self.valkey_port)
-        self._label_entry(valkey, 2, "DB", self.valkey_db)
-        self._label_entry(valkey, 3, "用户名（可空）", self.valkey_user)
-        self._label_entry(valkey, 4, "密码（可空）", self.valkey_password, show="*")
-        ttk.Label(valkey, text="地址可填主机名或完整 valkey:// URL；用户名 / 密码留空表示无认证。",
+        vk_frame = ttk.LabelFrame(frame, text="VK", padding=8)
+        vk_frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+        vk_frame.columnconfigure(1, weight=1)
+        self._label_entry(vk_frame, 0, "地址 / 主机", self.vk_host)
+        self._label_entry(vk_frame, 1, "端口", self.vk_port)
+        self._label_entry(vk_frame, 2, "DB", self.vk_db)
+        self._label_entry(vk_frame, 3, "用户名（可空）", self.vk_user)
+        self._label_entry(vk_frame, 4, "密码（可空）", self.vk_password, show="*")
+        ttk.Label(vk_frame, text="地址可填主机名或完整 valkey:// URL；用户名 / 密码留空表示无认证。",
                   foreground="#777777").grid(row=5, column=0, columnspan=3,
                                              sticky="w", pady=(4, 0))
 
@@ -195,8 +195,8 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(frame, textvariable=self.preview_var, foreground="#777777",
                   wraplength=520, justify="left").grid(row=row + 1, column=0,
                                                         sticky="w", pady=(0, 6))
-        for variable in (self.valkey_host, self.valkey_port, self.valkey_db,
-                         self.valkey_user, self.valkey_password):
+        for variable in (self.vk_host, self.vk_port, self.vk_db,
+                         self.vk_user, self.vk_password):
             variable.trace_add("write", lambda *_args: self._update_preview())
         self._update_preview()
 
@@ -219,27 +219,27 @@ class SettingsDialog(tk.Toplevel):
         if chosen:
             self.qmt_dir.set(core.normalize_qmt_root(chosen))
 
-    def _valkey_fields(self):
-        raw_host = self.valkey_host.get().strip()
+    def _vk_fields(self):
+        raw_host = self.vk_host.get().strip()
         if "://" in raw_host:
-            parts = core.parse_valkey_url(raw_host)
+            parts = core.parse_vk_url(raw_host)
             return raw_host, parts["host"], parts["port"], parts["db"], \
                 parts["username"], parts["password"]
         host = raw_host or "127.0.0.1"
-        port = int(self.valkey_port.get().strip() or 6379)
-        db = int(self.valkey_db.get().strip() or 0)
+        port = int(self.vk_port.get().strip() or 6379)
+        db = int(self.vk_db.get().strip() or 0)
         if not 0 < port < 65536:
-            raise ValueError("Valkey 端口必须在 1-65535 之间")
+            raise ValueError("VK 端口必须在 1-65535 之间")
         if db < 0:
-            raise ValueError("Valkey DB 不能为负数")
-        username = self.valkey_user.get()
-        password = self.valkey_password.get()
-        return core.build_valkey_url(host, port, db, username, password), \
+            raise ValueError("VK DB 不能为负数")
+        username = self.vk_user.get()
+        password = self.vk_password.get()
+        return core.build_vk_url(host, port, db, username, password), \
             host, port, db, username, password
 
     def _update_preview(self):
         try:
-            url, _host, _port, _db, _user, _password = self._valkey_fields()
+            url, _host, _port, _db, _user, _password = self._vk_fields()
         except (ValueError, TypeError):
             self.preview_var.set("连接串：端口 / DB 需要是数字")
             return
@@ -266,7 +266,7 @@ class SettingsDialog(tk.Toplevel):
             login_password = self.login_password.get()
             if qmt_mode == "login" and not login_password:
                 raise ValueError("login 模式需要 QMT 登录密码")
-            url, host, valkey_port, db, username, password = self._valkey_fields()
+            url, host, vk_port, db, username, password = self._vk_fields()
         except (ValueError, TypeError) as exc:
             messagebox.showerror("设置无效", str(exc), parent=self)
             return
@@ -282,14 +282,14 @@ class SettingsDialog(tk.Toplevel):
             "BIGQMT_SERIAL_PORT": port,
             "BIGQMT_SERIAL_BAUDRATE": str(baudrate),
             "BIGQMT_SERIAL_MAX_FRAME_BYTES": str(max_frame),
-            "BIGQMT_SERIAL_VALKEY_PUBSUB": "1" if self.pubsub.get() else "0",
-            "BIGQMT_VALKEY_HOST": host,
-            "BIGQMT_VALKEY_PORT": str(valkey_port),
-            "BIGQMT_VALKEY_DB": str(db),
-            "BIGQMT_VALKEY_USERNAME": username,
-            "BIGQMT_VALKEY_PASSWORD": password,
-            "BIGQMT_SERIAL_VALKEY_URL": url,
-            "BIGQMT_VALKEY_URL": url,
+            "BIGQMT_SERIAL_VK_PUBSUB": "1" if self.pubsub.get() else "0",
+            "BIGQMT_VK_HOST": host,
+            "BIGQMT_VK_PORT": str(vk_port),
+            "BIGQMT_VK_DB": str(db),
+            "BIGQMT_VK_USERNAME": username,
+            "BIGQMT_VK_PASSWORD": password,
+            "BIGQMT_SERIAL_VK_URL": url,
+            "BIGQMT_VK_URL": url,
         }
         try:
             core.update_env_file(target, values)
@@ -315,12 +315,12 @@ class SettingsDialog(tk.Toplevel):
             "baudrate": baudrate,
             "max_frame_bytes": max_frame,
             "pubsub": bool(self.pubsub.get()),
-            "valkey_url": url,
-            "valkey_host": host,
-            "valkey_port": valkey_port,
-            "valkey_db": db,
-            "valkey_username": username,
-            "valkey_password": password,
+            "vk_url": url,
+            "vk_host": host,
+            "vk_port": vk_port,
+            "vk_db": db,
+            "vk_username": username,
+            "vk_password": password,
         }
         self.destroy()
         self.app.apply_settings(settings)
@@ -448,7 +448,7 @@ class SerialControllerApp(object):
         self.notebook = ttk.Notebook(main)
         self.bridge_pane = LogPane(self.notebook)
         self.qmt_pane = LogPane(self.notebook)
-        self.notebook.add(self.bridge_pane, text="serial_valkey_bridge 日志")
+        self.notebook.add(self.bridge_pane, text="serial_vk_bridge 日志")
         self.notebook.add(self.qmt_pane, text="QMT 策略日志（FormulaOutput）")
         self.notebook_visible = False
 
@@ -479,7 +479,7 @@ class SerialControllerApp(object):
                     "QMT（%s）的 manifest 要求管理员权限；点「启动」会提示以管理员身份"
                     "重启本控制台（需要确认 UAC）。" % os.path.basename(exe))
         if self.config.local_config:
-            self.config_var.set(self._config_line() + "    Valkey 来自 " + self.config.local_config)
+            self.config_var.set(self._config_line() + "    VK 来自 " + self.config.local_config)
 
     def env_target(self):
         return self.config.env_file or core.default_env_path()
@@ -615,9 +615,9 @@ class SerialControllerApp(object):
         config = self.config
         for key in ("account", "login_user", "login_password",
                     "qmt_mode", "qmt_exe", "port", "baudrate",
-                    "max_frame_bytes", "pubsub", "valkey_url", "valkey_host",
-                    "valkey_port", "valkey_db", "valkey_username",
-                    "valkey_password"):
+                    "max_frame_bytes", "pubsub", "vk_url", "vk_host",
+                    "vk_port", "vk_db", "vk_username",
+                    "vk_password"):
             setattr(config, key, settings[key])
         config.qmt_root = core.normalize_qmt_root(settings["qmt_dir"])
         config.env_file = settings["env_file"]
@@ -633,14 +633,14 @@ class SerialControllerApp(object):
             "BIGQMT_SERIAL_PORT": config.port,
             "BIGQMT_SERIAL_BAUDRATE": str(config.baudrate),
             "BIGQMT_SERIAL_MAX_FRAME_BYTES": str(config.max_frame_bytes),
-            "BIGQMT_SERIAL_VALKEY_PUBSUB": "1" if config.pubsub else "0",
-            "BIGQMT_VALKEY_HOST": config.valkey_host,
-            "BIGQMT_VALKEY_PORT": str(config.valkey_port),
-            "BIGQMT_VALKEY_DB": str(config.valkey_db),
-            "BIGQMT_VALKEY_USERNAME": config.valkey_username,
-            "BIGQMT_VALKEY_PASSWORD": config.valkey_password,
-            "BIGQMT_SERIAL_VALKEY_URL": config.valkey_url,
-            "BIGQMT_VALKEY_URL": config.valkey_url,
+            "BIGQMT_SERIAL_VK_PUBSUB": "1" if config.pubsub else "0",
+            "BIGQMT_VK_HOST": config.vk_host,
+            "BIGQMT_VK_PORT": str(config.vk_port),
+            "BIGQMT_VK_DB": str(config.vk_db),
+            "BIGQMT_VK_USERNAME": config.vk_username,
+            "BIGQMT_VK_PASSWORD": config.vk_password,
+            "BIGQMT_SERIAL_VK_URL": config.vk_url,
+            "BIGQMT_VK_URL": config.vk_url,
         })
         self.config_var.set(self._config_line())
         self._refresh_state()
@@ -995,7 +995,7 @@ class SerialControllerApp(object):
                 if not line:
                     continue
                 self._post("bridge", line)
-                if "无法打开串口" in line or "无法连接 Valkey" in line:
+                if any(marker in line for marker in ("无法打开串口", "无法连接 VK", "无法连接 Valkey")):
                     self.last_bridge_error = line
                 if BRIDGE_READY_MARK in line:
                     self.bridge_ready.set()
@@ -1222,7 +1222,7 @@ class SerialControllerApp(object):
     # ---------------------------------------------------------------- helpers
     def _display_command(self, command):
         text = subprocess.list2cmdline([str(part) for part in command])
-        return text.replace(self.config.valkey_url, core.redact_url(self.config.valkey_url))
+        return text.replace(self.config.vk_url, core.redact_url(self.config.vk_url))
 
 
 def parse_args(argv=None):
@@ -1231,7 +1231,7 @@ def parse_args(argv=None):
     parser.add_argument("--env-file", default="", help=".env 路径（默认自动查找）")
     parser.add_argument("--qmt-dir", default="", help="QMT 安装目录（默认读 .env）")
     parser.add_argument("--account", default="", help="资金账号")
-    parser.add_argument("--valkey-url", default="", help="Valkey 连接串")
+    parser.add_argument("--vk-url", default="", help="VK 连接串")
     parser.add_argument("--port", default="", help="桥接侧串口，默认 COM11")
     parser.add_argument("--baudrate", type=int, default=None)
     parser.add_argument("--max-frame-bytes", type=int, default=None)
@@ -1240,7 +1240,7 @@ def parse_args(argv=None):
     parser.add_argument("--qmt-mode", choices=("exe", "login"), default="")
     parser.add_argument("--qmt-exe", default="")
     parser.add_argument("--pubsub", action="store_const", const=True, default=None,
-                        help="桥接使用 Valkey pub/sub（等价 --valkey-pubsub）")
+                        help="桥接使用 VK pub/sub（等价 --vk-pubsub）")
     parser.add_argument("--autostart", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--restart-qmt", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--keep-qmt", action="store_true", help=argparse.SUPPRESS)
@@ -1253,7 +1253,7 @@ def build_overrides(args):
     return {
         "qmt_dir": args.qmt_dir or None,
         "account": args.account or None,
-        "valkey_url": args.valkey_url or None,
+        "vk_url": args.vk_url or None,
         "port": args.port or None,
         "baudrate": args.baudrate,
         "max_frame_bytes": args.max_frame_bytes,

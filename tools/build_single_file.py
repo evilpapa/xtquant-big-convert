@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""生成 BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py。
+"""生成 BIGQMT_VK_DRYRUN_ALL_IN_ONE.py。
 
 将策略入口依赖的项目模块以 Base64 内嵌，供策略从内存加载。
 """
@@ -10,7 +10,7 @@ import os
 # 附带发行版构建器，供 bigqmt-init 生成单文件策略。
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_PATH = os.environ.get(
-    "BIGQMT_BUILD_OUT", os.path.join(ROOT, "src", "BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py"))
+    "BIGQMT_BUILD_OUT", os.path.join(ROOT, "src", "BIGQMT_VK_DRYRUN_ALL_IN_ONE.py"))
 
 
 def resolve_source_dirs(root=ROOT):
@@ -26,7 +26,7 @@ def resolve_source_dirs(root=ROOT):
     top_dir = os.path.dirname(package_dir) if package_dir else ""
     if (top_dir
             and os.path.isfile(os.path.join(top_dir, "bigqmt_signal_trader_strategy.py"))
-            and os.path.isfile(os.path.join(top_dir, "bigqmt_signal_trader_valkey_rpc_runtime.py"))):
+            and os.path.isfile(os.path.join(top_dir, "bigqmt_signal_trader_vk_rpc_runtime.py"))):
         return top_dir, package_dir
     raise SystemExit(
         "找不到 bigqmt_signal_trader 源码。请使用带 src/ 的源码仓库，"
@@ -95,7 +95,7 @@ def main():
     sources = collect_package(package_dir, top_dir)
     extra = {}
     for name in ("bigqmt_signal_trader_strategy.py",
-                 "bigqmt_signal_trader_valkey_rpc_runtime.py"):
+                 "bigqmt_signal_trader_vk_rpc_runtime.py"):
         full = os.path.join(top_dir, name)
         with open(full, "rb") as f:
             extra[name] = f.read()
@@ -182,7 +182,7 @@ __EMBEDDED_SOURCES_BLOCK__
 _LOCAL_ROOTS = (
     "bigqmt_signal_trader",
     "bigqmt_signal_trader_strategy",
-    "bigqmt_signal_trader_valkey_rpc_runtime",
+    "bigqmt_signal_trader_vk_rpc_runtime",
     "bigqmt_signal_trader_qmt_config",
 )
 _ORIGINAL_IMPORT = _builtins.__import__
@@ -324,14 +324,14 @@ def _fallback_account_id():
 
 
 try:
-    _local_import("bigqmt_signal_trader.adapters.valkey_common", globals(), fromlist=("*",))
-    _local_import("bigqmt_signal_trader.valkey_rpc", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.adapters.vk_common", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.vk_rpc", globals(), fromlist=("*",))
     _strategy = _local_import("bigqmt_signal_trader_strategy", globals(), fromlist=("*",))
     _strategy.reset_app()
 except Exception as bridge_preload_error:
     print("[bigqmt_shell] 桥接预加载失败：%s" % bridge_preload_error)
 
-_runtime = _local_import("bigqmt_signal_trader_valkey_rpc_runtime", globals(), fromlist=("*",))
+_runtime = _local_import("bigqmt_signal_trader_vk_rpc_runtime", globals(), fromlist=("*",))
 
 
 def _load_local_config():
@@ -340,11 +340,11 @@ def _load_local_config():
 
 try:
     _config = _load_local_config()
-    BIGQMT_CONFIG = _runtime.local_valkey_config(_config)
+    BIGQMT_CONFIG = _runtime.local_vk_config(_config)
     print("[bigqmt_shell] 本地 RPC 配置已加载 keys=%s" % sorted((BIGQMT_CONFIG or {}).keys()))
-    _runtime.configure_runtime_valkey(BIGQMT_CONFIG)
-except Exception as valkey_config_error:
-    print("[bigqmt_shell] 本地 RPC 配置加载失败：%s" % valkey_config_error)
+    _runtime.configure_runtime_vk(BIGQMT_CONFIG)
+except Exception as vk_config_error:
+    print("[bigqmt_shell] 本地 RPC 配置加载失败：%s" % vk_config_error)
 
 try:
     _config = _load_local_config()

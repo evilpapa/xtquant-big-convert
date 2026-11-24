@@ -2,7 +2,7 @@
 
 把整个 `deploy\` 文件夹拷到新服务器，按下面执行。
 
-如果服务器已有 Valkey，按[部署快速开始](../docs/DEPLOY_QUICKSTART.md)配置好客户端和 QMT 策略即可复用。本页的一键脚本用于安装并管理独立的 `ValkeyBigQMT` 服务。
+如果服务器已有 VK 实例，按[部署快速开始](../docs/DEPLOY_QUICKSTART.md)配置好客户端和 QMT 策略即可复用。本页的一键脚本用于安装并管理独立的 `ValkeyBigQMT` 服务。
 
 ## 前提（脚本不负责的部分）
 1. 已安装大 QMT 客户端并登录交易
@@ -27,17 +27,17 @@ powershell -ExecutionPolicy Bypass -File .\deploy_qmt_bridge.ps1 `
     -Proxy   "http://127.0.0.1:7897"        # 没有代理就删掉这行
 ```
 
-脚本可重复运行：创建客户端环境并安装包，复制服务端文件，安装 Valkey 服务，生成配置和 `qmt_cli.py`。Valkey 默认绑定 `127.0.0.1`，使用随机密码，内存上限为 192 MB。pip、conda 和 Miniconda 默认使用清华镜像；可传 `-PipIndex https://pypi.org/simple` 切换 pip 源，其他选项见脚本。
+脚本可重复运行：创建客户端环境并安装包，复制服务端文件，安装 VK 服务，生成配置和 `qmt_cli.py`。VK 默认绑定 `127.0.0.1`，使用随机密码，内存上限为 192 MB。pip、conda 和 Miniconda 默认使用清华镜像；可传 `-PipIndex https://pypi.org/simple` 切换 pip 源，其他选项见脚本。
 
-脚本使用 [valkey-windows 社区发行包](https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.4)，安装 `ValkeyBigQMT` 服务。下载受阻时，可传 `-ValkeyZip "C:\path\Valkey-9.1.4-Windows-x64-cygwin-with-Service.zip"` 或 `-ValkeyUrl` 指定镜像。
+脚本使用 [valkey-windows 社区发行包](https://github.com/valkey-windows/valkey-windows/releases/tag/9.1.4)，安装 `ValkeyBigQMT` 服务。下载受阻时，可传 `-VkZip "C:\path\Valkey-9.1.4-Windows-x64-cygwin-with-Service.zip"` 或 `-VkUrl` 指定镜像。
 
-从源码运行时，脚本安装当前检出的桥接包。单独复制 `deploy\` 时，可用 `-BridgePackage` 指定支持 Valkey 的源码目录或 wheel。已有服务占用 `6379` 时，可用 `-ValkeyPort` 选择空闲端口，脚本会同步写入两份配置。
+从源码运行时，脚本安装当前检出的桥接包。单独复制 `deploy\` 时，可用 `-BridgePackage` 指定支持 VK 的源码目录或 wheel。已有服务占用 `6379` 时，可用 `-VkPort` 选择空闲端口，脚本会同步写入两份配置。
 
 **下单默认关闭**：生成的服务端配置 `rpc_allow_order_methods=False`，新部署只应答查询；
 确认风控后加 `-AllowOrders` 重跑（或改配置为 True 并重启策略）才开放 buy/sell/cancel。
 
 ## 部署后只剩两步人工操作
-1. QMT → 模型交易 → 加载 `<QMT目录>\python\BIGQMT_VALKEY_DRYRUN.py` → **运行模式切"实盘"** → 启动
+1. QMT → 模型交易 → 加载 `<QMT目录>\python\BIGQMT_VK_DRYRUN.py` → **运行模式切"实盘"** → 启动
 2. 验证（python 路径按所用路线二选一——`-Conda` 用第一行，系统 python venv 用第二行）：
    ```powershell
    & "C:\qmt_bridge\envs\bigqmt\python.exe" "C:\qmt_bridge\client\qmt_cli.py" ping
@@ -55,11 +55,11 @@ powershell -File .\deploy_qmt_bridge.ps1 -QmtDir "..." -Account "..." -WorkDir "
 | 组件 | 占用 |
 |---|---|
 | 大 QMT（登录+行情） | ~1.5G（关掉不用的面板/自选股能省不少） |
-| Valkey（已限 192mb noeviction） | ≤200M |
+| VK（已限 192mb noeviction） | ≤200M |
 | Python 策略进程（pandas+aiohttp） | ~400M |
 | 系统剩余 | ~1.5G |
 
-合计约 3.2-3.5G，可用但别再跑其他重负载。Valkey 密码在 `<WorkDir>\valkey\valkey_password.txt`。
+合计约 3.2-3.5G，可用但别再跑其他重负载。新部署的 VK 密码在 `<WorkDir>\valkey\vk_password.txt`，已有部署可继续使用原来的 `valkey_password.txt`。
 
 ## 策略代码（可选）
 加 `-WithStrategy -StrategySrc "C:\path\to\my_code"` 会把策略目录一起拷到 `<WorkDir>\my_code`；

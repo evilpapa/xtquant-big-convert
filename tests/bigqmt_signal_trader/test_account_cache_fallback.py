@@ -4,7 +4,7 @@
 `query_stock_positions` / `query_stock_asset` / `query_stock_position` 在 RPC
 抛异常后会去读 `bigqmt:positions:<account>`，只要那里有非空旧数据就当成
 查询结果返回。后果是 #229/#230 好不容易让原生 POSITION 查询异常上抛，在
-valkey 客户端这条路上又被吞回去 —— **同一个输入，zmq 抛错、valkey 返回旧持仓**。
+VK 客户端这条路上又被吞回去 —— **同一个输入，zmq 抛错、VK 返回旧持仓**。
 
 对交易系统来说这是最坏的一种错：策略拿它去算仓位，而它看起来完全正常。
 缓存还不校 `updated_at`，2000 年的快照和一秒前的一样会被采信。
@@ -48,9 +48,9 @@ def _now():
 def _trader(snapshot, **extra):
     config = {"transport": "valkey", "local_cache_enabled": False}
     config.update(extra)
-    trader = BigQmtXtTrader(account_id="test-only", valkey_config=config)
+    trader = BigQmtXtTrader(account_id="test-only", vk_config=config)
     trader.client.call = Mock(side_effect=RuntimeError("native query failed"))
-    trader.client._valkey = Mock(return_value=Mock(
+    trader.client._vk = Mock(return_value=Mock(
         get=Mock(return_value=json.dumps(snapshot).encode())))
     return trader
 

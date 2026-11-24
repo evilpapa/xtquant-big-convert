@@ -1,15 +1,15 @@
 # coding: utf-8
-"""No-Valkey deployments must still attribute strategy_name (issue #156 / #133).
+"""No-VK deployments must still attribute strategy_name (issue #156 / #133).
 
 QMT's ORDER/DEAL rows never carry the strategy name -- the terminal filters
 by it but does not report it. The bridge answers that with an identity store
-keyed by remark, but the store is Valkey, so a zmq single-file deployment (no
-Valkey anywhere) read strategy_name as "" forever.
+keyed by remark, but the store is VK, so a zmq single-file deployment (no
+VK anywhere) read strategy_name as "" forever.
 
 The handlers now keep an in-process journal as well: submit writes
 (account, remark) -> strategy_name, query reads it back for rows QMT could
-not name. Valkey remains the primary store (survives restarts, covers other
-processes); the local journal is the no-Valkey floor.
+not name. VK remains the primary store (survives restarts, covers other
+processes); the local journal is the no-VK floor.
 """
 
 import os
@@ -22,9 +22,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.models import OrderSnapshot
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
-from test_valkey_rpc import (  # noqa: E402  -- reuse the established fakes
+from test_vk_rpc import (  # noqa: E402  -- reuse the established fakes
     FakeMarketData,
     FakePositionProvider,
 )
@@ -173,15 +173,15 @@ class FilteredQueryNamesRowsTest(unittest.TestCase):
 class ProbeOrderIdentityTest(unittest.TestCase):
     """The probe must answer each link of the backfill chain (#156)."""
 
-    def test_probe_reports_valkey_and_local_hits(self):
+    def test_probe_reports_vk_and_local_hits(self):
         gateway = _QueryGateway([])
         handlers = _handlers(gateway)
 
-        class FakeValkey(object):
+        class FakeVk(object):
             def get(self, key):
                 return b'{"strategy_name": "TEST"}' if key.endswith(":sig-1") else None
 
-        handlers.order_identity_valkey_client = FakeValkey()
+        handlers.order_identity_vk_client = FakeVk()
         handlers._remember_order_identity_local("acct", "sig-2", "local_strat")
 
         out = handlers._handle_probe_order_identity({"remark": "sig-1"})
@@ -196,7 +196,7 @@ class ProbeOrderIdentityTest(unittest.TestCase):
         self.assertTrue(out["local_hit"])
         self.assertEqual(out["local_strategy_name"], "local_strat")
 
-    def test_probe_without_valkey_says_so(self):
+    def test_probe_without_vk_says_so(self):
         handlers = _handlers(_QueryGateway([]))
         out = handlers._handle_probe_order_identity({"remark": "sig-x"})
         self.assertFalse(out["identity_valkey_wired"])

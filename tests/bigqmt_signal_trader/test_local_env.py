@@ -1,5 +1,5 @@
 # coding: utf-8
-"""local_serial_settings 供外部脚本读取 .env 中的账号、Valkey、QMT 目录和登录凭据。"""
+"""local_serial_settings 供外部脚本读取 .env 中的账号、VK、QMT 目录和登录凭据。"""
 
 import os
 import sys

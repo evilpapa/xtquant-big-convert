@@ -35,9 +35,9 @@ from xtquant import xtconstant  # noqa: E402
 from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway  # noqa: E402
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway  # noqa: E402
 from bigqmt_signal_trader.models import OrderSnapshot  # noqa: E402
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     BigQmtRpcHandlers,
-    ValkeyPubSubRpcService,
+    VkPubSubRpcService,
     to_jsonable,
 )
 from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
@@ -47,11 +47,11 @@ from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
     _credit_order_type_from_op,
 )
 
-from test_valkey_rpc import FakeMarketData, FakePositionProvider, FakeValkey  # noqa: E402
+from test_vk_rpc import FakeMarketData, FakePositionProvider, FakeVk  # noqa: E402
 
 
 class _EventSink(object):
-    """A valkey stand-in for the exec-event channels."""
+    """A VK stand-in for the exec-event channels."""
 
     def __init__(self):
         self.events = []
@@ -90,13 +90,13 @@ class _Gateway(DryRunOrderGateway):
 
 
 def _service(gateway, timeout=0.0):
-    valkey_client = FakeValkey()
+    vk_client = FakeVk()
     handlers = BigQmtRpcHandlers(
         account_id="acct", market_data=FakeMarketData(),
         position_provider=FakePositionProvider(), order_gateway=gateway,
         allow_order_methods=True, order_settle_timeout_seconds=timeout)
-    handlers.order_identity_valkey_client = _EventSink()
-    return valkey_client, handlers, ValkeyPubSubRpcService(valkey_client, handlers, account_id="acct")
+    handlers.order_identity_vk_client = _EventSink()
+    return vk_client, handlers, VkPubSubRpcService(vk_client, handlers, account_id="acct")
 
 
 def _async_order(request_id="a1", remark="async-1"):
@@ -108,24 +108,24 @@ def _async_order(request_id="a1", remark="async-1"):
 
 class ShadowSettlementTest(unittest.TestCase):
     def test_the_reply_is_immediate_and_the_order_is_still_watched(self):
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=5.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=5.0)
         service.enqueue_payload(_async_order())
 
         service.drain_pending()
 
-        self.assertIn("bigqmt:rpc:resp:acct:a1", valkey_client.kv, "async reply was held")
+        self.assertIn("bigqmt:rpc:resp:acct:a1", vk_client.kv, "async reply was held")
         self.assertEqual(0, service.pending_settlement_count(), "a shadow must not count as a held reply")
         self.assertEqual(1, service.shadow_settlement_count())
 
     def test_a_refusal_before_any_record_becomes_on_order_error(self):
         """The reported case: insufficient funds, dialog on the terminal,
         no order row ever, no callback. Deadline 0 -> refused on this tick."""
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
         service.enqueue_payload(_async_order(remark="broke"))
 
         service.drain_pending()
 
-        errors = handlers.order_identity_valkey_client.order_errors()
+        errors = handlers.order_identity_vk_client.order_errors()
         self.assertEqual(1, len(errors), "no order_error pushed")
         event = errors[0]
         self.assertEqual("broke", event["order_remark"])
@@ -137,16 +137,16 @@ class ShadowSettlementTest(unittest.TestCase):
         self.assertEqual(0, service.shadow_settlement_count())
 
     def test_an_order_that_does_show_up_pushes_nothing(self):
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=1), timeout=5.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=1), timeout=5.0)
         service.enqueue_payload(_async_order())
 
         service.drain_pending()
 
-        self.assertEqual([], handlers.order_identity_valkey_client.order_errors())
+        self.assertEqual([], handlers.order_identity_vk_client.order_errors())
         self.assertEqual(0, service.shadow_settlement_count())
 
     def test_every_item_of_a_batch_is_shadowed_and_the_batch_reply_is_not_held(self):
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=5.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=5.0)
         service.enqueue_payload({
             "request_id": "b1", "account_id": "acct", "method": "order_stock_batch",
             "params": {"orders": [
@@ -157,26 +157,26 @@ class ShadowSettlementTest(unittest.TestCase):
 
         service.drain_pending()
 
-        self.assertIn("bigqmt:rpc:resp:acct:b1", valkey_client.kv)
+        self.assertIn("bigqmt:rpc:resp:acct:b1", vk_client.kv)
         self.assertEqual(0, service.pending_settlement_count())
         self.assertEqual(2, service.shadow_settlement_count())
 
     def test_a_synchronous_order_is_unchanged(self):
         """wait_settlement=True still parks the reply, no shadow."""
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=5.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=5.0)
         payload = _async_order()
         del payload["params"]["wait_settlement"]
         service.enqueue_payload(payload)
 
         service.drain_pending()
 
-        self.assertNotIn("bigqmt:rpc:resp:acct:a1", valkey_client.kv)
+        self.assertNotIn("bigqmt:rpc:resp:acct:a1", vk_client.kv)
         self.assertEqual(1, service.pending_settlement_count())
         self.assertEqual(0, service.shadow_settlement_count())
 
     def test_without_any_sink_the_refusal_is_dropped_not_raised(self):
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
-        handlers.order_identity_valkey_client = None
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
+        handlers.order_identity_vk_client = None
         service.enqueue_payload(_async_order())
         service.drain_pending()          # must not raise
         self.assertEqual(0, service.shadow_settlement_count())
@@ -186,12 +186,12 @@ class NotFoundMessageTest(unittest.TestCase):
     def test_it_names_the_pre_record_refusal(self):
         """The refusal text is unchanged -- but since #360 it arrives via the
         extended shadow watch, not the synchronous reply."""
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
         payload = _async_order()
         del payload["params"]["wait_settlement"]
         service.enqueue_payload(payload)
         service.drain_pending()
-        reply = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:a1"])
+        reply = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:a1"])
         self.assertFalse(reply.get("server_error"))
         self.assertIn("UNCONFIRMED", reply["data"]["message"])
         # Expire the extended watch -> the refusal push carries the text.
@@ -199,7 +199,7 @@ class NotFoundMessageTest(unittest.TestCase):
         shadow.deadline = 0.0
         service._shadow_settlements.put(shadow)
         service.drain_pending()
-        errors = handlers.order_identity_valkey_client.order_errors()
+        errors = handlers.order_identity_vk_client.order_errors()
         self.assertEqual(1, len(errors))
         self.assertIn("BEFORE creating a record", errors[0]["error_msg"])
         self.assertIn("insufficient funds", errors[0]["error_msg"])
@@ -208,7 +208,7 @@ class NotFoundMessageTest(unittest.TestCase):
 
 class CashRepayNoRowTest(unittest.TestCase):
     def _repay(self, wait=True):
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
         payload = {"request_id": "r1", "account_id": "acct", "method": "order_stock",
                    "params": {"stock_code": "600000.SH", "order_type": xtconstant.CREDIT_DIRECT_CASH_REPAY,
                               "order_volume": 100, "price_type": 11, "price": 0,
@@ -217,13 +217,13 @@ class CashRepayNoRowTest(unittest.TestCase):
             payload["params"]["wait_settlement"] = False
         service.enqueue_payload(payload)
         service.drain_pending()
-        return valkey_client, handlers, service
+        return vk_client, handlers, service
 
     def test_a_repay_with_no_order_row_is_not_an_error(self):
         """The partial repay from the report: 100 of 1000 repaid, no row
         with the remark ever appears. No id, no server_error."""
-        valkey_client, handlers, service = self._repay()
-        reply = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:r1"])
+        vk_client, handlers, service = self._repay()
+        reply = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:r1"])
         self.assertTrue(reply["ok"])
         self.assertEqual("", reply["server_error"])
         self.assertIsNone(reply["data"]["order_sys_id"])
@@ -244,19 +244,19 @@ class CashRepayNoRowTest(unittest.TestCase):
                                                 100, xtconstant.FIX_PRICE, 0, "s", "repay-100"))
 
     def test_an_async_repay_pushes_no_order_error(self):
-        valkey_client, handlers, service = self._repay(wait=False)
-        self.assertEqual([], handlers.order_identity_valkey_client.order_errors())
+        vk_client, handlers, service = self._repay(wait=False)
+        self.assertEqual([], handlers.order_identity_vk_client.order_errors())
 
     def test_an_ordinary_order_with_no_row_is_unconfirmed_then_errors(self):
         """#360: a deadline miss is "unconfirmed", not "failed" -- the reply
         carries no server_error and the watch continues on the shadow queue;
         only the extended watch expiring with no row pushes the refusal."""
-        valkey_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
+        vk_client, handlers, service = _service(_Gateway(reveal_after=None), timeout=0.0)
         payload = _async_order()
         del payload["params"]["wait_settlement"]
         service.enqueue_payload(payload)
         service.drain_pending()
-        reply = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:a1"])
+        reply = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:a1"])
         self.assertTrue(reply["ok"])
         self.assertFalse(reply.get("server_error"))
         self.assertIn("UNCONFIRMED", reply["data"]["message"])
@@ -266,7 +266,7 @@ class CashRepayNoRowTest(unittest.TestCase):
         shadow.deadline = 0.0
         service._shadow_settlements.put(shadow)
         service.drain_pending()
-        errors = handlers.order_identity_valkey_client.order_errors()
+        errors = handlers.order_identity_vk_client.order_errors()
         self.assertEqual(1, len(errors))
         self.assertIn("not found in system", errors[0]["error_msg"])
 
@@ -295,7 +295,7 @@ class PushlessClientTest(unittest.TestCase):
         trader._submit_async_single(1, ("acct", "600000.SH", 23, 100, 11, 10.0, "s", "r"), {})
         self.assertTrue(seen["wait"])
 
-    def test_an_async_order_on_valkey_keeps_the_fast_path(self):
+    def test_an_async_order_on_vk_keeps_the_fast_path(self):
         seen = {}
         trader = self._trader("valkey")
         trader.order_stock_result = lambda *a, **kw: seen.setdefault("wait", kw.get("wait_settlement")) or {"order_sys_id": "1"}

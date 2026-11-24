@@ -1,7 +1,7 @@
 """issue #51 A: an order's async_response must arrive before its order/trade.
 
 The two callbacks travel different paths -- async_response fires on the submit
-worker, order/trade come off the Valkey pub/sub listener -- and the server pushes
+worker, order/trade come off the VK pub/sub listener -- and the server pushes
 the event before it answers the RPC, so the inversion is the normal case rather
 than a race that shows up occasionally.
 

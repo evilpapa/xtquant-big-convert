@@ -1,5 +1,5 @@
 # coding: utf-8
-"""#189: a normal valkey shutdown must not print a failure traceback.
+"""#189: a normal VK shutdown must not print a failure traceback.
 
 stop() closes the pubsub while the listener thread is parked in
 get_message(timeout=1.0), so the socket dies under it. On Windows that surfaces
@@ -9,7 +9,7 @@ on the live terminal.
 
 Nothing breaks, but the noise costs something real: a normal restart looks
 exactly like a failure, so a reader learns to skip the traceback -- including
-the one that means valkey is actually down. That is the CLAUDE.md rule about a
+the one that means VK is actually down. That is the CLAUDE.md rule about a
 failed operation looking exactly like one that never ran, pointed the other way.
 
 The loop must stay loud while it is supposed to be running.
@@ -28,7 +28,7 @@ except ImportError:                       # pragma: no cover - py2 safety
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.transports.valkey_transport import ValkeyTransport
+from bigqmt_signal_trader.transports.vk_transport import VkTransport
 
 
 class DyingPubSub(object):
@@ -48,7 +48,7 @@ class DyingPubSub(object):
         pass
 
 
-class DyingValkey(object):
+class DyingVk(object):
     def __init__(self, on_call):
         self.on_call = on_call
 
@@ -73,7 +73,7 @@ def _run(loop_name, running_when_it_raises):
             # then end the loop so the test does not sit through its retries.
             transport._running = False
 
-    transport = ValkeyTransport(DyingValkey(on_call), account_id="acct")
+    transport = VkTransport(DyingVk(on_call), account_id="acct")
     transport._running = True
     captured = StringIO()
     saved, sys.stdout = sys.stdout, captured

@@ -1,4 +1,4 @@
-"""Real Valkey integration for exact QMT remark recovery (issue #413).
+"""Real VK integration for exact QMT remark recovery (issue #413).
 
 Only an isolated Unix socket is used; no terminal, credentials or trades.
 """
@@ -20,7 +20,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-valkey = pytest.importorskip("valkey")
+vk_module = pytest.importorskip("valkey")
 try:
     from valkey.backoff import NoBackoff
     from valkey.retry import Retry
@@ -30,7 +30,7 @@ except ImportError:
 
 from bigqmt_signal_trader import exec_events
 from bigqmt_signal_trader.order_remarks import bounded_identity_client, recover_order_remarks
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
 
 STAMP = datetime.datetime(2026, 10, 14, 2, 0, tzinfo=datetime.timezone.utc).timestamp()
@@ -38,23 +38,23 @@ TTL = exec_events.ORDER_IDENTITY_TTL_SECONDS
 
 
 @pytest.fixture(scope="module")
-def valkey_socket(tmp_path_factory):
+def vk_socket(tmp_path_factory):
     binary = shutil.which("valkey-server")
     if not binary:
         pytest.skip("valkey-server required for atomic Lua integration")
     temporary = tempfile.TemporaryDirectory(prefix="bqr-", dir="/tmp")
     root = Path(temporary.name)
-    socket = str(root / "valkey.sock")
+    socket = str(root / "vk.sock")
     proc = subprocess.Popen([binary, "--port", "0", "--unixsocket", socket,
                              "--save", "", "--appendonly", "no"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    client = valkey.Valkey(unix_socket_path=socket, socket_timeout=0.25, **NO_RETRY)
+    client = vk_module.Valkey(unix_socket_path=socket, socket_timeout=0.25, **NO_RETRY)
     try:
         for _ in range(100):
             try:
                 if client.ping():
                     break
-            except (valkey.ConnectionError, AttributeError, OSError):
+            except (vk_module.ConnectionError, AttributeError, OSError):
                 # AttributeError: Windows has no socket.AF_UNIX for the unix
                 # socket; OSError: the Windows valkey-server cannot bind one.
                 time.sleep(0.02)
@@ -62,7 +62,7 @@ def valkey_socket(tmp_path_factory):
             proc.terminate()
             proc.wait(timeout=3)
             temporary.cleanup()
-            pytest.skip("isolated Valkey unix socket unavailable on this platform")
+            pytest.skip("isolated VK unix socket unavailable on this platform")
         yield socket
     finally:
         client.close()
@@ -73,8 +73,8 @@ def valkey_socket(tmp_path_factory):
 
 
 @pytest.fixture
-def client(valkey_socket):
-    result = valkey.Valkey(unix_socket_path=valkey_socket, socket_timeout=0.25, **NO_RETRY)
+def client(vk_socket):
+    result = vk_module.Valkey(unix_socket_path=vk_socket, socket_timeout=0.25, **NO_RETRY)
     result.flushdb()
     yield result
     result.close()
@@ -97,16 +97,16 @@ def handler(client, orders, trades):
     instance.account_id = "account-a"
     instance.order_gateway = SimpleNamespace(
         account_type="STOCK", query_orders=lambda *_: orders, query_trades=lambda *_: trades)
-    instance.order_remark_valkey_client = client
+    instance.order_remark_vk_client = client
     instance.default_strategy_name = ""
     return instance
 
 
-def test_recreated_handler_recovers_exact_association_without_changing_facts(client, valkey_socket):
+def test_recreated_handler_recovers_exact_association_without_changing_facts(client, vk_socket):
     original = row()
     handler(client, [original], [])._handle_query_execution_snapshot({})
     # A fresh client/handler has no Python state from the original observation.
-    fresh = valkey.Valkey(unix_socket_path=valkey_socket, socket_timeout=0.25, **NO_RETRY)
+    fresh = vk_module.Valkey(unix_socket_path=vk_socket, socket_timeout=0.25, **NO_RETRY)
     missing = row("", order_time=STAMP + 1)
     result = handler(fresh, [missing], [])._handle_query_execution_snapshot({})["orders"][0]
     assert result.user_order_id == result.remark == "intent-1"
@@ -218,7 +218,7 @@ def test_native_callback_records_when_push_is_disabled(client, monkeypatch, kind
     assert recover(client, [row("")])[0].user_order_id == "intent-1"
 
 
-def test_association_survives_python_process_exit(client, valkey_socket):
+def test_association_survives_python_process_exit(client, vk_socket):
     import os
     import sys
     script = """
@@ -228,7 +228,7 @@ client = valkey.Valkey(unix_socket_path=sys.argv[1], socket_timeout=0.25)
 row = json.loads(sys.argv[2])
 recover_order_remarks(client, 'account-a', 'STOCK', [row], 604800)
 """
-    subprocess.run([sys.executable, "-c", script, valkey_socket, __import__("json").dumps(vars(row()))],
+    subprocess.run([sys.executable, "-c", script, vk_socket, __import__("json").dumps(vars(row()))],
                    env=os.environ.copy(), check=True, timeout=5)
     assert recover(client, [row("")])[0].user_order_id == "intent-1"
 
@@ -275,7 +275,7 @@ def test_bounded_tcp_timeout_does_not_retry_or_block_callback():
             conn.close()
     thread = threading.Thread(target=stall, daemon=True)
     thread.start()
-    original = valkey.Valkey(host="127.0.0.1", port=listener.getsockname()[1], socket_timeout=30,
+    original = vk_module.Valkey(host="127.0.0.1", port=listener.getsockname()[1], socket_timeout=30,
                            socket_connect_timeout=30, **NO_RETRY)
     bounded = bounded_identity_client(original)
     try:
@@ -313,13 +313,13 @@ def test_rpc_init_recovers_after_optional_early_event_import_failed(client, monk
     monkeypatch.setattr(strategy, "_build_quote_subscription_service", lambda *args: None)
     app = SimpleNamespace(order_gateway=SimpleNamespace(account_type="STOCK"), position_sync_sink=None)
     config = {"enable_rpc": True, "account_id": "account-a", "exec_events": {"enabled": False},
-              "rpc": {"enabled": True, "valkey_client": client, "response_valkey_client": client}}
+              "rpc": {"enabled": True, "vk_client": client, "response_vk_client": client}}
     service = strategy._build_rpc_service(None, app, config)
     monkeypatch.setattr(strategy, "_rpc_service", service)
-    assert service.handlers.order_remark_valkey_client.ping()
+    assert service.handlers.order_remark_vk_client.ping()
     event = SimpleNamespace(m_strAccountID="account-a", m_strOrderSysID="000123", m_strRemark="intent-1",
                             m_strInstrumentID="600000", m_strExchangeID="SH", m_nOffsetFlag=49,
                             m_strInsertDate="20261014", m_strInsertTime="100000")
     assert strategy._recover_callback_remark("order", event)["user_order_id"] == "intent-1"
     assert recover(client, [row("")])[0].user_order_id == "intent-1"
-    service.handlers.order_remark_valkey_client.close()
+    service.handlers.order_remark_vk_client.close()

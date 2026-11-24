@@ -54,8 +54,8 @@ class FakeClient:
             return {c: {"lastPrice": 1.0} for c in (params or {}).get("codes") or []}
         return {}
 
-    def _valkey(self):
-        raise AssertionError("valkey not expected in this test")
+    def _vk(self):
+        raise AssertionError("VK not expected in this test")
 
 
 class XtDataWholeQuoteDelegationTest(unittest.TestCase):

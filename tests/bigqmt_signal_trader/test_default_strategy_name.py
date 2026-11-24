@@ -33,7 +33,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.valkey_rpc import (
+from bigqmt_signal_trader.vk_rpc import (
     DEFAULT_ORDER_STRATEGY_NAME,
     BigQmtRpcHandlers,
 )
@@ -72,9 +72,9 @@ class NoHardcodedFallbackLeftTest(unittest.TestCase):
     def _source(self):
         import inspect
 
-        from bigqmt_signal_trader import valkey_rpc
+        from bigqmt_signal_trader import vk_rpc
 
-        return inspect.getsource(valkey_rpc)
+        return inspect.getsource(vk_rpc)
 
     def test_the_name_is_spelled_out_in_exactly_one_place(self):
         """The constant. Anywhere else is a site that ignores the config."""
@@ -100,7 +100,7 @@ class RuntimeConfigTest(unittest.TestCase):
     """rpc_default_strategy_name has to survive the runtime's own plumbing."""
 
     def setUp(self):
-        import bigqmt_signal_trader_valkey_rpc_runtime as runtime
+        import bigqmt_signal_trader_vk_rpc_runtime as runtime
 
         self.runtime = runtime
         self._saved = runtime.RPC_DEFAULT_STRATEGY_NAME

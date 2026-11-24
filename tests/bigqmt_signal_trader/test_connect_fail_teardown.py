@@ -1,5 +1,5 @@
 # coding: utf-8
-"""connect() 失败必须拆掉事件监听，否则每次重试泄漏一个 Valkey pubsub 订阅。
+"""connect() 失败必须拆掉事件监听，否则每次重试泄漏一个 VK pubsub 订阅。
 
 实测单日 8000+ 个 subscribe 连接逼近 maxclients 的部署，根因就是重连风暴
 里每个被丢弃的实例都留着 start() 拉起的监听线程（每实例 4 个 exec 事件
@@ -28,11 +28,11 @@ class _FailingClient(object):
 
     def call(self, method, params=None, account_id=None, timeout_seconds=None):
         if method == "ping":
-            raise TimeoutError("valkey rpc timeout: ping")
+            raise TimeoutError("VK rpc timeout: ping")
         return {}
 
-    def _valkey(self):
-        raise AssertionError("valkey not expected here")
+    def _vk(self):
+        raise AssertionError("VK not expected here")
 
 
 class ConnectFailTeardownTest(unittest.TestCase):

@@ -31,7 +31,7 @@ sys.path.insert(0, SRC)
 PROBE = (
     "import sys\n"
     "sys.path.insert(0, %r)\n"
-    "import bigqmt_signal_trader_valkey_rpc_runtime as rt\n"
+    "import bigqmt_signal_trader_vk_rpc_runtime as rt\n"
     "print('RESOLVED|%%s|%%s' %% (rt.ACCOUNT_TYPE, rt.ACCOUNT_TYPE_SOURCE))\n"
 ) % SRC
 
@@ -70,7 +70,7 @@ class AccountTypeSourcesTest(unittest.TestCase):
         self.assertEqual(account_type, "CREDIT")
         self.assertEqual(source, "BIGQMT_ACCOUNT_TYPE")
 
-    def test_valkey_config_key_is_honoured(self):
+    def test_vk_config_key_is_honoured(self):
         """Where the reporter put it. It used to be read by nothing."""
         account_type, source, _ = resolve(
             BASE + 'BIGQMT_CONFIG = {"host": "1", "account_type": "CREDIT"}\n')

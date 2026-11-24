@@ -41,12 +41,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.models import OrderSnapshot
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers, ValkeyPubSubRpcService
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers, VkPubSubRpcService
 
-from test_valkey_rpc import (  # noqa: E402  -- reuse the established fakes
+from test_vk_rpc import (  # noqa: E402  -- reuse the established fakes
     FakeMarketData,
     FakePositionProvider,
-    FakeValkey,
+    FakeVk,
 )
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
 
@@ -84,14 +84,14 @@ class IdArrivesLateGateway(DryRunOrderGateway):
 
 class _Service(unittest.TestCase):
     def _service(self, gateway, timeout=5.0):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         handlers = BigQmtRpcHandlers(
             account_id="acct", market_data=FakeMarketData(),
             position_provider=FakePositionProvider(), order_gateway=gateway,
             allow_order_methods=True, order_settle_timeout_seconds=timeout,
         )
-        return valkey_client, ValkeyPubSubRpcService(
-            valkey_client, handlers, account_id="acct")
+        return vk_client, VkPubSubRpcService(
+            vk_client, handlers, account_id="acct")
 
     def _submit(self, service, request_id="ord-1"):
         service.enqueue_payload({
@@ -101,58 +101,58 @@ class _Service(unittest.TestCase):
                        "order_remark": request_id},
         })
 
-    def _response(self, valkey_client, request_id="ord-1"):
+    def _response(self, vk_client, request_id="ord-1"):
         key = "bigqmt:rpc:resp:acct:%s" % request_id
-        return json.loads(valkey_client.kv[key]) if key in valkey_client.kv else None
+        return json.loads(vk_client.kv[key]) if key in vk_client.kv else None
 
 
 class WaitsForTheIdTest(_Service):
     def test_a_remark_match_with_no_id_yet_stays_parked(self):
         """The fix, stated directly: an empty id is not a settled order."""
         gateway = IdArrivesLateGateway(sysid_after=2)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
 
         service.drain_pending()
 
-        self.assertIsNone(self._response(valkey_client),
+        self.assertIsNone(self._response(vk_client),
                           "answered before QMT assigned the id")
         self.assertEqual(service.pending_settlement_count(), 1)
 
     def test_the_next_tick_answers_with_the_real_id(self):
         gateway = IdArrivesLateGateway(sysid_after=2)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
 
         service.drain_pending()
         service.drain_pending()
 
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertTrue(response["ok"], response["error"])
         self.assertEqual(response["data"]["order_sys_id"], "635093411")
 
     def test_it_never_publishes_a_none_id_for_a_live_order(self):
         """The reproduction in one assertion: the client maps None to -1."""
         gateway = IdArrivesLateGateway(sysid_after=3)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
 
         for _ in range(3):
             service.drain_pending()
 
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertIsNotNone(response)
         self.assertTrue(response["data"]["order_sys_id"])
 
     def test_an_id_present_on_the_first_look_still_settles_at_once(self):
         """No extra round trip for the normal case."""
         gateway = IdArrivesLateGateway(sysid_after=1)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
 
         service.drain_pending()
 
-        self.assertEqual(self._response(valkey_client)["data"]["order_sys_id"],
+        self.assertEqual(self._response(vk_client)["data"]["order_sys_id"],
                          "635093411")
         self.assertEqual(gateway.lookups, 1)
 
@@ -162,10 +162,10 @@ class DeadlineTest(_Service):
 
     def _timed_out(self):
         gateway = IdArrivesLateGateway(sysid_after=999)
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._submit(service)
         service.drain_pending()
-        return self._response(valkey_client)
+        return self._response(vk_client)
 
     def test_it_answers_rather_than_parking_forever(self):
         self.assertIsNotNone(self._timed_out())
@@ -220,11 +220,11 @@ class MissingOrderIsStillMissingTest(_Service):
             def query_orders(self, account_id, strategy_name):
                 return []
 
-        valkey_client, service = self._service(NeverLands(), timeout=0.0)
+        vk_client, service = self._service(NeverLands(), timeout=0.0)
         self._submit(service)
         service.drain_pending()
 
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertFalse(response.get("server_error"))
         self.assertIn("UNCONFIRMED", response["data"]["message"])
         self.assertEqual(service.shadow_settlement_count(), 1)

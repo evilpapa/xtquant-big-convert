@@ -1,21 +1,21 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  启动 bigqmt-serial-bridge（Windows 串口 <-> Valkey 桥接），并按需拉起大 QMT。
+  启动 bigqmt-serial-bridge（Windows 串口 <-> VK 桥接），并按需拉起大 QMT。
 
 .DESCRIPTION
-  链路：QMT 模型交易(如 COM10) <-com0com-> 本脚本的串口(如 COM11) <-串口帧-> 桥接 <-Valkey-> 策略。
+  链路：QMT 模型交易(如 COM10) <-com0com-> 本脚本的串口(如 COM11) <-串口帧-> 桥接 <- VK -> 策略。
 
-  优先使用当前目录 .env 中的账号和 Valkey 地址。未配置地址时读取
-  bigqmt_signal_trader_qmt_config.py 中的 Valkey 配置。
-  启动前预检 Valkey 连通性和串口能否打开；-CheckOnly 只预检不启动。
+  优先使用当前目录 .env 中的账号和 VK 地址。未配置地址时读取
+  bigqmt_signal_trader_qmt_config.py 中的 VK 配置。
+  启动前预检 VK 连通性和串口能否打开；-CheckOnly 只预检不启动。
 
   默认在桥接串口打开后（日志出现“串口桥接已启动”）调用
   bigqmt_signal_trader.qmt_launcher 启动大 QMT，由 QMT 自己完成自动登录和
   自动运行策略。判断是否真正接通看桥接日志里的“QMT 串口会话已就绪”。
   QMT 目录默认读 .env 的 BIGQMT_QMT_DIR，其次用正在运行的 QMT 进程所在目录。
 
-.PARAMETER ValkeyUrl
+.PARAMETER VkUrl
   valkey://[user:password@]host:port/db，也接受 redis://。
   优先级：本参数 > .env > -LocalConfig 的 BIGQMT_CONFIG > 环境变量。
 
@@ -34,14 +34,14 @@
 .PARAMETER LocalConfig
   QMT 侧本地配置文件；默认依次在脚本目录、脚本目录\src、当前目录查找。
 
-.PARAMETER ValkeyPubsub
-  客户端用 Valkey pub/sub 发请求时加上（等价 --valkey-pubsub）。
+.PARAMETER VkPubSub
+  客户端用 VK pub/sub 发请求时加上（等价 --vk-pubsub）。
 
 .PARAMETER LogFile
   输出同时追加写入该文件。
 
 .PARAMETER CheckOnly
-  只预检账号 / Valkey / 串口 / QMT 目录和运行状态，不启动桥接。
+  只预检账号 / VK / 串口 / QMT 目录和运行状态，不启动桥接。
 
 .PARAMETER Force
   预检失败时仍然启动（仅供确认桥接自身报错用，一般不要加）。
@@ -83,23 +83,23 @@
 
 .EXAMPLE
   .\start_serial_bridge.ps1 -NoQmt -Port COM11 -Baudrate 921600 `
-      -ValkeyUrl valkey://192.168.2.112:6379/5 -ValkeyPubsub
+      -VkUrl valkey://192.168.2.112:6379/5 -VkPubSub
 
 .NOTES
   Ctrl+C 退出。桥接停止后 QMT 侧串口会话失效，脚本不会顺手关掉 QMT；
   下次启动请加 -RestartQmt，把 QMT 和桥接一起重启。
-  已从 Valkey 取出的请求不会重放，重启前先查委托和成交。
+  已从 VK 取出的请求不会重放，重启前先查委托和成交。
   QMT 2.1.x 的 XtItClient.exe manifest 要求管理员权限；非管理员会话启动 QMT 会得到
   WinError 740，预检会拒绝启动。请用管理员 PowerShell 运行，或加 -NoQmt 只启动桥接。
 #>
 param(
-    [string]$ValkeyUrl = "",
+    [string]$VkUrl = "",
     [string]$Account = "",
     [string]$Port = "COM11",
     [int]$Baudrate = 921600,
     [int]$MaxFrameBytes = 8388608,
     [string]$LocalConfig = "",
-    [switch]$ValkeyPubsub,
+    [switch]$VkPubSub,
     [string]$LogFile = "",
     [switch]$CheckOnly,
     [switch]$Force,
@@ -185,13 +185,11 @@ function Find-LocalConfig([string]$Explicit) {
     return ""
 }
 
-function Get-ValkeyConfigBlock([string]$Text) {
+function Get-VkConfigBlock([string]$Text) {
     if (-not $Text) { return "" }
-    $start = $Text.IndexOf("BIGQMT_CONFIG")
-    if ($start -lt 0) { $start = $Text.IndexOf("BIGQMT_CONFIG") }
-    if ($start -lt 0) { return "" }
-    $open = $Text.IndexOf("{", $start)
-    if ($open -lt 0) { return "" }
+    $assignment = [regex]::Match($Text, '(?m)^[ \t]*BIGQMT_CONFIG\s*=\s*\{')
+    if (-not $assignment.Success) { return "" }
+    $open = $assignment.Index + $assignment.Length - 1
     $depth = 0
     for ($i = $open; $i -lt $Text.Length; $i++) {
         $ch = $Text[$i]
@@ -212,7 +210,7 @@ function Get-ConfigValue([string]$Block, [string]$Key) {
     return $m.Groups["value"].Value.Trim().Trim([char]0x22, [char]0x27).Trim()
 }
 
-function New-ValkeyUrlFromBlock([string]$Block) {
+function New-VkUrlFromBlock([string]$Block) {
     $url = Get-ConfigValue $Block "url"
     if ($url) { return $url }
     $h = Get-ConfigValue $Block "host"
@@ -229,7 +227,7 @@ function New-ValkeyUrlFromBlock([string]$Block) {
     return ("valkey://" + $auth + $h + ":" + $p + "/" + $d)
 }
 
-function Format-ValkeyUrl([string]$Url) {
+function Format-VkUrl([string]$Url) {
     # 日志里隐藏用户名/密码
     return [regex]::Replace($Url, "//[^/@]*@", "//***@")
 }
@@ -239,14 +237,14 @@ function Resolve-BridgeEntry([string]$Explicit) {
     if ($Explicit) {
         $leaf = [System.IO.Path]::GetFileName($Explicit)
         if ($leaf -match "^pythonw?([0-9]+(\.[0-9]+)?)?\.exe$") {
-            return @{ Exe = $Explicit; Prefix = @("-m", "bigqmt_signal_trader.serial_valkey_bridge") }
+            return @{ Exe = $Explicit; Prefix = @("-m", "bigqmt_signal_trader.serial_vk_bridge") }
         }
         return @{ Exe = $Explicit; Prefix = @() }
     }
     $cmd = Get-Command "bigqmt-serial-bridge" -ErrorAction SilentlyContinue
     if ($cmd) { return @{ Exe = $cmd.Source; Prefix = @() } }
     $py = Get-Command "python" -ErrorAction SilentlyContinue
-    if ($py) { return @{ Exe = $py.Source; Prefix = @("-m", "bigqmt_signal_trader.serial_valkey_bridge") } }
+    if ($py) { return @{ Exe = $py.Source; Prefix = @("-m", "bigqmt_signal_trader.serial_vk_bridge") } }
     throw "找不到 bigqmt-serial-bridge，也没有 python。请先 pip install -e . 或 pip install `"xtquant-big-convert[valkey,serial]`"。"
 }
 
@@ -355,7 +353,7 @@ Say-Step "配置"
 $entry = Resolve-BridgeEntry $BridgeExe
 $pyExe = Resolve-Python $entry
 $dotenv = $null
-if ((-not $ValkeyUrl -or [string]::IsNullOrWhiteSpace($Account) -or -not $QmtDir -or $QmtMode -eq "login") -and
+if ((-not $VkUrl -or [string]::IsNullOrWhiteSpace($Account) -or -not $QmtDir -or $QmtMode -eq "login") -and
         (Test-Path -LiteralPath ".env" -PathType Leaf)) {
     if (-not $pyExe) { throw "读取 .env 需要外部 Python，请检查 PATH 或指定 -BridgeExe。" }
     $result = Invoke-Capture $pyExe @("-c", "import json; from bigqmt_signal_trader.local_env import local_serial_settings; print(json.dumps(local_serial_settings()))")
@@ -365,34 +363,34 @@ if ((-not $ValkeyUrl -or [string]::IsNullOrWhiteSpace($Account) -or -not $QmtDir
 
 $configPath = Find-LocalConfig $LocalConfig
 $configText = ""
-$valkeyBlock = ""
+$vkBlock = ""
 $configTransport = ""
 if ($configPath) {
     $configText = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
-    $valkeyBlock = Get-ValkeyConfigBlock $configText
-    $configTransport = Get-ConfigValue $valkeyBlock "transport"
+    $vkBlock = Get-VkConfigBlock $configText
+    $configTransport = Get-ConfigValue $vkBlock "transport"
 }
 
-$valkeySource = "命令行 -ValkeyUrl"
-if (-not $ValkeyUrl -and $dotenv.valkey_url) {
-    $ValkeyUrl = $dotenv.valkey_url
-    $valkeySource = ".env"
+$vkSource = "命令行 -VkUrl"
+if (-not $VkUrl -and $dotenv.vk_url) {
+    $VkUrl = $dotenv.vk_url
+    $vkSource = ".env"
 }
-if (-not $ValkeyUrl) {
-    $ValkeyUrl = New-ValkeyUrlFromBlock $valkeyBlock
-    if ($ValkeyUrl) { $valkeySource = "本地配置" }
+if (-not $VkUrl) {
+    $VkUrl = New-VkUrlFromBlock $vkBlock
+    if ($VkUrl) { $vkSource = "本地配置" }
 }
-if (-not $ValkeyUrl -and $env:BIGQMT_SERIAL_VALKEY_URL) {
-    $ValkeyUrl = $env:BIGQMT_SERIAL_VALKEY_URL
-    $valkeySource = "环境变量 BIGQMT_SERIAL_VALKEY_URL"
+if (-not $VkUrl -and $env:BIGQMT_SERIAL_VK_URL) {
+    $VkUrl = $env:BIGQMT_SERIAL_VK_URL
+    $vkSource = "环境变量 BIGQMT_SERIAL_VK_URL"
 }
-if (-not $ValkeyUrl -and $env:BIGQMT_VALKEY_URL) {
-    $ValkeyUrl = $env:BIGQMT_VALKEY_URL
-    $valkeySource = "环境变量 BIGQMT_VALKEY_URL"
+if (-not $VkUrl -and $env:BIGQMT_VK_URL) {
+    $VkUrl = $env:BIGQMT_VK_URL
+    $vkSource = "环境变量 BIGQMT_VK_URL"
 }
-if (-not $ValkeyUrl) {
-    $ValkeyUrl = "valkey://127.0.0.1:6379/5"
-    $valkeySource = "内置默认值（未找到 QMT 侧配置）"
+if (-not $VkUrl) {
+    $VkUrl = "valkey://127.0.0.1:6379/5"
+    $vkSource = "内置默认值（未找到 QMT 侧配置）"
 }
 
 $accountSource = "命令行 -Account"
@@ -454,7 +452,7 @@ if ($qmtEnabled) {
 
 Write-Host ("   账号      : " + $Account + "   (" + $accountSource + ")")
 Write-Host ("   串口      : " + $Port + " @ " + $Baudrate + " baud, 帧上限 " + $MaxFrameBytes)
-Write-Host ("   Valkey     : " + (Format-ValkeyUrl $ValkeyUrl) + "   (" + $valkeySource + ")")
+Write-Host ("   VK     : " + (Format-VkUrl $VkUrl) + "   (" + $vkSource + ")")
 Write-Host ("   本地配置  : " + $(if ($configPath) { $configPath } else { "未找到（可用 -LocalConfig 指定）" }))
 Write-Host ("   启动入口  : " + $entry.Exe + " " + (@($entry.Prefix) -join " "))
 if ($NoQmt) {
@@ -471,7 +469,7 @@ if ($configTransport -and $configTransport -ne "serial") {
     Say-Warn ('本地配置里的 transport 是 "' + $configTransport + '"，串口桥接需要 QMT 侧 BIGQMT_CONFIG 写 "transport": "serial" 并配好 "serial": {"port": "COM10", "baudrate": 921600}。')
 }
 elseif ($configPath -and -not $configTransport) {
-    Say-Warn '本地配置里没有 "transport": "serial"，QMT 侧默认仍走 Valkey，不会用到本桥接。'
+    Say-Warn '本地配置里没有 "transport": "serial"，QMT 侧默认仍走 VK，不会用到本桥接。'
 }
 
 # ---- 5. 预检 ----------------------------------------------------------------
@@ -479,21 +477,21 @@ Say-Step "预检"
 $preflightOk = $true
 
 if (-not $pyExe) {
-    Say-Warn "找不到 python，跳过 Valkey/串口预检（桥接启动时会再检查一遍）。"
+    Say-Warn "找不到 python，跳过 VK/串口预检（桥接启动时会再检查一遍）。"
 }
 else {
-    $env:BIGQMT_PREFLIGHT_VALKEY_URL = $ValkeyUrl
-    $probe = Invoke-Capture $pyExe @("-c", "import os; from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client; build_valkey_client(dict(url=os.environ['BIGQMT_PREFLIGHT_VALKEY_URL'], socket_timeout=2, socket_connect_timeout=2)).ping(); print('ok')")
+    $env:BIGQMT_PREFLIGHT_VK_URL = $VkUrl
+    $probe = Invoke-Capture $pyExe @("-c", "import os; from bigqmt_signal_trader.adapters.vk_common import build_vk_client; build_vk_client(dict(url=os.environ['BIGQMT_PREFLIGHT_VK_URL'], socket_timeout=2, socket_connect_timeout=2)).ping(); print('ok')")
     if ($probe.Code -eq 0) {
-        Say-Ok ("Valkey 可达: " + (Format-ValkeyUrl $ValkeyUrl))
+        Say-Ok ("VK 可达: " + (Format-VkUrl $VkUrl))
     }
     else {
         $preflightOk = $false
-        Say-Fail ("Valkey 不可达: " + (Format-ValkeyUrl $ValkeyUrl))
+        Say-Fail ("VK 不可达: " + (Format-VkUrl $VkUrl))
         Say-Probe $probe.Output
-        Say-Detail "桥接默认连 valkey://127.0.0.1:6379/5，请用 -ValkeyUrl 或 BIGQMT_SERIAL_VALKEY_URL 指向 QMT 策略用的同一个 Valkey 和 db。"
+        Say-Detail "桥接默认连 valkey://127.0.0.1:6379/5，请用 -VkUrl 或 BIGQMT_SERIAL_VK_URL 指向 QMT 策略用的同一个 VK 和 db。"
         if (($probe.Output -join "`n") -match "No module named 'valkey'") {
-            Say-Detail '缺少 valkey 客户端：pip install "xtquant-big-convert[valkey,serial]"'
+            Say-Detail '缺少 VK 客户端：pip install "xtquant-big-convert[valkey,serial]"'
         }
     }
 
@@ -513,7 +511,7 @@ else {
         }
     }
 
-    Remove-Item Env:\BIGQMT_PREFLIGHT_VALKEY_URL -ErrorAction SilentlyContinue
+    Remove-Item Env:\BIGQMT_PREFLIGHT_VK_URL -ErrorAction SilentlyContinue
     Remove-Item Env:\BIGQMT_PREFLIGHT_PORT -ErrorAction SilentlyContinue
     Remove-Item Env:\BIGQMT_PREFLIGHT_BAUD -ErrorAction SilentlyContinue
 }
@@ -627,18 +625,18 @@ $bridgeArgs = @($entry.Prefix) + @(
     "--baudrate", [string]$Baudrate,
     "--account-id", $Account,
     "--max-frame-bytes", [string]$MaxFrameBytes,
-    "--valkey-url", $ValkeyUrl
+    "--vk-url", $VkUrl
 )
-if ($ValkeyPubsub) { $bridgeArgs += "--valkey-pubsub" }
+if ($VkPubSub) { $bridgeArgs += "--vk-pubsub" }
 
 $printed = (@($entry.Exe) + $bridgeArgs) -join " "
-if ($ValkeyUrl -ne (Format-ValkeyUrl $ValkeyUrl)) { $printed = $printed.Replace($ValkeyUrl, (Format-ValkeyUrl $ValkeyUrl)) }
+if ($VkUrl -ne (Format-VkUrl $VkUrl)) { $printed = $printed.Replace($VkUrl, (Format-VkUrl $VkUrl)) }
 Write-Host ("   " + $printed)
 Write-Host "   Ctrl+C 停止。" -ForegroundColor DarkGray
 Write-Host ""
 
-# 同一个 Valkey 也通过环境变量传一份，方便子进程/后续排错保持一致
-$env:BIGQMT_SERIAL_VALKEY_URL = $ValkeyUrl
+# 同一个 VK 也通过环境变量传一份，方便子进程/后续排错保持一致
+$env:BIGQMT_SERIAL_VK_URL = $VkUrl
 $env:PYTHONUNBUFFERED = "1"
 
 if ($LogFile) {
@@ -735,8 +733,8 @@ if ($code -eq 0) {
 }
 else {
     Say-Fail ("桥接异常退出，exit=" + $code + "。对照上面的 ERROR 行：")
-    Say-Detail "无法连接 Valkey：请检查地址、端口、数据库、服务状态和防火墙。"
+    Say-Detail "无法连接 VK：请检查地址、端口、数据库、服务状态和防火墙。"
     Say-Detail "无法打开串口：请检查串口名称、端口占用及 com0com 端口对。"
-    Say-Detail "桥接已停止：请检查串口和 Valkey，查询委托及成交后再重启桥接和 QMT 策略。"
+    Say-Detail "桥接已停止：请检查串口和 VK，查询委托及成交后再重启桥接和 QMT 策略。"
 }
 Exit-Script $code

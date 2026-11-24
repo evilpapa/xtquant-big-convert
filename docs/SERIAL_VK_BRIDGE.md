@@ -1,21 +1,21 @@
-# 独立运行的桥接进程把串口接回 Valkey
+# 独立运行的串口与 VK 桥接
 
-## 通过 com0com 接回 Valkey
+## 通过 com0com 接回 VK
 
-桥接默认也读取 `BIGQMT_ACCOUNT_ID`，必须与 QMT 端一致。若 Valkey 需要认证，把连接串放在 `BIGQMT_SERIAL_VALKEY_URL` 环境变量；省略时使用 `valkey://127.0.0.1:6379/5`。
+桥接默认也读取 `BIGQMT_ACCOUNT_ID`，必须与 QMT 端一致。若 VK 需要认证，把连接串放在 `BIGQMT_SERIAL_VK_URL` 环境变量；省略时使用 `valkey://127.0.0.1:6379/5`。
 
    ```powershell
    $env:BIGQMT_ACCOUNT_ID = 'YOUR_ACCOUNT_ID'  # 换成实际账号；对当前 PowerShell 和子进程生效
    bigqmt-serial-bridge --port COM11 --baudrate 921600
    ```
 
-   仓库根目录的 `start_serial_bridge.ps1` 会自动从 `bigqmt_signal_trader_qmt_config.py` 读取 Valkey 连接配置（避免桥接连 `127.0.0.1` 而客户端用的是另一台 Valkey，那会报
-   `ERROR 桥接已停止（TimeoutError…）`），并在启动前预检 Valkey 连通性和串口：
+   仓库根目录的 `start_serial_bridge.ps1` 会自动从 `bigqmt_signal_trader_qmt_config.py` 读取 VK 连接配置（避免桥接连 `127.0.0.1` 而客户端用的是另一台 VK 服务器，那会报
+   `ERROR 桥接已停止（TimeoutError…）`），并在启动前预检 VK 连通性和串口：
 
    ```powershell
    .\start_serial_bridge.ps1 -CheckOnly   # 只预检
    .\start_serial_bridge.ps1               # 启动，日志同时在控制台输出
-   .\start_serial_bridge.ps1 -LogFile .\bridge.log -ValkeyPubsub
+   .\start_serial_bridge.ps1 -LogFile .\bridge.log -VkPubSub
    ```
 
 ### 桥接和 QMT 一起启动
@@ -49,7 +49,7 @@ QMT 目录优先级：`-QmtDir` > `.env` 的 `BIGQMT_QMT_DIR` > 环境变量 > �
 仓库提供 `tools/serial_bridge_gui.py`，打包后是单文件
 `dist/BigQMTSerialController.exe`。主界面有「启动 / 停止 / 重启」，启动后出现两个 tab：
 
-- `serial_valkey_bridge 日志`：桥接子进程 stdout/stderr 的实时 tail；
+- `serial_vk_bridge 日志`：桥接子进程 stdout/stderr 的实时 tail；
 - `QMT 策略日志（FormulaOutput）`：tail `<QMT>\userdata\log\XtClient_FormulaOutput_YYYYMMDD.log`，
   跨天自动切到新文件，按行兼容 QMT 日志里混用的 UTF-8 / GBK。
 
@@ -71,16 +71,16 @@ QMT 目录优先级：`-QmtDir` > `.env` 的 `BIGQMT_QMT_DIR` > 环境变量 > �
 
 控制区右上角的「设置…」可以修改以下内容，保存时写回当前 `.env`（保留注释）：
 
-- 串口：端口、波特率、单帧上限、Valkey pub/sub；
+- 串口：端口、波特率、单帧上限、VK pub/sub；
 - BIGQMT 账户：资金账号、QMT 登录账号、QMT 登录密码（密码框掩码，不回显）；
 - QMT 软件目录、启动方式（`exe` / `login`）、可执行文件名；
-- Valkey：地址、端口、DB、用户名、密码（用户名 / 密码可留空）。
+- VK：地址、端口、DB、用户名、密码（用户名 / 密码可留空）。
 
 保存后立即更新内存配置；如果桥接正在运行，会询问是否重启使其生效。
-设置面板同时写入 `BIGQMT_SERIAL_VALKEY_URL` 和 `BIGQMT_VALKEY_*` 分项，
-所以 PowerShell 脚本和外部客户端仍能读到同一个 Valkey。
+设置面板同时写入 `BIGQMT_SERIAL_VK_URL` 和 `BIGQMT_VK_*` 分项，
+所以 PowerShell 脚本和外部客户端仍能连接同一个 VK 实例。
 
-启动时如果检测到已有 `serial_valkey_bridge` 进程正占用配置的串口（常见于上次没退干净，
+启动时如果检测到已有 `serial_vk_bridge` 进程正占用配置的串口（常见于上次没退干净，
 或 PowerShell 脚本还在跑），会弹出确认框；确认后先停止旧进程再启动。
 如果旧桥接是以管理员权限运行的，GUI 也要以管理员权限运行才能停止它。
 「停止」按钮也会清理占用同一个串口的其他桥接进程。QMT 日志里 UTF-8 / GBK 混排和被
@@ -99,12 +99,12 @@ exe 只是前端，桥接和 `qmt_launcher` 仍由外部 Python 执行：优先�
 会尝试已运行的 QMT 进程。`-QmtMode login` 的账号密码沿用
 `BIGQMT_LOGIN_USER` / `BIGQMT_LOGIN_PASSWORD`（环境变量或 `.env`），不会写进日志。
 
-确认桥接输出 `QMT 串口会话已就绪`，然后用现有 Valkey 客户端执行 `ping`、`get_full_tick` 等只读请求。客户端仍配 `transport=valkey`，账号、Valkey 地址和数据库与桥接一致。桥接按 INFO 级别打印收到的每个 RPC 请求（`收到 RPC 请求 <request_id>：method=... params=...`，参数超过 400 字符会截断），参数里不要放凭据。
+确认桥接输出 `QMT 串口会话已就绪`，然后用现有 VK 客户端执行 `ping`、`get_full_tick` 等只读请求。客户端仍配 `transport=valkey`，账号、VK 地址和数据库与桥接一致。桥接按 INFO 级别打印收到的每个 RPC 请求（`收到 RPC 请求 <request_id>：method=... params=...`，参数超过 400 字符会截断），参数里不要放凭据。
 
 脚本会把窗口代码页、PowerShell 的解码编码和桥接进程的 stdio 统一为 UTF-8，并在每次调用外部程序后重新对齐代码页（pyenv 的 `.bat` shim 内部会执行 `chcp`，否则中文日志会乱码）。`-LogFile` 按 UTF-8 写入。直接运行入口而不经过脚本时，若日志中文乱码，可先 `chcp 65001` 并设置 `PYTHONIOENCODING=utf-8`。
 
-默认使用 `bigqmt:rpc:queue:{account_id}` 及原有响应键、列表和频道；使用 Valkey pub/sub 发请求的客户端需给桥接加 `--valkey-pubsub`。同一账号只能运行一个队列消费者，避免让直连 Valkey 的 QMT 策略与串口桥接同时消费。
+默认使用 `bigqmt:rpc:queue:{account_id}` 及原有响应键、列表和频道；使用 VK pub/sub 发请求的客户端需给桥接加 `--vk-pubsub`。同一账号只能运行一个队列消费者，避免让直连 VK 的 QMT 策略与串口桥接同时消费。
 
-串口每帧是 `8 位十六进制 CRC32` + `TAB` + `UTF-8 JSON` + `LF`。线程负责分帧和部分写入，QMT 的 `adjust` 从内存队列取请求；委托与成交回报由桥接发布到现有 Valkey 频道，行情全推也使用原频道。行情推送拥塞时会丢弃超出队列容量的更新，委托与成交回报使用独立队列。默认单帧上限 8 MiB，大行情按批查询，或者同时调整 QMT 的 `serial.max_frame_bytes` 与桥接的 `--max-frame-bytes`。延迟还取决于 QMT 调度间隔和串口传输量，请在目标终端实测。
+串口每帧是 `8 位十六进制 CRC32` + `TAB` + `UTF-8 JSON` + `LF`。线程负责分帧和部分写入，QMT 的 `adjust` 从内存队列取请求；委托与成交回报由桥接发布到现有 VK 频道，行情全推也使用原频道。行情推送拥塞时会丢弃超出队列容量的更新，委托与成交回报使用独立队列。默认单帧上限 8 MiB，大行情按批查询，或者同时调整 QMT 的 `serial.max_frame_bytes` 与桥接的 `--max-frame-bytes`。延迟还取决于 QMT 调度间隔和串口传输量，请在目标终端实测。
 
-一个串口会话服务一个账号。串口模式关闭 QMT 侧的 Valkey 和原生 `xtdata` 直连，快照缓存和异步历史下载由独立桥接进程管理。交易请求需使用更新后的 Valkey 客户端包：调用接口不变，请求会携带发送时间，让桥接拒绝积压到过期的委托。Windows 和客户端主机应同步时钟。串口异常后关闭并重启相关进程；桥接不会自动重放未确认的交易请求。若断线时交易状态不明，按备注查询委托和成交再决定是否重试。
+一个串口会话服务一个账号。串口模式关闭 QMT 侧的 VK 和原生 `xtdata` 直连，快照缓存和异步历史下载由独立桥接进程管理。交易请求需使用更新后的 VK 客户端包：调用接口不变，请求会携带发送时间，让桥接拒绝积压到过期的委托。Windows 和客户端主机应同步时钟。串口异常后关闭并重启相关进程；桥接不会自动重放未确认的交易请求。若断线时交易状态不明，按备注查询委托和成交再决定是否重试。

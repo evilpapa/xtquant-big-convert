@@ -22,7 +22,7 @@ IS_WINDOWS = os.name == "nt"
 CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
 CREATE_NEW_PROCESS_GROUP = 0x00000200 if IS_WINDOWS else 0
 
-DEFAULT_VALKEY_URL = "valkey://127.0.0.1:6379/5"
+DEFAULT_VK_URL = "valkey://127.0.0.1:6379/5"
 DEFAULT_QMT_EXE = "XtItClient.exe"
 DEFAULT_PORT = "COM11"
 DEFAULT_BAUDRATE = 921600
@@ -427,7 +427,7 @@ def read_qmt_config_dict(path):
     return {}
 
 
-def valkey_url_from_config(path):
+def vk_url_from_config(path):
     config = read_qmt_config_dict(path)
     if not config:
         return ""
@@ -437,13 +437,13 @@ def valkey_url_from_config(path):
     host = str(config.get("host") or "").strip()
     if not host:
         return ""
-    return build_valkey_url(host, config.get("port") or 6379,
+    return build_vk_url(host, config.get("port") or 6379,
                             config.get("db") or 0,
                             config.get("username") or "",
                             config.get("password") or "")
 
 
-def build_valkey_url(host, port=6379, db=0, username="", password=""):
+def build_vk_url(host, port=6379, db=0, username="", password=""):
     """由地址 / 端口 / DB / 凭据拼连接串；允许直接传入完整 URL。"""
     host = str(host or "").strip()
     if not host:
@@ -465,7 +465,7 @@ def build_valkey_url(host, port=6379, db=0, username="", password=""):
     return "valkey://%s%s/%d" % (auth, host, db)
 
 
-def parse_valkey_url(url):
+def parse_vk_url(url):
     """把连接串拆成设置面板的字段。无法解析时返回默认值。"""
     result = {"host": "127.0.0.1", "port": 6379, "db": 0,
               "username": "", "password": ""}
@@ -538,12 +538,12 @@ class Config(object):
         self.env_file = ""
         self.env_dir = os.getcwd()
         self.account = ""
-        self.valkey_url = DEFAULT_VALKEY_URL
-        self.valkey_host = "127.0.0.1"
-        self.valkey_port = 6379
-        self.valkey_db = 0
-        self.valkey_username = ""
-        self.valkey_password = ""
+        self.vk_url = DEFAULT_VK_URL
+        self.vk_host = "127.0.0.1"
+        self.vk_port = 6379
+        self.vk_db = 0
+        self.vk_username = ""
+        self.vk_password = ""
         self.qmt_root = ""
         self.qmt_exe = DEFAULT_QMT_EXE
         self.qmt_mode = "exe"
@@ -567,9 +567,9 @@ class Config(object):
         return os.path.join(self.qmt_root, "userdata", "log") if self.qmt_root else ""
 
     def summary(self):
-        return "账号 %s  |  串口 %s@%s  |  Valkey %s  |  QMT %s" % (
+        return "账号 %s  |  串口 %s@%s  |  VK %s  |  QMT %s" % (
             self.account or "(未配置)", self.port, self.baudrate,
-            redact_url(self.valkey_url), self.qmt_root or "(未配置)")
+            redact_url(self.vk_url), self.qmt_root or "(未配置)")
 
     def login_credentials(self):
         return self.login_user, self.login_password
@@ -599,25 +599,25 @@ def load_config(overrides=None, env_file=None):
 
     account = pick("account", "BIGQMT_ACCOUNT_ID")
     qmt_dir = pick("qmt_dir", "BIGQMT_QMT_DIR")
-    valkey_url = pick("valkey_url", "BIGQMT_SERIAL_VALKEY_URL")
-    if not valkey_url:
-        valkey_url = pick("valkey_url", "BIGQMT_VALKEY_URL")
-    valkey_host = pick("valkey_host", "BIGQMT_VALKEY_HOST")
-    valkey_port = pick("valkey_port", "BIGQMT_VALKEY_PORT", "6379") or "6379"
-    valkey_db = pick("valkey_db", "BIGQMT_VALKEY_DB", "0") or "0"
-    valkey_username = pick("valkey_username", "BIGQMT_VALKEY_USERNAME")
-    valkey_password = pick("valkey_password", "BIGQMT_VALKEY_PASSWORD")
-    if not valkey_url and valkey_host:
-        valkey_url = build_valkey_url(valkey_host, valkey_port, valkey_db,
-                                      valkey_username, valkey_password)
+    vk_url = pick("vk_url", "BIGQMT_SERIAL_VK_URL")
+    if not vk_url:
+        vk_url = pick("vk_url", "BIGQMT_VK_URL")
+    vk_host = pick("vk_host", "BIGQMT_VK_HOST")
+    vk_port = pick("vk_port", "BIGQMT_VK_PORT", "6379") or "6379"
+    vk_db = pick("vk_db", "BIGQMT_VK_DB", "0") or "0"
+    vk_username = pick("vk_username", "BIGQMT_VK_USERNAME")
+    vk_password = pick("vk_password", "BIGQMT_VK_PASSWORD")
+    if not vk_url and vk_host:
+        vk_url = build_vk_url(vk_host, vk_port, vk_db,
+                                      vk_username, vk_password)
     port = pick("port", "BIGQMT_SERIAL_PORT", DEFAULT_PORT) or DEFAULT_PORT
     baudrate = pick("baudrate", "BIGQMT_SERIAL_BAUDRATE", str(DEFAULT_BAUDRATE))
     max_frame = pick("max_frame_bytes", "BIGQMT_SERIAL_MAX_FRAME_BYTES",
                      str(DEFAULT_MAX_FRAME_BYTES))
     pubsub_raw = overrides.get("pubsub")
     if pubsub_raw is None:
-        pubsub_raw = values.get("BIGQMT_SERIAL_VALKEY_PUBSUB",
-                                os.environ.get("BIGQMT_SERIAL_VALKEY_PUBSUB"))
+        pubsub_raw = values.get("BIGQMT_SERIAL_VK_PUBSUB",
+                                os.environ.get("BIGQMT_SERIAL_VK_PUBSUB"))
     qmt_mode = pick("qmt_mode", "BIGQMT_QMT_MODE", "exe").lower()
     qmt_exe = pick("qmt_exe", "BIGQMT_QMT_EXE", DEFAULT_QMT_EXE) or DEFAULT_QMT_EXE
 
@@ -629,11 +629,11 @@ def load_config(overrides=None, env_file=None):
         qmt_root = normalize_qmt_root(detect_running_qmt_root())
 
     local_config = find_qmt_config_file(qmt_root, env_dir)
-    if not valkey_url and local_config:
-        valkey_url = valkey_url_from_config(local_config)
-    if not valkey_url:
-        valkey_url = DEFAULT_VALKEY_URL
-    valkey_parts = parse_valkey_url(valkey_url)
+    if not vk_url and local_config:
+        vk_url = vk_url_from_config(local_config)
+    if not vk_url:
+        vk_url = DEFAULT_VK_URL
+    vk_parts = parse_vk_url(vk_url)
 
     if overrides.get("login_password") is not None:
         login_password = str(overrides["login_password"])
@@ -651,12 +651,12 @@ def load_config(overrides=None, env_file=None):
         env_file=env_path,
         env_dir=env_dir,
         account=account,
-        valkey_url=valkey_url,
-        valkey_host=valkey_parts["host"],
-        valkey_port=valkey_parts["port"],
-        valkey_db=valkey_parts["db"],
-        valkey_username=valkey_parts["username"],
-        valkey_password=valkey_parts["password"],
+        vk_url=vk_url,
+        vk_host=vk_parts["host"],
+        vk_port=vk_parts["port"],
+        vk_db=vk_parts["db"],
+        vk_username=vk_parts["username"],
+        vk_password=vk_parts["password"],
         qmt_root=qmt_root,
         qmt_exe=qmt_exe,
         qmt_mode=qmt_mode,
@@ -747,7 +747,11 @@ def detect_running_qmt_root():
 
 
 # ---------------------------------------------------------- serial bridge
-_BRIDGE_MARKERS = ("bigqmt_signal_trader.serial_valkey_bridge", "bigqmt-serial-bridge")
+_BRIDGE_MARKERS = (
+    "bigqmt_signal_trader.serial_vk_bridge",
+    "bigqmt_signal_trader.serial_valkey_bridge",
+    "bigqmt-serial-bridge",
+)
 
 
 def _is_bridge_command(cmdline):
@@ -830,7 +834,7 @@ def _bridge_processes_wmic():
 
 
 def find_bridge_processes(port=None):
-    """找出占用指定串口的 serial_valkey_bridge 进程（当前进程除外）。"""
+    """找出占用指定串口的 serial_vk_bridge 进程（当前进程除外）。"""
     found = _bridge_processes_psutil()
     if found is None:
         found = _bridge_processes_wmic()
@@ -957,8 +961,8 @@ def child_env(config):
     """给桥接 / qmt_launcher 子进程的环境：.env 补齐，显式环境变量优先。"""
     env = os.environ.copy()
     for key in ("BIGQMT_ACCOUNT_ID", "BIGQMT_QMT_DIR", "BIGQMT_LOGIN_USER",
-                "BIGQMT_LOGIN_PASSWORD", "BIGQMT_SERIAL_VALKEY_URL",
-                "BIGQMT_VALKEY_URL", "BIGQMT_QMT_MODE", "BIGQMT_QMT_EXE"):
+                "BIGQMT_LOGIN_PASSWORD", "BIGQMT_SERIAL_VK_URL",
+                "BIGQMT_VK_URL", "BIGQMT_QMT_MODE", "BIGQMT_QMT_EXE"):
         if not env.get(key) and config.dotenv.get(key):
             env[key] = config.dotenv[key]
     if config.account:
@@ -967,7 +971,7 @@ def child_env(config):
         env.setdefault("BIGQMT_LOGIN_USER", config.login_user)
     if config.login_password:
         env.setdefault("BIGQMT_LOGIN_PASSWORD", config.login_password)
-    env["BIGQMT_SERIAL_VALKEY_URL"] = config.valkey_url
+    env["BIGQMT_SERIAL_VK_URL"] = config.vk_url
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     return env
@@ -975,15 +979,15 @@ def child_env(config):
 
 def bridge_command(python_command, config):
     command = list(python_command) + [
-        "-m", "bigqmt_signal_trader.serial_valkey_bridge",
+        "-m", "bigqmt_signal_trader.serial_vk_bridge",
         "--port", config.port,
         "--baudrate", str(config.baudrate),
         "--account-id", config.account,
         "--max-frame-bytes", str(config.max_frame_bytes),
-        "--valkey-url", config.valkey_url,
+        "--vk-url", config.vk_url,
     ]
     if config.pubsub:
-        command.append("--valkey-pubsub")
+        command.append("--vk-pubsub")
     return command
 
 

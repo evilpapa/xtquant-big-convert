@@ -39,8 +39,8 @@ pip install "xtquant-big-convert[valkey]"
 ```
 bigqmt_signal_trader/                  （整个包，pip 装的在 site-packages 里）
 bigqmt_signal_trader_strategy.py
-bigqmt_signal_trader_valkey_rpc_runtime.py
-BIGQMT_VALKEY_DRYRUN.py                 （★ QMT 编辑器入口，GBK 编码）
+bigqmt_signal_trader_vk_rpc_runtime.py
+BIGQMT_VK_DRYRUN.py                 （★ QMT 编辑器入口，GBK 编码）
 ```
 
 pip 安装后的文件位置可以用这条命令定位（输出目录里就有全部 4 项）：
@@ -57,7 +57,7 @@ python -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(
 ```python
 BIGQMT_ACCOUNT_ID = "资金账号"
 BIGQMT_CONFIG = {
-    "host": "Valkey地址", "port": 6379, "db": 5, "password": "Valkey密码",
+    "host": "VK 地址", "port": 6379, "db": 5, "password": "VK 密码",
     "rpc_allow_order_methods": False,
     "rpc_process_in_listener": True,
     "rpc_listener_methods": ("*",),
@@ -71,7 +71,7 @@ BIGQMT_CONFIG = {
 
 ### 第 4 步：在 QMT 策略编辑器运行入口
 
-QMT 策略编辑器里**只加载运行 `BIGQMT_VALKEY_DRYRUN.py` 一个文件**（它自动 import 其余模块）。
+QMT 策略编辑器里**只加载运行 `BIGQMT_VK_DRYRUN.py` 一个文件**（它自动 import 其余模块）。
 装在非默认路径不用改任何代码：入口先用自己 `__file__` 所在目录，取不到才回落
 到扫 `sys.path`。（旧版文档教人改 `_known_qmt_python_dir()` 的写死路径，
 那会让你多背一个源码补丁，现在不需要了。）
@@ -87,12 +87,12 @@ QMT 策略编辑器里**只加载运行 `BIGQMT_VALKEY_DRYRUN.py` 一个文件**
 
 ### 第 5 步：客户端配置 + 验证
 
-客户端用环境变量（或 `bigqmt_signal_trader_client_config.py`）指向同一套 Valkey/账号：
+客户端通过环境变量或 `bigqmt_signal_trader_client_config.py` 使用同一个 VK 实例和账号：
 
 ```powershell
 $env:BIGQMT_ACCOUNT_ID="资金账号"
-$env:BIGQMT_VALKEY_HOST="Valkey地址"; $env:BIGQMT_VALKEY_PORT="6379"
-$env:BIGQMT_VALKEY_DB="5"; $env:BIGQMT_VALKEY_PASSWORD="Valkey密码"
+$env:BIGQMT_VK_HOST="VK 地址"; $env:BIGQMT_VK_PORT="6379"
+$env:BIGQMT_VK_DB="5"; $env:BIGQMT_VK_PASSWORD="VK 密码"
 ```
 
 
@@ -104,7 +104,7 @@ python scripts/qmt.py ping
 
 | 现象 | 排查 |
 |------|------|
-| QMT 面板报 `import valkey` 被拒 | 检查券商限制及 Valkey 依赖 |
+| QMT 面板报 `import valkey` 被拒 | 检查券商限制及 VK 依赖 |
 | 启动了但查询全空 | 账号没对上：服务端 `BIGQMT_ACCOUNT_ID` vs 客户端 `BIGQMT_ACCOUNT_ID`；QMT 需在实盘模式 |
 | 下单报 `ORDER_DISABLED` | 正常保护，服务端配置 `rpc_allow_order_methods` 改 `True` 才放行 |
 | 详细错误日志 | QMT python 目录下 `logs/bigqmt_*.log`（保留 7 天），排错首选 |
@@ -342,7 +342,7 @@ python scripts/qmt.py north
 **通用兜底**：
 - `rpc <method> [json_params]` — 调用任意白名单方法（未列出的方法都能这样调）
 
-**配置自动发现**：脚本会自动把仓库 `src/` 加入 `sys.path`（开发模式直接运行，无需 pip install），并自动发现 QMT 的 python 目录（读 `local_config.py` 里的 transport 配置）。配置从环境变量（`BIGQMT_ACCOUNT_ID`/`BIGQMT_VALKEY_HOST` 等）或配置文件读取。
+**配置自动发现**：脚本会自动把仓库 `src/` 加入 `sys.path`（开发模式直接运行，无需 pip install），并自动发现 QMT 的 python 目录（读 `local_config.py` 里的 transport 配置）。配置从环境变量（`BIGQMT_ACCOUNT_ID`/`BIGQMT_VK_HOST` 等）或配置文件读取。
 
 **输出格式**：默认 JSON（`ok`/`data`/`ts` 三字段），加 `--table` 切换表格输出。错误返回 `ok: false` + `error`/`detail`/`code`，退出码 1。
 

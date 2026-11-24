@@ -30,7 +30,7 @@ from bigqmt_signal_trader.adapters.order_bigqmt import (  # noqa: E402
     is_sideless_order_type,
 )
 from bigqmt_signal_trader.models import OrderRequest  # noqa: E402
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers  # noqa: E402
 from bigqmt_signal_trader.xtquant_compat import BigQmtXtTrader, StockAccount  # noqa: E402
 
 
@@ -123,7 +123,7 @@ class RpcAcceptsTheTypeTest(unittest.TestCase):
             self.assertIn(handlers._order_action_from_params({"order_type": op}), ("BUY", "SELL"))
 
     def test_end_to_end_through_order_stock(self):
-        from test_valkey_rpc import FakeMarketData, FakePositionProvider
+        from test_vk_rpc import FakeMarketData, FakePositionProvider
         recorder = _Recorder()
         gateway = BigQmtOrderGateway(account_id="acct", passorder_func=recorder,
                                      context_info=object())

@@ -2,9 +2,9 @@
 
 为何需要它
 ---------------
-:mod:`valkey_rpc` 中的 RPC 桥接会将所有读取操作都路由到 QMT *策略*进程：
-客户端 -> valkey/zmq -> QMT Python 线程 -> ContextInfo -> 返回。每次读取都需要约
-13 ms（valkey），或约 0.7 ms（zmq），但在 GIL 抛转 500 ms 的情况下会出现延迟，而且每次读取都会
+:mod:`vk_rpc` 中的 RPC 桥接会将所有读取操作都路由到 QMT *策略*进程：
+客户端 -> VK / zmq -> QMT Python 线程 -> ContextInfo -> 返回。每次读取都需要约
+13 ms（VK），或约 0.7 ms（zmq），但在 GIL 抛转 500 ms 的情况下会出现延迟，而且每次读取都会
 与策略自身争抢 QMT 主线程的 GIL。
 
 FormulaServer 是同一 QMT 终端内的 C++ 行情/参考数据服务，通过

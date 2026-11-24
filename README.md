@@ -6,7 +6,7 @@
 
 ## 项目状态
 
-**券商已禁止本项目原有的远程传输方案。** Valkey 迁移不改变这一限制。仓库中的相关代码与文档仅供历史研究。
+**券商已禁止本项目原有的远程传输方案。** VK 迁移不改变这一限制。仓库中的相关代码与文档仅供历史研究。
 
 ## 免责声明
 
@@ -20,19 +20,19 @@
 
 ## 安装
 
-项目不提供 pypi 包，请在源码目录安装外部客户端和 Valkey 依赖：
+项目不提供 pypi 包，请在源码目录安装外部客户端和 VK 依赖：
 
 ```bash
 pip install ".[valkey]"
 ```
 
-本项目要求 **Python 3.12 或更高版本**，适用于客户端、QMT 策略和独立串口桥接。直连 Valkey 的 QMT 策略需在实际运行的解释器中安装 `valkey`。客户端和策略可连接同一个现有 Valkey 服务。部署步骤见[使用指南](docs/USER_GUIDE.md)。
+本项目要求 **Python 3.12 或更高版本**，适用于客户端、QMT 策略和独立串口桥接。直连 VK 的 QMT 策略需在实际运行的解释器中安装 `valkey`。客户端和策略可连接同一个现有 VK 服务。部署步骤见[使用指南](docs/USER_GUIDE.md)。
 
-外部客户端、CLI 和串口桥接会读取启动目录中的 `.env`。可参照 [`.env.example`](.env.example) 设置 `BIGQMT_ACCOUNT_ID` 和 Valkey 连接参数。显式传入的参数优先，其次是 `.env`，再按各入口原有顺序读取其他配置。QMT 策略沿用部署配置和进程环境，`bigqmt-init` 可在 QMT 外读取 `.env` 的账号和 Valkey 分项值，作为生成部署配置的默认值。
+外部客户端、CLI 和串口桥接会读取启动目录中的 `.env`。可参照 [`.env.example`](.env.example) 设置 `BIGQMT_ACCOUNT_ID` 和 VK 连接参数。显式传入的参数优先，其次是 `.env`，再按各入口原有顺序读取其他配置。QMT 策略沿用部署配置和进程环境，`bigqmt-init` 可在 QMT 外读取 `.env` 的账号和 VK 分项值，作为生成部署配置的默认值。
 
-新增 windows 客户端，用于控制 com 端口接入 valkey 以及 QMT 终端的启停。
+新增 windows 客户端，用于控制 com 端口接入 VK 以及 QMT 终端的启停。
 
-![](/data1/xtquant-big-convert/docs/images/serial_bridge.png)
+![demo](/data1/xtquant-big-convert/docs/images/serial_bridge.png)
 
 ## 文档导读
 

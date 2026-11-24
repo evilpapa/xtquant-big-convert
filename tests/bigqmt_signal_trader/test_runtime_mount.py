@@ -1,4 +1,4 @@
-"""Mount-behavior tests for bigqmt_signal_trader_valkey_rpc_runtime.
+"""Mount-behavior tests for bigqmt_signal_trader_vk_rpc_runtime.
 
 QMT mounts a strategy file by exec'ing it into a namespace that carries the
 injected global functions (passorder, download_history_data, ...). Those
@@ -18,7 +18,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-RUNTIME_FILE = os.path.join(SRC, "bigqmt_signal_trader_valkey_rpc_runtime.py")
+RUNTIME_FILE = os.path.join(SRC, "bigqmt_signal_trader_vk_rpc_runtime.py")
 
 
 def _noop(*args, **kwargs):

@@ -1,8 +1,8 @@
 # coding: utf-8
-"""Explicit BigQmtRpcClient(valkey_config=...) beats the config module (#289).
+"""Explicit BigQmtRpcClient(vk_config=...) beats the config module (#289).
 
 The constructor already promises this for host/port/password: it builds
-``merged_valkey_config`` as the module's valkey_config updated by the explicit
+``merged_vk_config`` as the module's vk_config updated by the explicit
 one. The three feature sections each broke that promise in its own way:
 
 * local_cache read the module section first and used the explicit value only
@@ -10,14 +10,14 @@ one. The three feature sections each broke that promise in its own way:
 * formula_server ``or``-chained the module section ahead of the explicit
   dict, so any module section discarded the explicit one outright, not even
   a merge;
-* full_tick never read valkey_config at all, so its constructor switch did
+* full_tick never read vk_config at all, so its constructor switch did
   nothing even with no config module present.
 
-@shengyy's repro (v0.3.33 and v0.3.38, offline, no Valkey): a module saying
+@shengyy's repro (v0.3.33 and v0.3.38, offline, no VK): a module saying
 enabled=True for all three and a constructor saying False for all three gave
 True True True; with no module, ``full_tick_cache_enabled=True`` gave False.
 
-The order now, for every key of every section: explicit valkey_config >
+The order now, for every key of every section: explicit vk_config >
 config module > env / default. Inside the module, load_client_config already
 folds BIGQMT_CONFIG's flat keys into each dedicated section with the
 flat key winning; that pre-existing intra-module order is not touched.
@@ -63,8 +63,8 @@ class _WithModule(object):
             os.environ["BIGQMT_CLIENT_CONFIG_MODULE"] = self.saved_env
 
 
-def _client(**valkey_config):
-    return BigQmtRpcClient(account_id="acct", valkey_config=valkey_config)
+def _client(**vk_config):
+    return BigQmtRpcClient(account_id="acct", vk_config=vk_config)
 
 
 class ReportedReproTest(unittest.TestCase):
@@ -100,7 +100,7 @@ class PrecedenceLadderTest(unittest.TestCase):
 
         self.assertTrue(client.local_cache_config["enabled"])
 
-    def test_module_valkey_config_still_counts_when_nothing_else_says(self):
+    def test_module_vk_config_still_counts_when_nothing_else_says(self):
         with _WithModule(BIGQMT_CONFIG={"local_cache_enabled": False}):
             client = _client()
 
@@ -151,14 +151,14 @@ class FormulaServerMergeTest(unittest.TestCase):
 def test_local_dotenv_overrides_implicit_config_but_not_explicit_arguments(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BIGQMT_ACCOUNT_ID", "process-account")
-    monkeypatch.setenv("BIGQMT_VALKEY_URL", "valkey://process-host:6379/5")
-    monkeypatch.setenv("BIGQMT_VALKEY_HOST", "process-host")
+    monkeypatch.setenv("BIGQMT_VK_URL", "valkey://process-host:6379/5")
+    monkeypatch.setenv("BIGQMT_VK_HOST", "process-host")
     (tmp_path / ".env").write_text(
         'BIGQMT_ACCOUNT_ID=000123\n'
-        'BIGQMT_VALKEY_HOST=file-host\n'
-        'BIGQMT_VALKEY_PORT=6381\n'
-        'BIGQMT_VALKEY_DB=0\n'
-        'BIGQMT_VALKEY_PASSWORD="a#b=${UNCHANGED}"\n'
+        'BIGQMT_VK_HOST=file-host\n'
+        'BIGQMT_VK_PORT=6381\n'
+        'BIGQMT_VK_DB=0\n'
+        'BIGQMT_VK_PASSWORD="a#b=${UNCHANGED}"\n'
         'BIGQMT_RPC_TIMEOUT_SECONDS=7\n'
         'BIGQMT_LOCAL_CACHE_ENABLED=0\n',
         encoding="utf-8-sig",
@@ -168,20 +168,20 @@ def test_local_dotenv_overrides_implicit_config_but_not_explicit_arguments(tmp_p
                      BIGQMT_LOCAL_CACHE_CONFIG={"enabled": True}):
         client = BigQmtRpcClient()
         explicit = BigQmtRpcClient(account_id="explicit-account",
-                                   valkey_config={"url": "valkey://explicit-host:6379/5",
+                                   vk_config={"url": "valkey://explicit-host:6379/5",
                                                   "local_cache_enabled": True},
                                    timeout_seconds=3)
 
     assert client.account_id == "000123"
-    assert client._valkey_url is None
-    assert client.valkey_config["host"] == "file-host"
-    assert client.valkey_config["port"] == 6381
-    assert client.valkey_config["db"] == 0
-    assert client.valkey_config["password"] == "a#b=${UNCHANGED}"
+    assert client._vk_url is None
+    assert client.vk_config["host"] == "file-host"
+    assert client.vk_config["port"] == 6381
+    assert client.vk_config["db"] == 0
+    assert client.vk_config["password"] == "a#b=${UNCHANGED}"
     assert client.timeout_seconds == 7
     assert client.local_cache_config["enabled"] is False
     assert explicit.account_id == "explicit-account"
-    assert explicit._valkey_url == "valkey://explicit-host:6379/5"
+    assert explicit._vk_url == "valkey://explicit-host:6379/5"
     assert explicit.timeout_seconds == 3
     assert explicit.local_cache_config["enabled"] is True
     assert os.environ["BIGQMT_ACCOUNT_ID"] == "process-account"

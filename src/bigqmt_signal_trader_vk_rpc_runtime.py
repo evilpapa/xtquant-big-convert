@@ -1,5 +1,5 @@
 # coding: utf-8
-"""大 QMT Valkey Pub/Sub RPC 策略入口。
+"""大 QMT VK Pub/Sub RPC 策略入口。
 
 此入口不消费交易信号。RPC 下单接口默认关闭，只读接口和持仓同步默认开启。
 """
@@ -26,7 +26,7 @@ if "__bigqmt_load_local_module" not in globals():
             break
 
 
-from bigqmt_signal_trader.adapters.valkey_common import local_valkey_config
+from bigqmt_signal_trader.adapters.vk_common import local_vk_config
 
 
 try:
@@ -89,25 +89,24 @@ ACCOUNT_ID                                = ""
 # 账号类型：STOCK(股票) / CREDIT(信用/两融) / FUTURE(期货) / OPTION(期权)
 # 对应 xtconstant 枚举：SECURITY_ACCOUNT=2 / CREDIT_ACCOUNT=3 / FUTURE_ACCOUNT=1
 ACCOUNT_TYPE                              = "STOCK"
-# 这台机器上到底有没有 valkey 可用。默认 True 只是为了不改变既有部署的行为；
-# 它并不代表「配了 valkey」—— 下面 VALKEY_HOST/PORT 有默认值，所以光看配置永远
-# 分辨不出「我配了 valkey」和「我什么都没写」（issue #147）。
+# 这台机器上到底有没有 VK 可用。默认 True 只是为了不改变既有部署的行为；
+# VK_HOST/PORT 有默认值，无法据此判断是否显式配置了 VK（issue #147）。
 #
-# 设成 False 时 configure_runtime 干脆不发 valkey 块，于是 config["valkey"] 为空，
+# 设成 False 时 configure_runtime 干脆不发 VK 块，于是 config["valkey"] 为空，
 # 五个使用方（委托身份库、异步下载任务、全推快照缓存、exec 事件、身份回填）
-# 各自的 `if not valkey_config: return None` 自然生效，一次都不会去连。
+# 各自的 `if not vk_config: return None` 自然生效，一次都不会去连。
 #
 # 用在 QMT 无法加载 RESP 客户端的环境（issue #145），
 # transport=valkey 时这个开关被忽略 ——
-# 那种部署没有 valkey 就没有 RPC。
-VALKEY_ENABLED                            = True
-VALKEY_HOST                               = os.environ.get("BIGQMT_VALKEY_HOST") or "127.0.0.1"
-VALKEY_PORT                               = int(os.environ.get("BIGQMT_VALKEY_PORT") or 6379)
-VALKEY_DB                                 = int(os.environ.get("BIGQMT_VALKEY_DB") or 5)
-VALKEY_USERNAME                           = os.environ.get("BIGQMT_VALKEY_USERNAME") or ""
-VALKEY_PASSWORD                           = os.environ.get("BIGQMT_VALKEY_PASSWORD") or ""
-VALKEY_URL                                = os.environ.get("BIGQMT_VALKEY_URL")
-VALKEY_PROTOCOL                           = os.environ.get("BIGQMT_VALKEY_PROTOCOL") or 2
+# 那种部署没有 VK 就没有 RPC。
+VK_ENABLED                            = True
+VK_HOST                               = os.environ.get("BIGQMT_VK_HOST") or "127.0.0.1"
+VK_PORT                               = int(os.environ.get("BIGQMT_VK_PORT") or 6379)
+VK_DB                                 = int(os.environ.get("BIGQMT_VK_DB") or 5)
+VK_USERNAME                           = os.environ.get("BIGQMT_VK_USERNAME") or ""
+VK_PASSWORD                           = os.environ.get("BIGQMT_VK_PASSWORD") or ""
+VK_URL                                = os.environ.get("BIGQMT_VK_URL")
+VK_PROTOCOL                           = os.environ.get("BIGQMT_VK_PROTOCOL") or 2
 RPC_ALLOW_ORDER_METHODS                   = False
 # 未指定策略名时委托带的 投资备注。QMT 会把它显示在 委托 列表的 报单来源 列
 # （issue #154），所以这不是内部字段。设为 "" 可让该列留空，和手动下单一样。
@@ -163,11 +162,11 @@ EXEC_EVENTS_DEBUG_RAW_FIELDS              = False
 EXEC_EVENTS_HOLD_PRESYSID_SECONDS         = 0.8
 
 try:
-    # 兼容未设置 BIGQMT_ACCOUNT_TYPE 的旧配置，仍读取账号和 Valkey 参数。
+    # 兼容未设置 BIGQMT_ACCOUNT_TYPE 的旧配置，仍读取账号和 VK 参数。
     import bigqmt_signal_trader_qmt_config as _local_config
 
     BIGQMT_ACCOUNT_ID = getattr(_local_config, "BIGQMT_ACCOUNT_ID", "")
-    BIGQMT_CONFIG     = local_valkey_config(_local_config)
+    BIGQMT_CONFIG     = local_vk_config(_local_config)
 except Exception:
     BIGQMT_ACCOUNT_ID = ""
     BIGQMT_CONFIG     = {}
@@ -184,7 +183,7 @@ _ACCOUNT_TYPE_EDITED_HERE = ACCOUNT_TYPE if ACCOUNT_TYPE != "STOCK" else ""
 _account_type_sources = [
     ("BIGQMT_ACCOUNT_TYPE", BIGQMT_ACCOUNT_TYPE),
     ("BIGQMT_CONFIG['account_type']", BIGQMT_CONFIG.get("account_type")),
-    ("ACCOUNT_TYPE in bigqmt_signal_trader_valkey_rpc_runtime.py",
+    ("ACCOUNT_TYPE in bigqmt_signal_trader_vk_rpc_runtime.py",
      _ACCOUNT_TYPE_EDITED_HERE),
 ]
 ACCOUNT_TYPE_SOURCE = "default"
@@ -239,25 +238,25 @@ def _report_account_type():
 
 _report_deployment()
 _report_account_type()
-VALKEY_ENABLED                            = bool(BIGQMT_CONFIG.get("valkey_enabled", VALKEY_ENABLED))
-VALKEY_ENABLED_EXPLICIT                   = "valkey_enabled" in BIGQMT_CONFIG
+VK_ENABLED = bool(BIGQMT_CONFIG.get("vk_enabled", BIGQMT_CONFIG.get("valkey_enabled", VK_ENABLED)))
+VK_ENABLED_EXPLICIT = "vk_enabled" in BIGQMT_CONFIG or "valkey_enabled" in BIGQMT_CONFIG
 # Keep direct runtime configuration in sync with the selected transport.
 RPC_TRANSPORT                             = str(BIGQMT_CONFIG.get("transport", RPC_TRANSPORT)).lower()
 RPC_SERIAL_CONFIG                         = dict(BIGQMT_CONFIG.get("serial") or {})
 if BIGQMT_CONFIG.get("native_xtdata_enabled") is not None:
     RPC_NATIVE_XTDATA_ENABLED = bool(BIGQMT_CONFIG.get("native_xtdata_enabled"))
-VALKEY_HOST                               = BIGQMT_CONFIG.get("host", VALKEY_HOST)
-VALKEY_PORT                               = int(BIGQMT_CONFIG.get("port", VALKEY_PORT))
-VALKEY_DB                                 = int(BIGQMT_CONFIG.get("db", VALKEY_DB))
-VALKEY_USERNAME                           = BIGQMT_CONFIG.get("username", VALKEY_USERNAME)
-VALKEY_PASSWORD                           = BIGQMT_CONFIG.get("password", VALKEY_PASSWORD)
-VALKEY_URL                                = BIGQMT_CONFIG.get("url", VALKEY_URL)
-VALKEY_PROTOCOL                           = BIGQMT_CONFIG.get("protocol", VALKEY_PROTOCOL)
+VK_HOST                               = BIGQMT_CONFIG.get("host", VK_HOST)
+VK_PORT                               = int(BIGQMT_CONFIG.get("port", VK_PORT))
+VK_DB                                 = int(BIGQMT_CONFIG.get("db", VK_DB))
+VK_USERNAME                           = BIGQMT_CONFIG.get("username", VK_USERNAME)
+VK_PASSWORD                           = BIGQMT_CONFIG.get("password", VK_PASSWORD)
+VK_URL                                = BIGQMT_CONFIG.get("url", VK_URL)
+VK_PROTOCOL                           = BIGQMT_CONFIG.get("protocol", VK_PROTOCOL)
 RPC_ALLOW_ORDER_METHODS                   = bool(BIGQMT_CONFIG.get("rpc_allow_order_methods", RPC_ALLOW_ORDER_METHODS))
 RPC_DEFAULT_STRATEGY_NAME                 = BIGQMT_CONFIG.get("rpc_default_strategy_name", RPC_DEFAULT_STRATEGY_NAME)
 RPC_PROCESS_IN_LISTENER                   = bool(BIGQMT_CONFIG.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER and not RPC_ALLOW_ORDER_METHODS))
 RPC_BACKGROUND_THREADS                    = bool(BIGQMT_CONFIG.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
-# The strategy side only honors an EXPLICIT rpc_background_threads on non-valkey
+# The strategy side only honors an EXPLICIT rpc_background_threads on non-VK
 # transports (absent = historical default, receiver threads on). Remember
 # whether the local config named it so _apply_config can forward accordingly.
 RPC_BACKGROUND_THREADS_EXPLICIT           = "rpc_background_threads" in BIGQMT_CONFIG
@@ -289,18 +288,18 @@ EXEC_EVENTS_DEBUG_RAW_FIELDS              = bool(BIGQMT_CONFIG.get("exec_events_
 EXEC_EVENTS_HOLD_PRESYSID_SECONDS         = float(BIGQMT_CONFIG.get("exec_events_hold_presysid_seconds", 0.8))
 
 
-def _valkey_block():
-    """返回 Valkey 配置。串口模式返回空字典，使依赖 Valkey 的可选功能跳过初始化。"""
-    if RPC_TRANSPORT == "serial" or (not VALKEY_ENABLED and RPC_TRANSPORT not in ("valkey", "", "default")):
+def _vk_block():
+    """返回 VK 配置。串口模式返回空字典，使依赖 VK 的可选功能跳过初始化。"""
+    if RPC_TRANSPORT == "serial" or (not VK_ENABLED and RPC_TRANSPORT not in ("valkey", "", "default")):
         return {}
     return {
-        "host": VALKEY_HOST,
-        "port": VALKEY_PORT,
-        "db": VALKEY_DB,
-        "username": VALKEY_USERNAME,
-        "password": VALKEY_PASSWORD,
-        "url": VALKEY_URL,
-        "protocol": VALKEY_PROTOCOL,
+        "host": VK_HOST,
+        "port": VK_PORT,
+        "db": VK_DB,
+        "username": VK_USERNAME,
+        "password": VK_PASSWORD,
+        "url": VK_URL,
+        "protocol": VK_PROTOCOL,
         "position_key_template": "bigqmt:positions:{account_id}",
         "position_event_stream_template": "bigqmt:position_events:{account_id}",
     }
@@ -325,7 +324,7 @@ def _apply_config(account_id):
         "heavy_codes_threshold": RPC_HEAVY_CODES_THRESHOLD,
         "process_in_listener": RPC_PROCESS_IN_LISTENER,
         "listener_methods": RPC_LISTENER_METHODS,
-        # Transport selection (default valkey). Forwarded from the local
+        # Transport selection (default "valkey"). Forwarded from the local
         # config for the transport factory.
         "transport": RPC_TRANSPORT,
         # Native xtdata can be explicitly disabled.
@@ -349,7 +348,7 @@ def _apply_config(account_id):
         enable_rpc=True,
         schedule_adjust=SCHEDULE_ADJUST_ENABLED or RPC_TRANSPORT == "serial",
         schedule_adjust_interval=SCHEDULE_ADJUST_INTERVAL,
-        valkey=_valkey_block(),
+        valkey=_vk_block(),
         rpc=rpc_block,
         quote_push=QUOTE_PUSH_CONFIG,
         full_tick_cache={
@@ -382,54 +381,55 @@ def configure_runtime_account(account_id):
     _apply_config(account_id)
 
 
-def configure_runtime_valkey(valkey_config):
-    global VALKEY_ENABLED, VALKEY_HOST, VALKEY_PORT, VALKEY_DB, VALKEY_USERNAME, VALKEY_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, VALKEY_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
-    global RPC_SERIAL_CONFIG, VALKEY_URL, VALKEY_PROTOCOL
-    valkey_config = valkey_config or {}
-    RPC_SERIAL_CONFIG                         = dict(valkey_config.get("serial") or {})
-    RPC_BACKGROUND_THREADS_EXPLICIT           = "rpc_background_threads" in valkey_config
-    VALKEY_ENABLED_EXPLICIT                   = "valkey_enabled" in valkey_config
-    if valkey_config.get("native_xtdata_enabled") is not None:
-        RPC_NATIVE_XTDATA_ENABLED = bool(valkey_config.get("native_xtdata_enabled"))
-    VALKEY_ENABLED                            = bool(valkey_config.get("valkey_enabled", VALKEY_ENABLED))
-    VALKEY_HOST                               = valkey_config.get("host", VALKEY_HOST)
-    VALKEY_PORT                               = int(valkey_config.get("port", VALKEY_PORT))
-    VALKEY_DB                                 = int(valkey_config.get("db", VALKEY_DB))
-    VALKEY_USERNAME                           = valkey_config.get("username", VALKEY_USERNAME)
-    VALKEY_PASSWORD                           = valkey_config.get("password", VALKEY_PASSWORD)
-    VALKEY_URL                                = valkey_config.get("url", VALKEY_URL)
-    VALKEY_PROTOCOL                           = valkey_config.get("protocol", VALKEY_PROTOCOL)
-    RPC_ALLOW_ORDER_METHODS                   = bool(valkey_config.get("rpc_allow_order_methods", RPC_ALLOW_ORDER_METHODS))
-    RPC_DEFAULT_STRATEGY_NAME                 = valkey_config.get("rpc_default_strategy_name", RPC_DEFAULT_STRATEGY_NAME)
-    RPC_PROCESS_IN_LISTENER                   = bool(valkey_config.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER and not RPC_ALLOW_ORDER_METHODS))
-    RPC_BACKGROUND_THREADS                    = bool(valkey_config.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
-    RPC_LISTENER_METHODS                      = tuple(valkey_config.get("rpc_listener_methods", RPC_LISTENER_METHODS))
-    RPC_TRANSPORT                             = str(valkey_config.get("transport", RPC_TRANSPORT)).lower()
-    QUOTE_PUSH_CONFIG                         = dict(valkey_config.get("quote_push", QUOTE_PUSH_CONFIG))
+def configure_runtime_vk(vk_config):
+    global VK_ENABLED, VK_HOST, VK_PORT, VK_DB, VK_USERNAME, VK_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, VK_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
+    global RPC_SERIAL_CONFIG, VK_URL, VK_PROTOCOL
+    vk_config = vk_config or {}
+    RPC_SERIAL_CONFIG                         = dict(vk_config.get("serial") or {})
+    RPC_BACKGROUND_THREADS_EXPLICIT           = "rpc_background_threads" in vk_config
+    VK_ENABLED_EXPLICIT = "vk_enabled" in vk_config or "valkey_enabled" in vk_config
+    if vk_config.get("native_xtdata_enabled") is not None:
+        RPC_NATIVE_XTDATA_ENABLED = bool(vk_config.get("native_xtdata_enabled"))
+    VK_ENABLED = bool(vk_config.get("vk_enabled", vk_config.get("valkey_enabled", VK_ENABLED)))
+    VK_HOST                   = vk_config.get("host",                         VK_HOST)
+    VK_PORT                   = int(vk_config.get("port",                     VK_PORT))
+    VK_DB                     = int(vk_config.get("db",                       VK_DB))
+    VK_USERNAME               = vk_config.get("username",                     VK_USERNAME)
+    VK_PASSWORD               = vk_config.get("password",                     VK_PASSWORD)
+    VK_URL                    = vk_config.get("url",                          VK_URL)
+    VK_PROTOCOL               = vk_config.get("protocol",                     VK_PROTOCOL)
+    RPC_ALLOW_ORDER_METHODS   = bool(vk_config.get("rpc_allow_order_methods", RPC_ALLOW_ORDER_METHODS))
+    RPC_DEFAULT_STRATEGY_NAME = vk_config.get("rpc_default_strategy_name",    RPC_DEFAULT_STRATEGY_NAME)
+    RPC_PROCESS_IN_LISTENER   = bool(vk_config.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER    and not RPC_ALLOW_ORDER_METHODS))
+    RPC_BACKGROUND_THREADS    = bool(vk_config.get("rpc_background_threads",  RPC_BACKGROUND_THREADS))
+    RPC_LISTENER_METHODS      = tuple(vk_config.get("rpc_listener_methods",   RPC_LISTENER_METHODS))
+    RPC_TRANSPORT             = str(vk_config.get("transport",                RPC_TRANSPORT)).lower()
+    QUOTE_PUSH_CONFIG         = dict(vk_config.get("quote_push",              QUOTE_PUSH_CONFIG))
+
     # run_time 为 adjust 限频。未注册定时器时，QMT 可能高频调用 adjust，
     # 占用 GIL，导致后台线程饥饿和 RPC 超时。非后台模式强制启用调度。
-    SCHEDULE_ADJUST_ENABLED                   = bool(valkey_config.get("schedule_adjust", SCHEDULE_ADJUST_ENABLED))
+    SCHEDULE_ADJUST_ENABLED                   = bool(vk_config.get("schedule_adjust", SCHEDULE_ADJUST_ENABLED))
     if not RPC_BACKGROUND_THREADS:
         SCHEDULE_ADJUST_ENABLED = True
-    SCHEDULE_ADJUST_INTERVAL                  = str(valkey_config.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
-    RPC_DRAIN_BUDGET_SECONDS                  = valkey_config.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
-    RPC_ORDER_SETTLE_TIMEOUT_SECONDS          = valkey_config.get("order_settle_timeout_seconds", RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
-    RPC_HEAVY_OFFLOAD                         = bool(valkey_config.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))
-    RPC_HEAVY_CODES_THRESHOLD                 = int(valkey_config.get("rpc_heavy_codes_threshold", RPC_HEAVY_CODES_THRESHOLD))
-    FULL_TICK_CACHE_ENABLED                   = bool(valkey_config.get("full_tick_cache_enabled", FULL_TICK_CACHE_ENABLED))
-    FULL_TICK_DEMAND_TTL_SECONDS              = float(valkey_config.get("full_tick_demand_ttl_seconds", FULL_TICK_DEMAND_TTL_SECONDS))
-    FULL_TICK_CACHE_TTL_SECONDS               = float(valkey_config.get("full_tick_cache_ttl_seconds", FULL_TICK_CACHE_TTL_SECONDS))
-    FULL_TICK_REFRESH_INTERVAL_SECONDS        = float(valkey_config.get("full_tick_refresh_interval_seconds", FULL_TICK_REFRESH_INTERVAL_SECONDS))
-    FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS = float(valkey_config.get("full_tick_market_refresh_interval_seconds", FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS))
-    FULL_TICK_REFRESH_MAX_WALL_SECONDS        = float(valkey_config.get("full_tick_refresh_max_wall_seconds", FULL_TICK_REFRESH_MAX_WALL_SECONDS))
-    FULL_TICK_MAX_REQUESTS                    = int(valkey_config.get("full_tick_max_requests", FULL_TICK_MAX_REQUESTS))
-    DOWNLOAD_JOBS_ENABLED                     = bool(valkey_config.get("download_jobs_enabled", DOWNLOAD_JOBS_ENABLED))
-    DOWNLOAD_JOB_CHUNK_SIZE                   = int(valkey_config.get("download_job_chunk_size", DOWNLOAD_JOB_CHUNK_SIZE))
-    DOWNLOAD_JOB_MAX_WALL_SECONDS             = float(valkey_config.get("download_job_max_wall_seconds", DOWNLOAD_JOB_MAX_WALL_SECONDS))
-    DOWNLOAD_JOB_TTL_SECONDS                  = int(valkey_config.get("download_job_ttl_seconds", DOWNLOAD_JOB_TTL_SECONDS))
-    EXEC_EVENTS_ENABLED                       = bool(valkey_config.get("exec_events_enabled", EXEC_EVENTS_ENABLED))
-    EXEC_EVENTS_DEBUG_RAW_FIELDS              = bool(valkey_config.get("exec_events_debug_raw_fields", EXEC_EVENTS_DEBUG_RAW_FIELDS))
-    EXEC_EVENTS_HOLD_PRESYSID_SECONDS         = float(valkey_config.get("exec_events_hold_presysid_seconds", EXEC_EVENTS_HOLD_PRESYSID_SECONDS))
+    SCHEDULE_ADJUST_INTERVAL                  = str(vk_config.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
+    RPC_DRAIN_BUDGET_SECONDS                  = vk_config.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
+    RPC_ORDER_SETTLE_TIMEOUT_SECONDS          = vk_config.get("order_settle_timeout_seconds", RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
+    RPC_HEAVY_OFFLOAD                         = bool(vk_config.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))
+    RPC_HEAVY_CODES_THRESHOLD                 = int(vk_config.get("rpc_heavy_codes_threshold", RPC_HEAVY_CODES_THRESHOLD))
+    FULL_TICK_CACHE_ENABLED                   = bool(vk_config.get("full_tick_cache_enabled", FULL_TICK_CACHE_ENABLED))
+    FULL_TICK_DEMAND_TTL_SECONDS              = float(vk_config.get("full_tick_demand_ttl_seconds", FULL_TICK_DEMAND_TTL_SECONDS))
+    FULL_TICK_CACHE_TTL_SECONDS               = float(vk_config.get("full_tick_cache_ttl_seconds", FULL_TICK_CACHE_TTL_SECONDS))
+    FULL_TICK_REFRESH_INTERVAL_SECONDS        = float(vk_config.get("full_tick_refresh_interval_seconds", FULL_TICK_REFRESH_INTERVAL_SECONDS))
+    FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS = float(vk_config.get("full_tick_market_refresh_interval_seconds", FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS))
+    FULL_TICK_REFRESH_MAX_WALL_SECONDS        = float(vk_config.get("full_tick_refresh_max_wall_seconds", FULL_TICK_REFRESH_MAX_WALL_SECONDS))
+    FULL_TICK_MAX_REQUESTS                    = int(vk_config.get("full_tick_max_requests", FULL_TICK_MAX_REQUESTS))
+    DOWNLOAD_JOBS_ENABLED                     = bool(vk_config.get("download_jobs_enabled", DOWNLOAD_JOBS_ENABLED))
+    DOWNLOAD_JOB_CHUNK_SIZE                   = int(vk_config.get("download_job_chunk_size", DOWNLOAD_JOB_CHUNK_SIZE))
+    DOWNLOAD_JOB_MAX_WALL_SECONDS             = float(vk_config.get("download_job_max_wall_seconds", DOWNLOAD_JOB_MAX_WALL_SECONDS))
+    DOWNLOAD_JOB_TTL_SECONDS                  = int(vk_config.get("download_job_ttl_seconds", DOWNLOAD_JOB_TTL_SECONDS))
+    EXEC_EVENTS_ENABLED                       = bool(vk_config.get("exec_events_enabled", EXEC_EVENTS_ENABLED))
+    EXEC_EVENTS_DEBUG_RAW_FIELDS              = bool(vk_config.get("exec_events_debug_raw_fields", EXEC_EVENTS_DEBUG_RAW_FIELDS))
+    EXEC_EVENTS_HOLD_PRESYSID_SECONDS         = float(vk_config.get("exec_events_hold_presysid_seconds", EXEC_EVENTS_HOLD_PRESYSID_SECONDS))
     _apply_config(ACCOUNT_ID)
 
 

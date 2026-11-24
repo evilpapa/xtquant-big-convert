@@ -33,11 +33,11 @@ from unittest.mock import MagicMock
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     LISTENER_DEFERRED_METHODS,
     METHOD_ALIASES,
     BigQmtRpcHandlers,
-    ValkeyPubSubRpcService,
+    VkPubSubRpcService,
 )
 
 
@@ -57,8 +57,8 @@ def _handlers(position_provider=None):
 
 
 def _service(listener_methods, handlers=None):
-    return ValkeyPubSubRpcService(
-        valkey_client=MagicMock(),
+    return VkPubSubRpcService(
+        vk_client=MagicMock(),
         handlers=handlers if handlers is not None else _handlers(),
         account_id="test",
         process_in_listener=True,
@@ -135,7 +135,7 @@ class ReporterReproductionTest(unittest.TestCase):
             "method": "query_stock_positions", "params": {"account_id": "test"},
         }
         receiver = threading.Thread(
-            target=service.enqueue_payload, args=(request,), name="valkey-receiver")
+            target=service.enqueue_payload, args=(request,), name="vk-receiver")
         receiver.start()
         receiver.join()
         before = list(seen)

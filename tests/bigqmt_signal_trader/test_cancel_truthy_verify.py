@@ -34,12 +34,12 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers, ValkeyPubSubRpcService
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers, VkPubSubRpcService
 
-from test_valkey_rpc import (  # noqa: E402  -- reuse the established fakes
+from test_vk_rpc import (  # noqa: E402  -- reuse the established fakes
     FakeMarketData,
     FakePositionProvider,
-    FakeValkey,
+    FakeVk,
     FalseyCancelGateway,
 )
 
@@ -49,7 +49,7 @@ class TruthyCancelVerificationTest(unittest.TestCase):
 
     @staticmethod
     def _service(gateway, timeout=5.0):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         handlers = BigQmtRpcHandlers(
             account_id="acct",
             market_data=FakeMarketData(),
@@ -58,8 +58,8 @@ class TruthyCancelVerificationTest(unittest.TestCase):
             allow_order_methods=True,
             order_settle_timeout_seconds=timeout,
         )
-        return valkey_client, ValkeyPubSubRpcService(
-            valkey_client, handlers, account_id="acct")
+        return vk_client, VkPubSubRpcService(
+            vk_client, handlers, account_id="acct")
 
     @staticmethod
     def _cancel(service, request_id="cancel-request-1"):
@@ -71,32 +71,32 @@ class TruthyCancelVerificationTest(unittest.TestCase):
         })
 
     @staticmethod
-    def _response(valkey_client, request_id="cancel-request-1"):
+    def _response(vk_client, request_id="cancel-request-1"):
         return json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:%s" % request_id])
+            vk_client.kv["bigqmt:rpc:resp:acct:%s" % request_id])
 
     def test_truthy_cancel_of_nonexistent_order_reports_failure(self):
         # The #151 probes: a made-up sysid must not come back success=True.
         gateway = FalseyCancelGateway([], native_success=True)
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._cancel(service)
 
         service.drain_pending()
 
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertFalse(response["data"]["success"])
         self.assertIn("was not found", response["data"]["message"])
 
     def test_truthy_cancel_confirms_immediately_when_already_54(self):
         gateway = FalseyCancelGateway(["54"], native_success=True)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
 
         # Confirmed on the fast path: no settlement parked, one lookup only.
         self.assertEqual(service.pending_settlement_count(), 0)
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertTrue(response["data"]["success"])
         self.assertEqual(response["data"]["message"], "")
         self.assertEqual(gateway.lookups, 1)
@@ -104,18 +104,18 @@ class TruthyCancelVerificationTest(unittest.TestCase):
     def test_truthy_cancel_of_filled_order_reports_failure(self):
         # Native says success; the order was already fully filled (56).
         gateway = FalseyCancelGateway(["56"], native_success=True)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
 
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertFalse(response["data"]["success"])
         self.assertIn("reached status 56", response["data"]["message"])
 
     def test_truthy_cancel_waits_when_status_not_yet_terminal(self):
         gateway = FalseyCancelGateway(["50", "54"], native_success=True)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
@@ -123,7 +123,7 @@ class TruthyCancelVerificationTest(unittest.TestCase):
         # The immediate lookup saw 50 (cancel not processed yet), so the
         # reply only went out after a SECOND lookup saw 54 -- the truthy
         # native return alone did not answer. lookups==2 is the assertion.
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertTrue(response["data"]["success"])
         self.assertEqual(gateway.lookups, 2)
 
@@ -131,14 +131,14 @@ class TruthyCancelVerificationTest(unittest.TestCase):
         gateway = FalseyCancelGateway(
             ["54"], native_success=True,
             query_error=RuntimeError("QMT query unavailable"))
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._cancel(service)
 
         # The failed immediate probe must not crash the handler; the
         # settlement parks and fails honestly at the deadline.
         service.drain_pending()
 
-        response = self._response(valkey_client)
+        response = self._response(vk_client)
         self.assertFalse(response["data"]["success"])
         self.assertIn("cancel status lookup failed", response["data"]["message"])
 
@@ -148,7 +148,7 @@ class CancelInFlightStatusTest(unittest.TestCase):
 
     @staticmethod
     def _service(gateway, timeout=5.0):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         handlers = BigQmtRpcHandlers(
             account_id="acct",
             market_data=FakeMarketData(),
@@ -157,8 +157,8 @@ class CancelInFlightStatusTest(unittest.TestCase):
             allow_order_methods=True,
             order_settle_timeout_seconds=timeout,
         )
-        return valkey_client, ValkeyPubSubRpcService(
-            valkey_client, handlers, account_id="acct")
+        return vk_client, VkPubSubRpcService(
+            vk_client, handlers, account_id="acct")
 
     @staticmethod
     def _cancel(service, request_id="cancel-request-1"):
@@ -171,42 +171,42 @@ class CancelInFlightStatusTest(unittest.TestCase):
 
     def test_inflight_51_keeps_waiting_then_confirms_54(self):
         gateway = FalseyCancelGateway(["51", "54"])  # falsey native, #148 shape
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
         self.assertNotIn(
-            "bigqmt:rpc:resp:acct:cancel-request-1", valkey_client.kv)
+            "bigqmt:rpc:resp:acct:cancel-request-1", vk_client.kv)
         self.assertEqual(service.pending_settlement_count(), 1)
 
         service.drain_pending()
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertTrue(response["data"]["success"])
         self.assertEqual(response["data"]["message"], "")
 
     def test_inflight_52_at_deadline_reports_acceptance_not_failure(self):
         gateway = FalseyCancelGateway(["52"])  # stuck in flight at deadline
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertTrue(response["data"]["success"])
         self.assertIn("in flight", response["data"]["message"])
         self.assertIn("status 52", response["data"]["message"])
 
     def test_inflight_51_at_deadline_reports_acceptance_not_failure(self):
         gateway = FalseyCancelGateway(["51"])
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertTrue(response["data"]["success"])
         self.assertIn("status 51", response["data"]["message"])
 

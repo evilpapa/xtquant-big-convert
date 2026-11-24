@@ -151,7 +151,7 @@ class SecondaryExecPoller(object):
         }
 
 
-def build_row_publisher(sink, context_info=None, identity_valkey=None, log=None):
+def build_row_publisher(sink, context_info=None, identity_vk=None, log=None):
     """A ``publish(kind, account_id, row)`` for the poller: normalize the native
     row the way the callbacks do, enrich, and publish on the account's channel.
 
@@ -174,9 +174,9 @@ def build_row_publisher(sink, context_info=None, identity_valkey=None, log=None)
             event = exec_events.normalize_trade_event(row, account_id)
         else:
             event = exec_events.normalize_order_event(row, account_id)
-        if identity_valkey is not None:
+        if identity_vk is not None:
             try:
-                event = exec_events.enrich_order_identity(identity_valkey, account_id, event)
+                event = exec_events.enrich_order_identity(identity_vk, account_id, event)
             except Exception:
                 pass
         if not event.get("instrument_name"):

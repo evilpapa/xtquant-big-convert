@@ -24,9 +24,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 os.environ.setdefault("BIGQMT_LOG_NAME", "bigqmt-test-dedup")
 
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     ORDER_METHODS,
-    ValkeyPubSubRpcService,
+    VkPubSubRpcService,
 )
 
 
@@ -50,7 +50,7 @@ class _Handlers(object):
 
 
 def _service():
-    service = ValkeyPubSubRpcService.__new__(ValkeyPubSubRpcService)
+    service = VkPubSubRpcService.__new__(VkPubSubRpcService)
     service.handlers = _Handlers()
     service.account_id = "acct"
     service.print_prefix = "[test]"

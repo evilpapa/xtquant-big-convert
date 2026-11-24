@@ -218,7 +218,7 @@ class WholeQuoteSessionTest(unittest.TestCase):
             session.stop()
 
     def test_replay_when_push_silent_after_restart(self):
-        """服务端重启后 keepalive 可能不失败(valkey 队列兜住),但推送会静默。
+        """服务端重启后 keepalive 可能不失败(VK 队列兜住),但推送会静默。
         客户端应在推送静默超过阈值后自动重放订阅。"""
         rpc = FakeRpc()  # keepalive 从不失败
         channel = FakePushChannelWithTopics()

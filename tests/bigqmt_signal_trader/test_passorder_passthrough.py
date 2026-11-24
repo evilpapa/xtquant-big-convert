@@ -20,9 +20,9 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
-from bigqmt_signal_trader.valkey_rpc import (
+from bigqmt_signal_trader.vk_rpc import (
     BigQmtRpcHandlers, ORDER_METHODS, METHOD_ALIASES)
-from test_valkey_rpc import FakeMarketData, FakePositionProvider
+from test_vk_rpc import FakeMarketData, FakePositionProvider
 
 
 class RecordingPassorder(object):
@@ -153,7 +153,7 @@ class GateTest(unittest.TestCase):
 
     def test_not_deferred_inline_on_listener_wildcard(self):
         """An order must not run on the listener thread even under '*'."""
-        from bigqmt_signal_trader.valkey_rpc import READ_METHODS
+        from bigqmt_signal_trader.vk_rpc import READ_METHODS
         self.assertNotIn("passorder", READ_METHODS)
 
 

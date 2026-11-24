@@ -1,5 +1,5 @@
 # coding: utf-8
-"""Check the Valkey dependency and the QMT compatibility documentation."""
+"""Check the VK dependency and the QMT compatibility documentation."""
 import io
 import os
 import unittest
@@ -15,11 +15,11 @@ def _read(path):
         return handle.read()
 
 
-class ValkeyUpperBoundTest(unittest.TestCase):
-    def test_the_valkey_extra_has_an_upper_bound(self):
+class VkUpperBoundTest(unittest.TestCase):
+    def test_the_vk_extra_has_an_upper_bound(self):
         line = [l for l in _read(PYPROJECT).splitlines()
                 if l.strip().startswith("valkey = [")]
-        self.assertTrue(line, "pyproject 里找不到 valkey extra")
+        self.assertTrue(line, "pyproject 里找不到 VK extra")
         self.assertRegex(line[0], r'"valkey>=\d+(?:\.\d+)*,<\d+"')
 
     def test_the_reason_is_written_down_next_to_the_constraint(self):

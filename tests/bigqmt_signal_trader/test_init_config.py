@@ -127,7 +127,7 @@ class RenderedConfigTest(unittest.TestCase):
 
 
 class PromptFlowTest(unittest.TestCase):
-    def test_a_full_valkey_run_collects_every_answer(self):
+    def test_a_full_vk_run_collects_every_answer(self):
         script = _Script(
             answers=["8886800503", "1", "1", "10.0.0.5", "6380", "7", "svc",
                      "n", "1", "", ""],
@@ -287,7 +287,7 @@ class SingleFileInjectionTest(unittest.TestCase):
 
 class SingleFileFromPipInstallTest(unittest.TestCase):
     """pip 安装不带 tools/，单文件构建必须能吃包内副本（用户实测踩过：
-    builder not found: ...miniconda3\Lib\tools\build_single_file.py）。"""
+    builder not found: ...miniconda3\\Lib\\tools\\build_single_file.py）。"""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -302,12 +302,12 @@ class SingleFileFromPipInstallTest(unittest.TestCase):
     def _silence(self, text):
         pass
 
-    def test_valkey_single_file_builds_from_packaged_copy(self):
+    def test_vk_single_file_builds_from_packaged_copy(self):
         written = init_config.apply(
             self._answers(deployment="single_file"), self.bogus_root,
             self._silence, input, force=True)
 
-        target = os.path.join(self.tmp, "BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py")
+        target = os.path.join(self.tmp, "BIGQMT_VK_DRYRUN_ALL_IN_ONE.py")
         self.assertIn(target, written)
         with io.open(target, encoding="utf-8") as handle:
             text = handle.read()

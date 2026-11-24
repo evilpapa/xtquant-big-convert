@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import io
 
-SOURCE_PATH = os.path.join(ROOT, "src", "bigqmt_signal_trader", "valkey_rpc.py")
+SOURCE_PATH = os.path.join(ROOT, "src", "bigqmt_signal_trader", "vk_rpc.py")
 
 
 def _message_block():

@@ -1,6 +1,6 @@
 """服务端向客户端推送全推行情的通道。
 
-Valkey 按账号和订阅组合发布增量行情。载荷优先用 MsgPack 编码，
+VK 按账号和订阅组合发布增量行情。载荷优先用 MsgPack 编码，
 未安装 msgpack 时用 JSON。
 """
 
@@ -83,9 +83,9 @@ def _unique_accounts(values):
     return seen
 
 
-class ValkeyQuotePushChannel(QuotePushChannel):
-    def __init__(self, valkey_client, account_id="", channel_template="bigqmt:quote_push:{account_id}:{topic}", print_prefix="[bigqmt_quote_push]", account_ids=None):
-        self.valkey = valkey_client
+class VkQuotePushChannel(QuotePushChannel):
+    def __init__(self, vk_client, account_id="", channel_template="bigqmt:quote_push:{account_id}:{topic}", print_prefix="[bigqmt_quote_push]", account_ids=None):
+        self.vk = vk_client
         self.account_id = str(account_id or "")
         self.channel_template = channel_template
         self.print_prefix = print_prefix
@@ -103,16 +103,16 @@ class ValkeyQuotePushChannel(QuotePushChannel):
 
     # 发布端
     def start_publisher(self):
-        # Valkey 发布无需额外初始化。
+        # VK 发布无需额外初始化。
         self._running = True
 
     def publish(self, topic, data):
         payload = encode_push_payload({"combo_key": topic, "data": data})
         for account_id in self.account_ids or [self.account_id]:
             try:
-                self.valkey.publish(self._channel(topic, account_id), payload)
+                self.vk.publish(self._channel(topic, account_id), payload)
             except Exception as exc:
-                print("%s 发布 Valkey 行情失败：%s" % (self.print_prefix, exc))
+                print("%s 发布 VK 行情失败：%s" % (self.print_prefix, exc))
 
     # 订阅端
     def start_subscriber(self, topics, on_msg):
@@ -133,7 +133,7 @@ class ValkeyQuotePushChannel(QuotePushChannel):
         while not stopped.is_set():
             pubsub = None
             try:
-                pubsub = self.valkey.pubsub(ignore_subscribe_messages=True)
+                pubsub = self.vk.pubsub(ignore_subscribe_messages=True)
                 self._pubsub = pubsub
                 pubsub.subscribe(*channels)
                 while not stopped.is_set():
@@ -159,7 +159,7 @@ class ValkeyQuotePushChannel(QuotePushChannel):
                     now = time.time()
                     if (failures & (failures - 1)) == 0 or now - last_report >= 60.0:
                         last_report = now
-                        print("%s 正在重新连接 Valkey 行情订阅（第 %d 次）：%s"
+                        print("%s 正在重新连接 VK 行情订阅（第 %d 次）：%s"
                               % (self.print_prefix, failures, exc))
             else:
                 failures = 0

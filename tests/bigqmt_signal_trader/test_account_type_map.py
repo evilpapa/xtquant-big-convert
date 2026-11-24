@@ -223,7 +223,7 @@ class ConfiguredAccountTypePerRequestTest(unittest.TestCase):
     """_configured_account_type(account_id=...) avoids _current_params race."""
 
     def _make_handlers(self, gateway_account_type="STOCK", account_type_map=None):
-        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
         if account_type_map is not None:
@@ -284,7 +284,7 @@ class ReportedAccountTypePerRequestTest(unittest.TestCase):
     """_reported_account_type(account_id=...) respects per-request MAP."""
 
     def _make_handlers(self, gateway_account_type="STOCK", account_type_map=None):
-        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
         from bigqmt_signal_trader.adapters.order_bigqmt import BigQmtOrderGateway
 
         if account_type_map is not None:
@@ -307,7 +307,7 @@ class ReportedAccountTypePerRequestTest(unittest.TestCase):
         return handlers
 
     def test_no_gateway_returns_empty(self):
-        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
         h = BigQmtRpcHandlers.__new__(BigQmtRpcHandlers)
         h.order_gateway = None
         self.assertEqual(h._reported_account_type(), "")

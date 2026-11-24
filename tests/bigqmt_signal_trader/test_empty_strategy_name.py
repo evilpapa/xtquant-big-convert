@@ -27,13 +27,13 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     DEFAULT_ORDER_STRATEGY_NAME,
     BigQmtRpcHandlers,
 )
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway  # noqa: E402
 
-from test_valkey_rpc import (  # noqa: E402  -- reuse the established fakes
+from test_vk_rpc import (  # noqa: E402  -- reuse the established fakes
     FakeMarketData,
     FakePositionProvider,
 )

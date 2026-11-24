@@ -1,9 +1,9 @@
 # coding: utf-8
-"""Exact native order/remark associations in the existing Valkey identity store.
+"""Exact native order/remark associations in the existing VK identity store.
 
 Only a source-dated native row teaches an association. Amounts, quantities,
 prices and execution state remain QMT facts and are never reconstructed here.
-Valkey loss/expiry or an association not yet observed leaves the remark unknown.
+VK loss/expiry or an association not yet observed leaves the remark unknown.
 """
 
 import copy
@@ -14,7 +14,7 @@ import math
 import time
 from urllib.parse import quote
 
-from .valkey_safe_value import PREFIX, LUA_ENCODE, LUA_RESEGMENT, decode_json
+from .vk_safe_value import PREFIX, LUA_ENCODE, LUA_RESEGMENT, decode_json
 
 
 LOGGER = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ def bounded_identity_client(client):
         return type(client)(connection_pool=ConnectionPool(
             connection_class=pool.connection_class, max_connections=4, **kwargs))
     except Exception as exc:
-        _warn("Order remark recovery disabled: bounded Valkey client unavailable", exc)
+        _warn("Order remark recovery disabled: bounded VK client unavailable", exc)
         return None
 
 
@@ -145,7 +145,7 @@ def recover_order_remarks(client, account_id, account_type, rows, ttl_seconds):
 
     Nonempty native values always win. Native rows are not modified, so a
     recovered value cannot become an observation on a reused gateway object.
-    Any Valkey failure keeps the whole batch native, including its blanks.
+    Any VK failure keeps the whole batch native, including its blanks.
     """
     rows = list(rows or [])
     if client is None or not rows:
@@ -158,7 +158,7 @@ def recover_order_remarks(client, account_id, account_type, rows, ttl_seconds):
     if not wanted:
         return rows
     try:
-        # Encode inside Valkey, before QMT checks the EVAL response. Keeping
+        # Encode inside VK, before QMT checks the EVAL response. Keeping
         # stored JSON unchanged also covers legacy bindings without migration,
         # TTL renewal or a read/modify/write race with native observations.
         values = client.eval(_OBSERVE_AND_READ, len(wanted),

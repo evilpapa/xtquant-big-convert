@@ -9,7 +9,7 @@ qmt.py - QMT 交易/行情统一 CLI 入口
 配置来源（按优先级）：
   1. 当前目录的 .env
   2. bigqmt_signal_trader_client_config 或 bigqmt_signal_trader_qmt_config 模块
-  3. 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST / ...
+  3. 环境变量 BIGQMT_ACCOUNT_ID / BIGQMT_VK_HOST / ...
 
 用法示例：
   python qmt.py ping
@@ -302,7 +302,7 @@ def _init():
     except Exception as e:
         _err(
             "configure() 失败。请检查配置：\n"
-            "  - 当前目录 .env 或环境变量的 BIGQMT_ACCOUNT_ID / BIGQMT_VALKEY_HOST 等\n"
+            "  - 当前目录 .env 或环境变量的 BIGQMT_ACCOUNT_ID / BIGQMT_VK_HOST 等\n"
             "  - 或 bigqmt_signal_trader_client_config.py 配置文件",
             detail=str(e),
             code="CONFIG_FAIL",

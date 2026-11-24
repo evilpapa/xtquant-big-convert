@@ -13,11 +13,11 @@
    | 变量 | 默认 | 说明 |
    |------|------|------|
    | `BIGQMT_ACCOUNT_ID` | — | 资金账号 |
-   | `BIGQMT_VALKEY_HOST` | `127.0.0.1` | Valkey 地址 |
-   | `BIGQMT_VALKEY_PORT` | `6379` | Valkey 端口 |
-   | `BIGQMT_VALKEY_DB` | `5` | Valkey DB |
-   | `BIGQMT_VALKEY_PASSWORD` | — | Valkey 密码 |
-   | `BIGQMT_RPC_TRANSPORT` | `valkey` | 传输方式 valkey |
+   | `BIGQMT_VK_HOST` | `127.0.0.1` | VK 地址 |
+   | `BIGQMT_VK_PORT` | `6379` | VK 端口 |
+   | `BIGQMT_VK_DB` | `5` | VK DB |
+   | `BIGQMT_VK_PASSWORD` | — | VK 密码 |
+   | `BIGQMT_RPC_TRANSPORT` | `valkey` | 传输方式 VK |
    | `BIGQMT_RPC_TIMEOUT_SECONDS` | `6.0` | RPC 超时 |
 
 2. **配置文件** `bigqmt_signal_trader_client_config.py`（在 PYTHONPATH 中，gitignored）
@@ -170,7 +170,7 @@ asset = xt_trader.query_stock_asset(acc)
 
 - **返回属性**: `account_id` / `cash`(可用现金) / `frozen_cash` / `total_asset` / `market_value`
 - **CLI**: `python qmt.py account`
-- **容错**: RPC 失败时从 Valkey 缓存 `bigqmt:positions:{account_id}` 读取
+- **容错**: RPC 失败时从 VK 缓存 `bigqmt:positions:{account_id}` 读取
 
 ### 3.2 query_stock_positions — 查询全部持仓
 
@@ -328,7 +328,7 @@ xt_trader.connect()
 xt_trader.subscribe(acc)
 ```
 
-事件推送通过 Valkey pubsub 频道:
+事件推送通过 VK pubsub 频道:
 - `bigqmt:exec:order:{account_id}`
 - `bigqmt:exec:trade:{account_id}`
 - `bigqmt:exec:order_error:{account_id}`
@@ -351,7 +351,7 @@ xt_trader.subscribe(acc)
 - **解决**: 先 `download_history_data2` 下载原始数据（客户端有自愈机制）
 
 ### 7.4 Transport 不匹配
-- 客户端 valkey → ping 超时
+- 客户端 VK → ping 超时
 - **解决**: 两端 `transport` 字段保持一致
 
 ### 7.5 QMT 必须运行在实盘模式
@@ -412,11 +412,11 @@ xt_trader.subscribe(acc)
 当兼容层方法不够用时，可直接调 RPC：
 
 ```python
-from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
+from bigqmt_signal_trader.vk_rpc import call_vk_rpc
 import valkey
 
 r = valkey.Valkey(host="...", port=6379, db=5, password="...")
-resp = call_valkey_rpc(r, "ACCOUNT_ID", "get_full_tick", {"codes": ["000001.SZ"]})
+resp = call_vk_rpc(r, "ACCOUNT_ID", "get_full_tick", {"codes": ["000001.SZ"]})
 print(resp["data"]["000001.SZ"]["lastPrice"])
 ```
 

@@ -1,4 +1,4 @@
-"""Small, append-only order attribution journal for Valkey-free deployments.
+"""Small, append-only order attribution journal for deployments without VK.
 
 Each instance owns a different segment. A segment lock only coordinates an
 append with expired-segment cleanup; no file handle survives either operation.

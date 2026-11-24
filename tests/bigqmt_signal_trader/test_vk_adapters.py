@@ -8,13 +8,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapter_factory import build_app
-from bigqmt_signal_trader.adapters.position_sync_valkey import ValkeyPositionSyncSink
-from bigqmt_signal_trader.adapters.signal_valkey import ValkeyStreamSignalSource, push_trade_signal
-from bigqmt_signal_trader.adapters.state_valkey import ValkeyStateStore
+from bigqmt_signal_trader.adapters.position_sync_vk import VkPositionSyncSink
+from bigqmt_signal_trader.adapters.signal_vk import VkStreamSignalSource, push_trade_signal
+from bigqmt_signal_trader.adapters.state_vk import VkStateStore
 from bigqmt_signal_trader.models import AccountSnapshot, AssetSnapshot, PositionSnapshot
 
 
-class FakeValkey:
+class FakeVk:
     def __init__(self):
         self.streams = {}
         self.groups = set()
@@ -86,12 +86,12 @@ def _payload(**kwargs):
     return payload
 
 
-class ValkeyAdaptersTest(unittest.TestCase):
+class VkAdaptersTest(unittest.TestCase):
     def test_stream_source_reads_json_payload_and_acks(self):
-        r = FakeValkey()
+        r = FakeVk()
         stream_key = "bigqmt:signals:acct"
         r.xadd(stream_key, {"payload": json.dumps(_payload())})
-        source = ValkeyStreamSignalSource(r, consumer_name="c1")
+        source = VkStreamSignalSource(r, consumer_name="c1")
 
         signals = source.fetch("acct", 10)
         source.ack(signals[0])
@@ -101,10 +101,10 @@ class ValkeyAdaptersTest(unittest.TestCase):
         self.assertEqual(r.acked, [(stream_key, "bigqmt-signal-trader", "1-0")])
 
     def test_stream_source_reads_flat_payload_with_bytes_keys(self):
-        r = FakeValkey()
+        r = FakeVk()
         fields = {key.encode("utf-8"): str(value).encode("utf-8") for key, value in _payload().items()}
         r.streams["bigqmt:signals:acct"] = [("9-0", fields)]
-        source = ValkeyStreamSignalSource(r)
+        source = VkStreamSignalSource(r)
 
         signals = source.fetch("acct", 10)
 
@@ -112,11 +112,11 @@ class ValkeyAdaptersTest(unittest.TestCase):
         self.assertEqual(signals[0].amount, 300)
 
     def test_state_store_claim_is_idempotent_and_writes_status(self):
-        r = FakeValkey()
-        source = ValkeyStreamSignalSource(r)
+        r = FakeVk()
+        source = VkStreamSignalSource(r)
         r.xadd("bigqmt:signals:acct", {"payload": json.dumps(_payload())})
         signal = source.fetch("acct", 1)[0]
-        store = ValkeyStateStore(r, account_id="acct")
+        store = VkStateStore(r, account_id="acct")
 
         self.assertTrue(store.claim(signal, "consumer-a"))
         self.assertFalse(store.claim(signal, "consumer-b"))
@@ -127,8 +127,8 @@ class ValkeyAdaptersTest(unittest.TestCase):
         self.assertEqual(r.hashes[status_key]["message"], "test")
 
     def test_position_sync_sink_writes_snapshot_and_event(self):
-        r = FakeValkey()
-        sink = ValkeyPositionSyncSink(r)
+        r = FakeVk()
+        sink = VkPositionSyncSink(r)
         snapshot = AccountSnapshot(
             account_id="acct",
             asset=AssetSnapshot(account_id="acct", cash=100.0, total_asset=1000.0),
@@ -151,55 +151,55 @@ class ValkeyAdaptersTest(unittest.TestCase):
         self.assertIn("bigqmt:position_events:acct", r.streams)
 
     def test_push_trade_signal_uses_account_stream(self):
-        r = FakeValkey()
+        r = FakeVk()
 
         stream_id = push_trade_signal(r, _payload())
 
         self.assertEqual(stream_id, "1-0")
         self.assertIn("bigqmt:signals:acct", r.streams)
 
-    def test_factory_wires_valkey_adapters_without_real_valkey(self):
-        r = FakeValkey()
+    def test_factory_wires_vk_adapters_without_real_vk(self):
+        r = FakeVk()
         app = build_app(
             config={
                 "account_id": "acct",
                 "signal_source_type": "valkey",
                 "state_store_type": "valkey",
                 "position_sync_type": "valkey",
-                "valkey_client": r,
+                "vk_client": r,
             }
         )
 
-        self.assertIsInstance(app.signal_source, ValkeyStreamSignalSource)
-        self.assertIsInstance(app.state_store, ValkeyStateStore)
-        self.assertIsInstance(app.position_sync_sink, ValkeyPositionSyncSink)
+        self.assertIsInstance(app.signal_source, VkStreamSignalSource)
+        self.assertIsInstance(app.state_store, VkStateStore)
+        self.assertIsInstance(app.position_sync_sink, VkPositionSyncSink)
 
 
-class ValkeyConnectionTest(unittest.TestCase):
+class VkConnectionTest(unittest.TestCase):
 
     def test_protocol_passed_when_supported(self):
         from unittest import mock
 
-        from bigqmt_signal_trader.adapters import valkey_common
+        from bigqmt_signal_trader.adapters import vk_common
 
         try:
             import valkey
         except ImportError:
             self.skipTest("valkey-py unavailable")
         with mock.patch.object(valkey, "Valkey") as client:
-            valkey_common.build_valkey_client({"host": "h", "port": 6379, "protocol": 3})
+            vk_common.build_vk_client({"host": "h", "port": 6379, "protocol": 3})
         self.assertEqual(client.call_args.kwargs["protocol"], 3)
 
-    def test_both_tcp_url_schemes_build_valkey_clients(self):
-        from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
+    def test_both_tcp_url_schemes_build_vk_clients(self):
+        from bigqmt_signal_trader.adapters.vk_common import build_vk_client
 
         try:
             import valkey
         except ImportError:
-            self.skipTest("valkey package unavailable")
+            self.skipTest("VK package unavailable")
         for scheme in ("valkey", "redis"):
             with self.subTest(scheme=scheme):
-                client = build_valkey_client({
+                client = build_vk_client({
                     "url": scheme + "://user:p%40ss@localhost:6399/7",
                 })
                 self.assertIsInstance(client, valkey.Valkey)
@@ -213,14 +213,14 @@ class ValkeyConnectionTest(unittest.TestCase):
     def test_protocol_default_is_resp2(self):
         from unittest import mock
 
-        from bigqmt_signal_trader.adapters import valkey_common
+        from bigqmt_signal_trader.adapters import vk_common
 
         try:
             import valkey
         except ImportError:
             self.skipTest("valkey-py unavailable")
         with mock.patch.object(valkey, "Valkey") as client:
-            valkey_common.build_valkey_client({"host": "h", "port": 6379})
+            vk_common.build_vk_client({"host": "h", "port": 6379})
         self.assertEqual(client.call_args.kwargs["protocol"], 2)
         retry = client.call_args.kwargs["retry"]
         command = mock.Mock(side_effect=valkey.TimeoutError)

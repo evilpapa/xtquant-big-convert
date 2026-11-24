@@ -1,5 +1,5 @@
 # coding: utf-8
-"""按模块执行测试并输出汇总。默认跳过需要运行 QMT 和 Valkey 的在线测试。
+"""按模块执行测试并输出汇总。默认跳过需要运行 QMT 和 VK 的在线测试。
 
 用法
     python run_all_tests.py              # 所有离线测试（默认）

@@ -19,14 +19,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import bigqmt_signal_trader_strategy as strategy
-from bigqmt_signal_trader import order_identity_journal, serial_bridge_features, serial_valkey_bridge
-from bigqmt_signal_trader.adapters import market_bigqmt, valkey_common
+from bigqmt_signal_trader import order_identity_journal, serial_bridge_features, serial_vk_bridge
+from bigqmt_signal_trader.adapters import market_bigqmt, vk_common
 from bigqmt_signal_trader.download_jobs import read_download_status
 from bigqmt_signal_trader.exec_events import order_channel, publish_exec_event
 from bigqmt_signal_trader.full_tick_cache import read_full_tick_cache, request_full_tick_cache
 from bigqmt_signal_trader.quote_push_channel import decode_push_payload
-from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc, encode_rpc_request_payload
-from bigqmt_signal_trader.serial_valkey_bridge import SerialValkeyBridge
+from bigqmt_signal_trader.vk_rpc import call_vk_rpc, encode_rpc_request_payload
+from bigqmt_signal_trader.serial_vk_bridge import SerialVkBridge
 from bigqmt_signal_trader.transports import serial_transport
 from bigqmt_signal_trader.transports.factory import build_transport, transport_supports_drain
 from bigqmt_signal_trader.xtquant_compat import BigQmtXtData
@@ -65,7 +65,7 @@ class Port:
         self.closed = True
 
 
-class MemoryValkey:
+class MemoryVk:
     def __init__(self):
         self.lists = defaultdict(deque)
         self.hashes = defaultdict(dict)
@@ -193,14 +193,14 @@ def test_framing_checks_integrity_and_recovers_after_oversized_or_partial_lines(
 
 def test_bridge_waits_for_qmt_and_refuses_stale_or_legacy_orders(duplex):
     qmt, windows = duplex
-    valkey = MemoryValkey()
-    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
-    valkey.rpush(REQUEST_QUEUE, request("old-order", "order_stock", time.time() - 10))
-    valkey.rpush(REQUEST_QUEUE, encode_rpc_request_payload({
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
+    vk.rpush(REQUEST_QUEUE, request("old-order", "order_stock", time.time() - 10))
+    vk.rpush(REQUEST_QUEUE, encode_rpc_request_payload({
         "request_id": "legacy-order", "method": "order_stock", "account_id": ACCOUNT,
     }))
     assert not bridge.step()
-    assert len(valkey.lists[REQUEST_QUEUE]) == 2
+    assert len(vk.lists[REQUEST_QUEUE]) == 2
     assert qmt.in_waiting == 0
 
     wire = serial_transport.SerialFrames(qmt)
@@ -209,23 +209,23 @@ def test_bridge_waits_for_qmt_and_refuses_stale_or_legacy_orders(duplex):
         wire.write_step()
     bridge.step()
     bridge.step()
-    assert "NOT dispatched" in json.loads(valkey.get(REPLY_PREFIX + "old-order"))["error"]
-    assert "timestamp" in json.loads(valkey.get(REPLY_PREFIX + "legacy-order"))["error"]
+    assert "NOT dispatched" in json.loads(vk.get(REPLY_PREFIX + "old-order"))["error"]
+    assert "timestamp" in json.loads(vk.get(REPLY_PREFIX + "legacy-order"))["error"]
     assert qmt.in_waiting == 0
 
 
 def test_bridge_logs_each_received_rpc_request(duplex, caplog):
     qmt, windows = duplex
-    valkey = MemoryValkey()
-    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
     wire = serial_transport.SerialFrames(qmt)
     wire.begin({"type": "hello", "account_id": ACCOUNT, "session": "logging"})
     while wire.writing:
         wire.write_step()
-    valkey.rpush(REQUEST_QUEUE, request("logged-ping", "ping", params={"probe": "x"}))
-    valkey.rpush(REQUEST_QUEUE, request("logged-stale", "order_stock", sent_at=time.time() - 10))
+    vk.rpush(REQUEST_QUEUE, request("logged-ping", "ping", params={"probe": "x"}))
+    vk.rpush(REQUEST_QUEUE, request("logged-stale", "order_stock", sent_at=time.time() - 10))
 
-    with caplog.at_level(logging.INFO, logger=serial_valkey_bridge._log.name):
+    with caplog.at_level(logging.INFO, logger=serial_vk_bridge._log.name):
         pump_until(bridge.step,
                    lambda: "logged-ping" in caplog.text and "logged-stale" in caplog.text)
 
@@ -235,15 +235,15 @@ def test_bridge_logs_each_received_rpc_request(duplex, caplog):
 
 def test_bridge_logs_invalid_payload_preview_without_flooding(duplex, caplog):
     qmt, windows = duplex
-    valkey = MemoryValkey()
-    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
     wire = serial_transport.SerialFrames(qmt)
     wire.begin({"type": "hello", "account_id": ACCOUNT, "session": "invalid"})
     while wire.writing:
         wire.write_step()
-    valkey.rpush(REQUEST_QUEUE, "not-json-" + "z" * 1000)
+    vk.rpush(REQUEST_QUEUE, "not-json-" + "z" * 1000)
 
-    with caplog.at_level(logging.WARNING, logger=serial_valkey_bridge._log.name):
+    with caplog.at_level(logging.WARNING, logger=serial_vk_bridge._log.name):
         pump_until(bridge.step, lambda: "已丢弃格式无效" in caplog.text)
 
     assert "not-json-" in caplog.text
@@ -253,8 +253,8 @@ def test_bridge_logs_invalid_payload_preview_without_flooding(duplex, caplog):
 
 def test_serial_session_change_never_replays_an_unanswered_order(duplex):
     qmt, windows = duplex
-    valkey = MemoryValkey()
-    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
     wire = serial_transport.SerialFrames(qmt)
 
     def hello(session):
@@ -263,15 +263,67 @@ def test_serial_session_change_never_replays_an_unanswered_order(duplex):
             wire.write_step()
 
     hello("before")
-    valkey.rpush(REQUEST_QUEUE, request("uncertain", "order_stock"))
+    vk.rpush(REQUEST_QUEUE, request("uncertain", "order_stock"))
     pump_until(bridge.step, lambda: "uncertain" in bridge._inflight and not bridge.wire.writing)
     assert wire.read_frames(1)[0]["session"] == "before"
 
     hello("after")
-    valkey.rpush(REQUEST_QUEUE, request("outcome", "get_request_outcome", params={"request_id": "uncertain"}))
-    pump_until(bridge.step, lambda: valkey.get(REPLY_PREFIX + "outcome") is not None)
-    assert "query orders and trades" in json.loads(valkey.get(REPLY_PREFIX + "outcome"))["error"]
+    vk.rpush(REQUEST_QUEUE, request("outcome", "get_request_outcome", params={"request_id": "uncertain"}))
+    pump_until(bridge.step, lambda: vk.get(REPLY_PREFIX + "outcome") is not None)
+    assert "query orders and trades" in json.loads(vk.get(REPLY_PREFIX + "outcome"))["error"]
     assert wire.read_frames(1) == []
+
+
+def test_qmt_serial_recovers_after_a_partial_write_timeout(duplex, monkeypatch, caplog):
+    qmt, windows = duplex
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
+    transport = serial_transport.SerialTransport(account_id=ACCOUNT)
+    handled = []
+    timed_out = threading.Event()
+    original_write = qmt.write
+
+    class SerialTimeoutException(OSError):
+        pass
+
+    def write(data):
+        if b'"request_id":"lost-response"' in bytes(data):
+            original_write(data)
+            timed_out.set()
+            raise SerialTimeoutException("Write timeout")
+        return original_write(data)
+
+    monkeypatch.setitem(sys.modules, "serial", SimpleNamespace(
+        Serial=lambda **options: qmt, SerialTimeoutException=SerialTimeoutException))
+    monkeypatch.setattr(qmt, "write", write)
+
+    def respond(incoming):
+        handled.append(incoming["request_id"])
+        transport.send_response(incoming, {
+            "request_id": incoming["request_id"], "account_id": ACCOUNT,
+            "method": incoming["method"], "ok": True, "data": {"pong": True},
+        })
+
+    def pump():
+        bridge.step()
+        transport.drain_request_queue()
+
+    transport.start_receiving(respond)
+    try:
+        vk.rpush(REQUEST_QUEUE, request("lost-response", "get_market_data_ex"))
+        pump_until(pump, timed_out.is_set)
+        session = bridge._session
+        bridge._last_hello -= 4
+        vk.rpush(REQUEST_QUEUE, request("next-ping"))
+        pump_until(pump, lambda: vk.get(REPLY_PREFIX + "next-ping") is not None)
+        assert bridge._session == session
+        assert json.loads(vk.get(REPLY_PREFIX + "next-ping"))["data"] == {"pong": True}
+        assert vk.get(REPLY_PREFIX + "lost-response") is None
+        assert handled == ["lost-response", "next-ping"]
+        assert not qmt.closed
+        assert "写超时" in caplog.text
+    finally:
+        transport.stop()
 
 
 def test_quote_backpressure_does_not_raise_into_qmt_or_displace_order_events():
@@ -284,15 +336,15 @@ def test_quote_backpressure_does_not_raise_into_qmt_or_displace_order_events():
     assert transport._next_outbound()["topic"] == "exec:order"
 
 
-def test_runtime_forwards_the_serial_port_without_a_valkey_connection(monkeypatch):
-    import bigqmt_signal_trader_valkey_rpc_runtime as runtime
+def test_runtime_forwards_the_serial_port_without_a_vk_connection(monkeypatch):
+    import bigqmt_signal_trader_vk_rpc_runtime as runtime
 
     config = {}
     monkeypatch.setattr(runtime, "configure", lambda **settings: config.update(settings))
     monkeypatch.setattr(runtime, "set_account_id", lambda account_id: None)
     monkeypatch.setattr(runtime, "RPC_TRANSPORT", "serial")
     monkeypatch.setattr(runtime, "RPC_SERIAL_CONFIG", {"port": "COM20", "baudrate": 115200})
-    monkeypatch.setattr(runtime, "VALKEY_ENABLED", True)
+    monkeypatch.setattr(runtime, "VK_ENABLED", True)
     monkeypatch.setattr(runtime, "SCHEDULE_ADJUST_ENABLED", False)
     runtime._apply_config(ACCOUNT)
     assert config["rpc"]["serial"] == {"port": "COM20", "baudrate": 115200}
@@ -301,16 +353,16 @@ def test_runtime_forwards_the_serial_port_without_a_valkey_connection(monkeypatc
 
 
 @pytest.mark.parametrize("allow_order_methods", [False, True])
-def test_existing_valkey_client_round_trip_and_execution_gate(
+def test_existing_vk_client_round_trip_and_execution_gate(
         duplex, monkeypatch, allow_order_methods):
     qmt, windows = duplex
-    valkey = MemoryValkey()
-    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
     monkeypatch.setattr(serial_transport, "open_serial", lambda port, baudrate: qmt)
     monkeypatch.setattr(importlib, "reload", lambda module: module)
     monkeypatch.setattr(strategy, "_quote_subscription_service", None)
     monkeypatch.setattr(strategy, "_exec_events", None)
-    monkeypatch.setattr(strategy, "_exec_event_valkey_client", object())
+    monkeypatch.setattr(strategy, "_exec_event_vk_client", object())
     seen = []
 
     def forbidden_journal(*args, **kwargs):
@@ -330,7 +382,7 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
     context = SimpleNamespace()
     gateway = SimpleNamespace(submit=submit)
     service = strategy._build_rpc_service(context, SimpleNamespace(order_gateway=gateway), config)
-    assert service.valkey is None and service.listen_valkey is None
+    assert service.vk is None and service.listen_vk is None
     assert not service.background_threads and not service.handlers.market_data.native_xtdata_enabled
     assert transport_supports_drain("serial")
     assert build_transport("serial", {"serial": {"port": "COM100"}}).port == "COM100"
@@ -340,22 +392,22 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
         service.drain_request_queue()
         service.drain_pending()
 
-    valkey.pump = pump
+    vk.pump = pump
     service.start()
     try:
-        ping = call_valkey_rpc(valkey, ACCOUNT, "ping", request_id="ping-1")
+        ping = call_vk_rpc(vk, ACCOUNT, "ping", request_id="ping-1")
         assert ping["data"]["pong"] is True
-        assert valkey.ttls[REPLY_PREFIX + "ping-1"] == 60
-        assert valkey.published[REPLY_PREFIX + "ping-1"]
+        assert vk.ttls[REPLY_PREFIX + "ping-1"] == 60
+        assert vk.published[REPLY_PREFIX + "ping-1"]
 
         params = {"stock_code": "000001.SZ", "action": "BUY", "volume": 100,
                   "remark": "simulated", "strategy_name": "serial-test",
                   "wait_settlement": False}
-        response = call_valkey_rpc(valkey, ACCOUNT, "order_stock", params, request_id="order-1")
+        response = call_vk_rpc(vk, ACCOUNT, "order_stock", params, request_id="order-1")
         assert response["ok"] == allow_order_methods
         if allow_order_methods:
             assert response["data"]["order_sys_id"] == "simulated"
-            assert call_valkey_rpc(valkey, ACCOUNT, "order_stock", params,
+            assert call_vk_rpc(vk, ACCOUNT, "order_stock", params,
                                   request_id="order-1")["ok"] is True
             pump_until(pump, lambda: service._duplicate_order_requests == 1)
             assert seen == [(threading.current_thread(), "simulated")]
@@ -363,7 +415,7 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
             assert "not allowed" in response["error"]
             assert seen == []
 
-        probe = call_valkey_rpc(valkey, ACCOUNT, "probe_order_identity",
+        probe = call_vk_rpc(vk, ACCOUNT, "probe_order_identity",
                                 {"remark": "simulated"}, request_id="identity-1")
         assert probe["ok"] is True
         assert probe["data"]["local_persistence_enabled"] is False
@@ -377,9 +429,9 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
             "quote-test", {"000001.SZ": {"lastPrice": 10}})
         exec_channel = order_channel(ACCOUNT)
         quote_channel = "bigqmt:quote_push:" + ACCOUNT + ":quote-test"
-        pump_until(pump, lambda: valkey.published[exec_channel] and valkey.published[quote_channel])
-        assert json.loads(valkey.published[exec_channel][0]) == event
-        assert decode_push_payload(valkey.published[quote_channel][0])["data"]["000001.SZ"]["lastPrice"] == 10
+        pump_until(pump, lambda: vk.published[exec_channel] and vk.published[quote_channel])
+        assert json.loads(vk.published[exec_channel][0]) == event
+        assert decode_push_payload(vk.published[quote_channel][0])["data"]["000001.SZ"]["lastPrice"] == 10
     finally:
         service.stop()
     assert qmt.closed
@@ -387,8 +439,8 @@ def test_existing_valkey_client_round_trip_and_execution_gate(
 
 def test_serial_bridge_refreshes_cache_and_verifies_downloads_through_qmt(duplex, monkeypatch):
     qmt, windows = duplex
-    valkey = MemoryValkey()
-    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
     monkeypatch.setattr(serial_transport, "open_serial", lambda port, baudrate: qmt)
     monkeypatch.setattr(importlib, "reload", lambda module: module)
     monkeypatch.setattr(strategy, "_quote_subscription_service", None)
@@ -396,7 +448,7 @@ def test_serial_bridge_refreshes_cache_and_verifies_downloads_through_qmt(duplex
     calls = []
     requested, readable = set(), set()
     fail_io = lambda *args, **kwargs: pytest.fail("QMT attempted forbidden external I/O")
-    monkeypatch.setattr(valkey_common, "build_valkey_client", fail_io)
+    monkeypatch.setattr(vk_common, "build_vk_client", fail_io)
     monkeypatch.setattr(market_bigqmt, "_load_native_xtdata", fail_io)
 
     def download(codes, period, start, end, callback):
@@ -439,20 +491,20 @@ def test_serial_bridge_refreshes_cache_and_verifies_downloads_through_qmt(duplex
         bridge.step()
         qmt_only(lambda: strategy.adjust(context))
 
-    valkey.pump = pump
+    vk.pump = pump
     qmt_only(service.start)
     try:
         codes = ["000001.SZ"]
-        request_full_tick_cache(valkey, ACCOUNT, codes)
-        request_full_tick_cache(valkey, ACCOUNT, codes)
-        pump_until(pump, lambda: read_full_tick_cache(valkey, ACCOUNT, codes))
-        assert read_full_tick_cache(valkey, ACCOUNT, codes) == {
+        request_full_tick_cache(vk, ACCOUNT, codes)
+        request_full_tick_cache(vk, ACCOUNT, codes)
+        pump_until(pump, lambda: read_full_tick_cache(vk, ACCOUNT, codes))
+        assert read_full_tick_cache(vk, ACCOUNT, codes) == {
             "000001.SZ": {"lastPrice": 10},
         }
         assert len([entry for entry in calls if entry[0] == "ticks"]) == 1
 
         def call(method, params):
-            response = call_valkey_rpc(valkey, ACCOUNT, method, params)
+            response = call_vk_rpc(vk, ACCOUNT, method, params)
             assert response["ok"], response
             return response["data"]
 
@@ -495,8 +547,8 @@ def test_serial_bridge_refreshes_cache_and_verifies_downloads_through_qmt(duplex
 
 def test_serial_download_reports_lost_submission_and_never_replays_it(duplex):
     qmt, windows = duplex
-    valkey = MemoryValkey()
-    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    vk = MemoryVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT)
     wire = serial_transport.SerialFrames(qmt)
 
     def hello(session):
@@ -508,10 +560,10 @@ def test_serial_download_reports_lost_submission_and_never_replays_it(duplex):
     raw = request("download", "submit_download_history_data", params={
         "stock_code": "000001.SZ", "period": "1d",
     })
-    valkey.rpush(REQUEST_QUEUE, raw)
-    pump_until(bridge.step, lambda: valkey.get(REPLY_PREFIX + "download"))
-    job_id = json.loads(valkey.get(REPLY_PREFIX + "download"))["data"]["job_id"]
-    valkey.rpush(REQUEST_QUEUE, raw)
+    vk.rpush(REQUEST_QUEUE, raw)
+    pump_until(bridge.step, lambda: vk.get(REPLY_PREFIX + "download"))
+    job_id = json.loads(vk.get(REPLY_PREFIX + "download"))["data"]["job_id"]
+    vk.rpush(REQUEST_QUEUE, raw)
     frames = []
 
     def pump():
@@ -522,20 +574,20 @@ def test_serial_download_reports_lost_submission_and_never_replays_it(duplex):
     assert [frame["request"]["method"] for frame in frames] == ["download_history_data2"]
     hello("after")
     bridge.step()
-    status = read_download_status(valkey, ACCOUNT, job_id)
+    status = read_download_status(vk, ACCOUNT, job_id)
     assert status["state"] == "failed"
     assert "outcome unknown" in status["error"]
-    assert not bridge.valkey.lists[bridge.features.active_key]
+    assert not bridge.vk.lists[bridge.features.active_key]
     assert not bridge._inflight
 
 
 def test_bridge_log_helpers_hide_credentials_and_follow_causes():
-    assert serial_valkey_bridge._valkey_endpoint(
+    assert serial_vk_bridge._vk_endpoint(
         "valkey://user:secret@10.0.0.1:6380/9") == "10.0.0.1:6380/9"
-    assert serial_valkey_bridge._valkey_endpoint("valkey://h") == "h:6379/0"
-    assert serial_valkey_bridge._valkey_endpoint("not a url") == "the configured Valkey URL"
-    assert serial_valkey_bridge._valkey_endpoint(
-        "valkey://h:bad/1") == "the configured Valkey URL"
+    assert serial_vk_bridge._vk_endpoint("valkey://h") == "h:6379/0"
+    assert serial_vk_bridge._vk_endpoint("not a url") == "the configured VK URL"
+    assert serial_vk_bridge._vk_endpoint(
+        "valkey://h:bad/1") == "the configured VK URL"
 
     try:
         try:
@@ -543,7 +595,7 @@ def test_bridge_log_helpers_hide_credentials_and_follow_causes():
         except ValueError as exc:
             raise TimeoutError("outer") from exc
     except TimeoutError as exc:
-        text = serial_valkey_bridge._describe(exc)
+        text = serial_vk_bridge._describe(exc)
     assert "TimeoutError: outer" in text
     assert "ValueError: inner" in text
 
@@ -555,14 +607,14 @@ def test_bridge_warns_and_stops_without_an_account(tmp_path, monkeypatch, caplog
     monkeypatch.setitem(sys.modules, "valkey", None)
 
     with caplog.at_level(logging.WARNING):
-        assert serial_valkey_bridge.main([]) == 2
+        assert serial_vk_bridge.main([]) == 2
 
     assert "BIGQMT_ACCOUNT_ID" in caplog.text
 
 
 @pytest.mark.parametrize("source, scheme", [("argument", "valkey"), ("dotenv", "redis")])
 def test_bridge_startup_names_the_side_that_failed(tmp_path, monkeypatch, caplog, source, scheme):
-    class FakeValkey:
+    class FakeVk:
         @classmethod
         def from_url(cls, url, **kwargs):
             assert url == "valkey://user:secret@127.0.0.1:6399/5"
@@ -575,7 +627,7 @@ def test_bridge_startup_names_the_side_that_failed(tmp_path, monkeypatch, caplog
             pass
 
     package = types.ModuleType("valkey")
-    package.Valkey = FakeValkey
+    package.Valkey = FakeVk
     backoff = types.ModuleType("valkey.backoff")
     backoff.NoBackoff = lambda: None
     retry = types.ModuleType("valkey.retry")
@@ -588,19 +640,19 @@ def test_bridge_startup_names_the_side_that_failed(tmp_path, monkeypatch, caplog
     monkeypatch.setenv("BIGQMT_ACCOUNT_ID", " acct ")
     monkeypatch.chdir(tmp_path)
     dotenv_url = f"{scheme}://user:secret@127.0.0.1:6399/5"
-    argv = ["--valkey-url", dotenv_url]
+    argv = ["--vk-url", dotenv_url]
     if source == "dotenv":
-        monkeypatch.setenv("BIGQMT_SERIAL_VALKEY_URL", "valkey://wrong-host:6379/5")
+        monkeypatch.setenv("BIGQMT_SERIAL_VK_URL", "valkey://wrong-host:6379/5")
         monkeypatch.delenv("BIGQMT_ACCOUNT_ID")
         (tmp_path / ".env").write_text(
-            f"BIGQMT_ACCOUNT_ID=acct\nBIGQMT_SERIAL_VALKEY_URL={dotenv_url}\n",
+            f"BIGQMT_ACCOUNT_ID=acct\nBIGQMT_SERIAL_VK_URL={dotenv_url}\n",
             encoding="utf-8",
         )
         argv = []
 
     with caplog.at_level(logging.ERROR):
-        code = serial_valkey_bridge.main(argv)
+        code = serial_vk_bridge.main(argv)
 
     assert code == 1
-    assert "无法连接 Valkey 127.0.0.1:6399/5" in caplog.text
+    assert "无法连接 VK 127.0.0.1:6399/5" in caplog.text
     assert "secret" not in caplog.text

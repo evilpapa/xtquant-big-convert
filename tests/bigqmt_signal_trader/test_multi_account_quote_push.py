@@ -10,7 +10,7 @@ request channel to the shared handlers and returned a seq, so nothing
 failed -- the pushes just went to a channel nobody was listening on.
 
 Market data is not account-specific: the publisher now speaks for every
-account the bridge serves, one publish per account (valkey) or one extra
+account the bridge serves, one publish per account (VK) or one extra
 PUB bind per account (zmq). The client role is untouched.
 """
 
@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.account_type_map import reload as reload_map  # noqa: E402
 from bigqmt_signal_trader.quote_push_channel import (  # noqa: E402
-    ValkeyQuotePushChannel,
+    VkQuotePushChannel,
     decode_push_payload,
 )
 from bigqmt_signal_trader.quote_subscription_manager import (  # noqa: E402
@@ -35,7 +35,7 @@ from bigqmt_signal_trader.quote_subscription_manager import (  # noqa: E402
 )
 
 
-class _Valkey(object):
+class _Vk(object):
     def __init__(self):
         self.published = []
 
@@ -63,46 +63,46 @@ def _with_map(mapping):
     return mock.patch.dict("sys.modules", {"bigqmt_signal_trader_qmt_config": fake_cfg})
 
 
-class ValkeyChannelFansOutTest(unittest.TestCase):
+class VkChannelFansOutTest(unittest.TestCase):
     def test_one_publish_per_account(self):
-        valkey = _Valkey()
-        channel = ValkeyQuotePushChannel(valkey, account_id="primary", account_ids=["primary", "second"])
+        vk = _Vk()
+        channel = VkQuotePushChannel(vk, account_id="primary", account_ids=["primary", "second"])
 
         channel.publish("600000.SH", {"lastPrice": 1.0})
 
-        channels = [c for c, _ in valkey.published]
+        channels = [c for c, _ in vk.published]
         self.assertEqual(["bigqmt:quote_push:primary:600000.SH",
                           "bigqmt:quote_push:second:600000.SH"], channels)
-        for _, raw in valkey.published:
+        for _, raw in vk.published:
             self.assertEqual({"lastPrice": 1.0}, decode_push_payload(raw)["data"])
 
     def test_the_secondarys_channel_is_the_one_its_client_subscribes(self):
         """The client side derives the channel from its own account; the
         server side must produce exactly that name."""
-        server = ValkeyQuotePushChannel(_Valkey(), account_id="primary", account_ids=["second"])
-        client = ValkeyQuotePushChannel(_Valkey(), account_id="second")
+        server = VkQuotePushChannel(_Vk(), account_id="primary", account_ids=["second"])
+        client = VkQuotePushChannel(_Vk(), account_id="second")
 
         self.assertEqual(client._channel("t"), server._channel("t", "second"))
 
     def test_a_single_account_publishes_once_as_before(self):
-        valkey = _Valkey()
-        ValkeyQuotePushChannel(valkey, account_id="only").publish("t", {})
-        self.assertEqual(["bigqmt:quote_push:only:t"], [c for c, _ in valkey.published])
+        vk = _Vk()
+        VkQuotePushChannel(vk, account_id="only").publish("t", {})
+        self.assertEqual(["bigqmt:quote_push:only:t"], [c for c, _ in vk.published])
 
     def test_duplicates_and_blanks_in_the_list_collapse(self):
-        channel = ValkeyQuotePushChannel(_Valkey(), account_id="a", account_ids=["a", "", "b", "b", None])
+        channel = VkQuotePushChannel(_Vk(), account_id="a", account_ids=["a", "", "b", "b", None])
         self.assertEqual(["a", "b"], channel.account_ids)
 
     def test_one_failing_publish_does_not_stop_the_others(self):
-        class Flaky(_Valkey):
+        class Flaky(_Vk):
             def publish(self, channel, value):
                 if ":a:" in channel:
                     raise RuntimeError("boom")
                 return super(Flaky, self).publish(channel, value)
 
-        valkey = Flaky()
-        ValkeyQuotePushChannel(valkey, account_id="a", account_ids=["b"]).publish("t", {})
-        self.assertEqual(["bigqmt:quote_push:b:t"], [c for c, _ in valkey.published])
+        vk = Flaky()
+        VkQuotePushChannel(vk, account_id="a", account_ids=["b"]).publish("t", {})
+        self.assertEqual(["bigqmt:quote_push:b:t"], [c for c, _ in vk.published])
 
 
 class ServedAccountsTest(unittest.TestCase):
@@ -132,18 +132,18 @@ class BuilderWiresTheMapTest(unittest.TestCase):
     def test_a_push_reaches_the_secondary_account(self):
         """End to end through the manager: a ContextInfo push for a
         subscribed combo lands on both accounts' channels."""
-        valkey = _Valkey()
+        vk = _Vk()
         with _with_map({"ACCT1": "STOCK", "ACCT2": "FUTURE"}):
             reload_map()
             ctx = _Ctx()
             manager, channel = build_quote_subscription_service(
-                ctx, transport_name="valkey", account_id="ACCT1", valkey_client=valkey, enabled=True)
+                ctx, transport_name="valkey", account_id="ACCT1", vk_client=vk, enabled=True)
         self.assertEqual(["ACCT1", "ACCT2"], channel.account_ids)
 
         manager.subscribe("issue315", "s1", ["600000.SH"])
         ctx.callback({"600000.SH": {"lastPrice": 3.69}})
 
-        published = sorted(c for c, _ in valkey.published)
+        published = sorted(c for c, _ in vk.published)
         self.assertEqual(2, len(published), published)
         self.assertTrue(any(":ACCT2:" in c for c in published), published)
         self.assertTrue(any(":ACCT1:" in c for c in published), published)
@@ -152,9 +152,9 @@ class BuilderWiresTheMapTest(unittest.TestCase):
     def test_the_single_account_shape_is_unchanged(self):
         sys.modules.pop("bigqmt_signal_trader_qmt_config", None)
         reload_map()
-        valkey = _Valkey()
+        vk = _Vk()
         manager, channel = build_quote_subscription_service(
-            _Ctx(), transport_name="valkey", account_id="ACCT1", valkey_client=valkey, enabled=True)
+            _Ctx(), transport_name="valkey", account_id="ACCT1", vk_client=vk, enabled=True)
         self.assertEqual(["ACCT1"], channel.account_ids)
 
 

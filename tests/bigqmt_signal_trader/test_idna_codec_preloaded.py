@@ -1,12 +1,12 @@
 # coding: utf-8
-"""Importing the valkey transport must leave the idna codec ready to use.
+"""Importing the VK transport must leave the idna codec ready to use.
 
 First run of a strategy inside big QMT logged, once, on the first adjust
 tick:
 
     LookupError: unknown encoding: idna
 
-from socket.getaddrinfo inside the first Valkey connect. The codec is lazy:
+from socket.getaddrinfo inside the first VK connect. The codec is lazy:
 codecs.lookup('idna') -> encodings.search_function -> import encodings.idna
 -> stringprep -> unicodedata (a C extension). That import ran on the adjust
 thread -- a C++ timer callback -- and the sandboxed importer failed it there;
@@ -48,7 +48,7 @@ SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
 CHAIN = ("encodings.idna", "stringprep", "unicodedata")
-TRANSPORT = "bigqmt_signal_trader.transports.valkey_transport"
+TRANSPORT = "bigqmt_signal_trader.transports.vk_transport"
 
 
 class IdnaPreloadedTest(unittest.TestCase):
@@ -116,7 +116,7 @@ class IdnaPreloadedTest(unittest.TestCase):
             sys.meta_path.insert(0, Refuse())
 
             module = importlib.import_module(%r)
-            print("OK" if hasattr(module, "ValkeyTransport") else "MISSING")
+            print("OK" if hasattr(module, "VkTransport") else "MISSING")
         """) % (SRC, TRANSPORT)
 
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True,

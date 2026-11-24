@@ -19,16 +19,16 @@ from bigqmt_signal_trader.models import (
     PositionSnapshot,
     TradeSnapshot,
 )
-from bigqmt_signal_trader.valkey_rpc import (
+from bigqmt_signal_trader.vk_rpc import (
     RPC_REVISION,
     BigQmtRpcHandlers,
-    ValkeyPubSubRpcService,
+    VkPubSubRpcService,
     decode_rpc_request_payload,
     encode_rpc_request_payload,
 )
 
 
-class FakeValkey:
+class FakeVk:
     def __init__(self):
         self.kv = {}
         self.expired = []
@@ -119,7 +119,7 @@ def _service(allow_order_methods=False, process_in_listener=False):
 
 
 def _service_with_listener_methods(allow_order_methods=False, process_in_listener=False, listener_methods=None):
-    valkey_client = FakeValkey()
+    vk_client = FakeVk()
     order_gateway = DryRunOrderGateway()
     handlers = BigQmtRpcHandlers(
         account_id="acct",
@@ -131,8 +131,8 @@ def _service_with_listener_methods(allow_order_methods=False, process_in_listene
         # deadline would just stall every test by the full timeout.
         order_settle_timeout_seconds=0.0,
     )
-    return valkey_client, ValkeyPubSubRpcService(
-        valkey_client,
+    return vk_client, VkPubSubRpcService(
+        vk_client,
         handlers,
         account_id="acct",
         process_in_listener=process_in_listener,
@@ -246,7 +246,7 @@ class CapturingExecutionGateway(CapturingTradeGateway):
 
 
 def _service_with_order_gateway(order_gateway, allow_order_methods=False):
-    valkey_client = FakeValkey()
+    vk_client = FakeVk()
     handlers = BigQmtRpcHandlers(
         account_id="acct",
         market_data=FakeMarketData(),
@@ -255,7 +255,7 @@ def _service_with_order_gateway(order_gateway, allow_order_methods=False):
         allow_order_methods=allow_order_methods,
         order_settle_timeout_seconds=0.0,
     )
-    return valkey_client, ValkeyPubSubRpcService(valkey_client, handlers, account_id="acct")
+    return vk_client, VkPubSubRpcService(vk_client, handlers, account_id="acct")
 
 
 class LateLandingOrderGateway(DryRunOrderGateway):
@@ -332,7 +332,7 @@ class AsyncCancelSettlementTest(unittest.TestCase):
 
     @staticmethod
     def _service(gateway, timeout=5.0):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         handlers = BigQmtRpcHandlers(
             account_id="acct",
             market_data=FakeMarketData(),
@@ -341,8 +341,8 @@ class AsyncCancelSettlementTest(unittest.TestCase):
             allow_order_methods=True,
             order_settle_timeout_seconds=timeout,
         )
-        return valkey_client, ValkeyPubSubRpcService(
-            valkey_client, handlers, account_id="acct")
+        return vk_client, VkPubSubRpcService(
+            vk_client, handlers, account_id="acct")
 
     @staticmethod
     def _cancel(service, request_id="cancel-request-1"):
@@ -355,18 +355,18 @@ class AsyncCancelSettlementTest(unittest.TestCase):
 
     def test_falsey_native_return_waits_for_status_54_and_reports_success(self):
         gateway = FalseyCancelGateway(["50", "54"])
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
         self.assertNotIn(
-            "bigqmt:rpc:resp:acct:cancel-request-1", valkey_client.kv)
+            "bigqmt:rpc:resp:acct:cancel-request-1", vk_client.kv)
         self.assertEqual(service.pending_settlement_count(), 1)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertTrue(response["ok"], response["error"])
         self.assertTrue(response["data"]["success"])
         self.assertEqual(response["data"]["message"], "")
@@ -375,50 +375,50 @@ class AsyncCancelSettlementTest(unittest.TestCase):
 
     def test_partial_cancel_status_53_also_reports_success(self):
         gateway = FalseyCancelGateway(["53"])
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertTrue(response["data"]["success"])
 
     def test_terminal_filled_status_does_not_become_cancel_success(self):
         gateway = FalseyCancelGateway(["56"])
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertTrue(response["ok"], response["error"])
         self.assertFalse(response["data"]["success"])
         self.assertIn("reached status 56", response["data"]["message"])
 
     def test_active_order_at_deadline_remains_cancel_failure(self):
         gateway = FalseyCancelGateway(["50"])
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertFalse(response["data"]["success"])
         self.assertIn("is still status 50", response["data"]["message"])
 
     def test_lookup_error_at_deadline_remains_cancel_failure(self):
         gateway = FalseyCancelGateway(
             ["54"], query_error=RuntimeError("QMT query unavailable"))
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertFalse(response["data"]["success"])
         self.assertIn("cancel status lookup failed", response["data"]["message"])
 
@@ -428,13 +428,13 @@ class AsyncCancelSettlementTest(unittest.TestCase):
         # survives, but only through one immediate status lookup -- not by
         # believing the native return.
         gateway = FalseyCancelGateway(["54"], native_success=True)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertTrue(response["data"]["success"])
         self.assertEqual(gateway.lookups, 1)
         self.assertEqual(service.pending_settlement_count(), 0)
@@ -443,13 +443,13 @@ class AsyncCancelSettlementTest(unittest.TestCase):
         # The #151 shape exactly: native success=True, order still active
         # at the deadline -> the reply must not be a bare success.
         gateway = FalseyCancelGateway(["50"], native_success=True)
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._cancel(service)
 
         service.drain_pending()
 
         response = json.loads(
-            valkey_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
+            vk_client.kv["bigqmt:rpc:resp:acct:cancel-request-1"])
         self.assertFalse(response["data"]["success"])
         self.assertIn("is still status 50", response["data"]["message"])
 
@@ -462,13 +462,13 @@ class AsyncOrderSettlementTest(unittest.TestCase):
     """
 
     def _service(self, gateway, timeout=5.0):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         handlers = BigQmtRpcHandlers(
             account_id="acct", market_data=FakeMarketData(),
             position_provider=FakePositionProvider(), order_gateway=gateway,
             allow_order_methods=True, order_settle_timeout_seconds=timeout,
         )
-        return valkey_client, ValkeyPubSubRpcService(valkey_client, handlers, account_id="acct")
+        return vk_client, VkPubSubRpcService(vk_client, handlers, account_id="acct")
 
     def _submit(self, service, request_id="ord-1"):
         service.enqueue_payload({
@@ -480,7 +480,7 @@ class AsyncOrderSettlementTest(unittest.TestCase):
     def test_drain_does_not_sleep_waiting_for_the_order_id(self):
         """The whole point: no 0.5s block on the adjust thread."""
         gateway = LateLandingOrderGateway(appear_after=99)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
 
         started = time.monotonic()
@@ -491,24 +491,24 @@ class AsyncOrderSettlementTest(unittest.TestCase):
 
     def test_unresolved_order_is_parked_not_answered(self):
         gateway = LateLandingOrderGateway(appear_after=99)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
         service.drain_pending()
 
-        self.assertNotIn("bigqmt:rpc:resp:acct:ord-1", valkey_client.kv)
+        self.assertNotIn("bigqmt:rpc:resp:acct:ord-1", vk_client.kv)
         self.assertEqual(service.pending_settlement_count(), 1)
 
     def test_later_tick_settles_and_backfills_the_sysid(self):
         gateway = LateLandingOrderGateway(appear_after=3)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
 
         for _ in range(5):
             service.drain_pending()
-            if "bigqmt:rpc:resp:acct:ord-1" in valkey_client.kv:
+            if "bigqmt:rpc:resp:acct:ord-1" in vk_client.kv:
                 break
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:ord-1"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:ord-1"])
         self.assertTrue(response["ok"], response["error"])
         self.assertEqual(response["data"]["order_sys_id"], "sysid-late")
         self.assertEqual(response["server_error"], "")
@@ -519,11 +519,11 @@ class AsyncOrderSettlementTest(unittest.TestCase):
         server_error) and keeps watching on the shadow queue; the refusal
         text only surfaces when the extended watch also expires."""
         gateway = LateLandingOrderGateway(never=True)
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._submit(service)
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:ord-1"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:ord-1"])
         self.assertTrue(response["ok"])
         self.assertFalse(response["server_error"])
         self.assertIn("UNCONFIRMED", response["data"]["message"])
@@ -548,13 +548,13 @@ class AsyncOrderSettlementTest(unittest.TestCase):
             passorder_func=lambda *args: submissions.append(args),
             get_trade_detail_data_func=query,
         )
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         self._submit(service)
         service.drain_pending()
 
         response_key = "bigqmt:rpc:resp:acct:ord-1"
-        self.assertIn(response_key, valkey_client.kv)
-        response = json.loads(valkey_client.kv[response_key])
+        self.assertIn(response_key, vk_client.kv)
+        response = json.loads(vk_client.kv[response_key])
         self.assertTrue(response["ok"], response["error"])
         self.assertEqual(response["data"]["status"], "SUBMITTED")
         self.assertIsNone(response["data"]["order_sys_id"])
@@ -572,13 +572,13 @@ class AsyncOrderSettlementTest(unittest.TestCase):
         order left the handler, so its diagnostic must ride on the settlement
         rather than handlers._last_server_error."""
         gateway = LateLandingOrderGateway(never=True)
-        valkey_client, service = self._service(gateway, timeout=0.0)
+        vk_client, service = self._service(gateway, timeout=0.0)
         self._submit(service)
         service.drain_pending()
         # #360: the first deadline miss is "unconfirmed"; the refusal lands on
         # the settlement (shadow queue), not on this or any later response.
         self.assertFalse(
-            json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:ord-1"])["server_error"])
+            json.loads(vk_client.kv["bigqmt:rpc:resp:acct:ord-1"])["server_error"])
         shadow = service._shadow_settlements.get_nowait()
         shadow.deadline = 0.0
         service._shadow_settlements.put(shadow)
@@ -589,12 +589,12 @@ class AsyncOrderSettlementTest(unittest.TestCase):
 
         self.assertIn("not found in system", shadow.server_error)
         self.assertEqual(
-            json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:later-ping"])["server_error"], "")
+            json.loads(vk_client.kv["bigqmt:rpc:resp:acct:later-ping"])["server_error"], "")
 
     def test_many_orders_drain_without_accumulating_delay(self):
         """Throughput was the reported symptom: 0.5s per order serialized."""
         gateway = LateLandingOrderGateway(appear_after=99)
-        valkey_client, service = self._service(gateway)
+        vk_client, service = self._service(gateway)
         for i in range(20):
             self._submit(service, request_id="ord-%d" % i)
 
@@ -606,7 +606,7 @@ class AsyncOrderSettlementTest(unittest.TestCase):
         self.assertEqual(service.pending_settlement_count(), 20)
 
 
-class ValkeyRpcTest(unittest.TestCase):
+class VkRpcTest(unittest.TestCase):
     def test_execution_snapshot_queries_orders_and_all_trades_once(self):
         gateway = CapturingExecutionGateway()
         handlers = BigQmtRpcHandlers(
@@ -961,7 +961,7 @@ class ValkeyRpcTest(unittest.TestCase):
         self.assertFalse(result["explicit_failure"])
         self.assertEqual(result["error"], "IDEMPOTENCY_CHECK_UNAVAILABLE")
 
-    def test_encoded_request_payload_hides_stock_codes_from_qmt_valkey_guard(self):
+    def test_encoded_request_payload_hides_stock_codes_from_qmt_vk_guard(self):
         request = {
             "request_id": "encoded",
             "account_id": "acct",
@@ -976,7 +976,7 @@ class ValkeyRpcTest(unittest.TestCase):
         self.assertEqual(json.loads(decode_rpc_request_payload(encoded)), request)
 
     def test_readonly_rpc_writes_position_response_to_key_and_channel(self):
-        valkey_client, service = _service()
+        vk_client, service = _service()
 
         processed = service.drain_pending()
         self.assertEqual(processed, 0)
@@ -992,10 +992,10 @@ class ValkeyRpcTest(unittest.TestCase):
         self.assertEqual(service.drain_pending(), 1)
 
         response_key = "bigqmt:rpc:resp:acct:req-1"
-        response = json.loads(valkey_client.kv[response_key])
+        response = json.loads(vk_client.kv[response_key])
         self.assertTrue(response["ok"])
         self.assertEqual(response["data"]["600000.SH"]["available"], 800)
-        self.assertEqual(valkey_client.published[0][0], "bigqmt:rpc:resp:acct:req-1")
+        self.assertEqual(vk_client.published[0][0], "bigqmt:rpc:resp:acct:req-1")
 
     def test_native_query_failure_becomes_rpc_error(self):
         cases = (
@@ -1015,7 +1015,7 @@ class ValkeyRpcTest(unittest.TestCase):
                         raise RuntimeError("simulated native %s query failure" % failed_type)
                     return []
 
-                valkey_client, service = _service()
+                vk_client, service = _service()
                 service.handlers.position_provider = BigQmtPositionProvider(query)
                 service.handlers.order_gateway = BigQmtOrderGateway(
                     context_info=None, get_trade_detail_data_func=query)
@@ -1026,7 +1026,7 @@ class ValkeyRpcTest(unittest.TestCase):
                     "params": {},
                 })
                 self.assertEqual(service.drain_pending(), 1)
-                response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:" + method])
+                response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:" + method])
                 self.assertFalse(response["ok"])
                 self.assertIsNone(response["data"])
                 self.assertEqual(response["error"],
@@ -1057,7 +1057,7 @@ class ValkeyRpcTest(unittest.TestCase):
                         raise ValueError("unsupported detail type: " + detail_type)
                     return []
 
-                valkey_client, service = _service()
+                vk_client, service = _service()
                 service.handlers.position_provider = BigQmtPositionProvider(query)
                 service.handlers.order_gateway = BigQmtOrderGateway(
                     context_info=None, get_trade_detail_data_func=query)
@@ -1068,7 +1068,7 @@ class ValkeyRpcTest(unittest.TestCase):
                     "params": {},
                 })
                 self.assertEqual(service.drain_pending(), 1)
-                response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:" + method])
+                response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:" + method])
                 self.assertTrue(response["ok"], response["error"])
                 if method == "query_execution_snapshot":
                     self.assertEqual(response["data"]["orders"], [])
@@ -1079,7 +1079,7 @@ class ValkeyRpcTest(unittest.TestCase):
                 self.assertEqual(calls, expected_calls)
 
     def test_process_in_listener_handles_request_without_waiting_for_drain(self):
-        valkey_client, service = _service(process_in_listener=True)
+        vk_client, service = _service(process_in_listener=True)
 
         service.enqueue_payload(
             {
@@ -1090,7 +1090,7 @@ class ValkeyRpcTest(unittest.TestCase):
             }
         )
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:listener-req"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:listener-req"])
         self.assertTrue(response["ok"], response["error"])
         self.assertTrue(response["data"]["pong"])
         self.assertFalse(response["data"]["allow_order_methods"])
@@ -1098,7 +1098,7 @@ class ValkeyRpcTest(unittest.TestCase):
         self.assertEqual(service.drain_pending(), 0)
 
     def test_process_in_listener_leaves_non_listener_methods_queued(self):
-        valkey_client, service = _service(process_in_listener=True)
+        vk_client, service = _service(process_in_listener=True)
 
         service.enqueue_payload(
             {
@@ -1109,15 +1109,15 @@ class ValkeyRpcTest(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("bigqmt:rpc:resp:acct:queued-tick", valkey_client.kv)
+        self.assertNotIn("bigqmt:rpc:resp:acct:queued-tick", vk_client.kv)
         self.assertEqual(service.drain_pending(), 1)
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:queued-tick"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:queued-tick"])
         self.assertTrue(response["ok"], response["error"])
 
     def test_process_in_listener_wildcard_only_handles_ping_inline(self):
         # get_full_tick is a market-data read (thread-safe in embedded terminal),
         # so it stays inline for low latency and responds immediately.
-        valkey_client, service = _service_with_listener_methods(
+        vk_client, service = _service_with_listener_methods(
             allow_order_methods=True,
             process_in_listener=True,
             listener_methods=("*",),
@@ -1133,7 +1133,7 @@ class ValkeyRpcTest(unittest.TestCase):
         )
 
         # Inline: response written immediately, no pending drain needed.
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:direct-tick"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:direct-tick"])
         self.assertTrue(response["ok"], response["error"])
         self.assertEqual(response["data"]["600000.SH"]["lastPrice"], 10.5)
 
@@ -1146,9 +1146,9 @@ class ValkeyRpcTest(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("bigqmt:rpc:resp:acct:queued-sync", valkey_client.kv)
+        self.assertNotIn("bigqmt:rpc:resp:acct:queued-sync", vk_client.kv)
         self.assertEqual(service.drain_pending(), 1)
-        sync_response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:queued-sync"])
+        sync_response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:queued-sync"])
         self.assertTrue(sync_response["ok"], sync_response["error"])
         self.assertEqual(sync_response["data"]["positions"]["600000.SH"]["available"], 800)
 
@@ -1167,13 +1167,13 @@ class ValkeyRpcTest(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("bigqmt:rpc:resp:acct:queued-order", valkey_client.kv)
+        self.assertNotIn("bigqmt:rpc:resp:acct:queued-order", vk_client.kv)
         self.assertEqual(service.drain_pending(), 1)
-        order_response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:queued-order"])
+        order_response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:queued-order"])
         self.assertTrue(order_response["ok"], order_response["error"])
 
     def test_listener_wildcard_defers_asset_query_to_strategy_thread(self):
-        valkey_client, service = _service_with_listener_methods(
+        vk_client, service = _service_with_listener_methods(
             process_in_listener=True,
             listener_methods=("*",),
         )
@@ -1187,13 +1187,13 @@ class ValkeyRpcTest(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("bigqmt:rpc:resp:acct:queued-asset", valkey_client.kv)
+        self.assertNotIn("bigqmt:rpc:resp:acct:queued-asset", vk_client.kv)
         self.assertEqual(service.drain_pending(), 1)
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:queued-asset"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:queued-asset"])
         self.assertTrue(response["ok"], response["error"])
 
     def test_listener_wildcard_defers_execution_snapshot_to_strategy_thread(self):
-        valkey_client, service = _service_with_listener_methods(
+        vk_client, service = _service_with_listener_methods(
             process_in_listener=True,
             listener_methods=("*",),
         )
@@ -1208,13 +1208,13 @@ class ValkeyRpcTest(unittest.TestCase):
         )
 
         response_key = "bigqmt:rpc:resp:acct:queued-execution-snapshot"
-        self.assertNotIn(response_key, valkey_client.kv)
+        self.assertNotIn(response_key, vk_client.kv)
         self.assertEqual(service.drain_pending(), 1)
-        response = json.loads(valkey_client.kv[response_key])
+        response = json.loads(vk_client.kv[response_key])
         self.assertTrue(response["ok"], response["error"])
 
     def test_account_mismatch_is_rejected(self):
-        valkey_client, service = _service()
+        vk_client, service = _service()
 
         service.enqueue_payload(
             {
@@ -1226,12 +1226,12 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:other:req-2"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:other:req-2"])
         self.assertFalse(response["ok"])
         self.assertIn("account_id 不匹配", response["error"])
 
     def test_order_rpc_is_disabled_by_default(self):
-        valkey_client, service = _service()
+        vk_client, service = _service()
 
         service.enqueue_payload(
             {
@@ -1248,12 +1248,12 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:req-3"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:req-3"])
         self.assertFalse(response["ok"])
         self.assertIn("not allowed", response["error"])
 
     def test_order_rpc_can_be_enabled_for_dryrun_gateway(self):
-        valkey_client, service = _service(allow_order_methods=True)
+        vk_client, service = _service(allow_order_methods=True)
 
         service.enqueue_payload(
             {
@@ -1270,12 +1270,12 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:req-4"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:req-4"])
         self.assertTrue(response["ok"])
         self.assertEqual(response["data"]["status"], "DRY_RUN")
 
     def test_miniqmt_read_aliases_are_accepted(self):
-        valkey_client, service = _service()
+        vk_client, service = _service()
 
         for request_id, method in (
             ("alias-pos", "query_stock_positions"),
@@ -1292,23 +1292,23 @@ class ValkeyRpcTest(unittest.TestCase):
                 }
             )
             service.drain_pending()
-            response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:%s" % request_id])
+            response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:%s" % request_id])
             self.assertTrue(response["ok"], response["error"])
 
-        alias_pos = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-pos"])["data"]
+        alias_pos = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-pos"])["data"]
         # #306: a list of position rows keyed by nothing -- one entry here.
         self.assertEqual([row["volume"] for row in alias_pos], [1000])
         self.assertEqual(
-            json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-asset"])["data"]["cash"],
+            json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-asset"])["data"]["cash"],
             100.0,
         )
         self.assertEqual(
-            json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-tick"])["data"]["600000.SH"]["lastPrice"],
+            json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-tick"])["data"]["600000.SH"]["lastPrice"],
             10.5,
         )
 
     def test_miniqmt_single_position_alias_filters_by_stock_code(self):
-        valkey_client, service = _service()
+        vk_client, service = _service()
 
         service.enqueue_payload(
             {
@@ -1320,12 +1320,12 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-single-position"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-single-position"])
         self.assertTrue(response["ok"], response["error"])
         self.assertEqual(response["data"]["stock_code"], "600000.SH")
 
     def test_miniqmt_query_orders_alias_supports_cancelable_filter(self):
-        valkey_client, service = _service_with_order_gateway(FakeOrderGateway())
+        vk_client, service = _service_with_order_gateway(FakeOrderGateway())
 
         service.enqueue_payload(
             {
@@ -1337,13 +1337,13 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-orders"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-orders"])
         self.assertTrue(response["ok"], response["error"])
         self.assertEqual(len(response["data"]), 1)
         self.assertEqual(response["data"][0]["order_sys_id"], "open-1")
 
     def test_miniqmt_order_alias_is_disabled_by_default(self):
-        valkey_client, service = _service()
+        vk_client, service = _service()
 
         service.enqueue_payload(
             {
@@ -1362,7 +1362,7 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-order-disabled"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-order-disabled"])
         self.assertFalse(response["ok"])
         self.assertTrue(
             "not allowed" in response["error"] or "disabled" in response["error"],
@@ -1371,7 +1371,7 @@ class ValkeyRpcTest(unittest.TestCase):
 
     def test_miniqmt_order_and_cancel_aliases_work_when_enabled(self):
         order_gateway = DryRunOrderGateway()
-        valkey_client, service = _service_with_order_gateway(order_gateway, allow_order_methods=True)
+        vk_client, service = _service_with_order_gateway(order_gateway, allow_order_methods=True)
 
         service.enqueue_payload(
             {
@@ -1398,8 +1398,8 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         self.assertEqual(service.drain_pending(max_items=2), 2)
 
-        order_response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-order"])
-        cancel_response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:alias-cancel"])
+        order_response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-order"])
+        cancel_response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:alias-cancel"])
         self.assertTrue(order_response["ok"], order_response["error"])
         self.assertTrue(cancel_response["ok"], cancel_response["error"])
         self.assertEqual(order_gateway.submitted[0].action, "SELL")
@@ -1408,7 +1408,7 @@ class ValkeyRpcTest(unittest.TestCase):
         self.assertEqual(order_gateway.cancelled[0].order_sys_id, "sys-1")
 
     def test_market_data_method_is_whitelisted_and_dispatched(self):
-        valkey_client, service = _service()
+        vk_client, service = _service()
 
         service.enqueue_payload(
             {
@@ -1425,7 +1425,7 @@ class ValkeyRpcTest(unittest.TestCase):
         )
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:market-data-ex"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:market-data-ex"])
         self.assertTrue(response["ok"], response["error"])
         self.assertEqual(response["data"]["params"]["field_list"], ["close"])
         self.assertEqual(response["data"]["data"]["600000.SH"]["close"], [10.0])
@@ -1638,14 +1638,14 @@ class BatchSettlementTest(unittest.TestCase):
     """
 
     def _service(self, gateway, timeout=5.0):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         handlers = BigQmtRpcHandlers(
             account_id="acct", market_data=FakeMarketData(),
             position_provider=FakePositionProvider(), order_gateway=gateway,
             allow_order_methods=True, order_settle_timeout_seconds=timeout,
         )
-        return valkey_client, handlers, ValkeyPubSubRpcService(
-            valkey_client, handlers, account_id="acct")
+        return vk_client, handlers, VkPubSubRpcService(
+            vk_client, handlers, account_id="acct")
 
     def _batch_params(self, count=2):
         return {"orders": [
@@ -1670,7 +1670,7 @@ class BatchSettlementTest(unittest.TestCase):
         self.assertIsNone(handlers.take_pending_settlement())
 
     def test_a_batch_reply_is_not_parked_behind_one_item(self):
-        valkey_client, _handlers, service = self._service(
+        vk_client, _handlers, service = self._service(
             LateLandingOrderGateway(never=True))
         service.enqueue_payload({
             "request_id": "bat-1", "account_id": "acct",
@@ -1679,7 +1679,7 @@ class BatchSettlementTest(unittest.TestCase):
 
         service.drain_pending()
 
-        self.assertIn("bigqmt:rpc:resp:acct:bat-1", valkey_client.kv)
+        self.assertIn("bigqmt:rpc:resp:acct:bat-1", vk_client.kv)
         self.assertEqual(service.pending_settlement_count(), 0)
 
     def test_one_items_diagnostic_does_not_ride_the_whole_batch(self):
@@ -1690,7 +1690,7 @@ class BatchSettlementTest(unittest.TestCase):
         volume, and would be attached to a reply covering every order in the
         batch.
         """
-        valkey_client, _handlers, service = self._service(
+        vk_client, _handlers, service = self._service(
             LateLandingOrderGateway(never=True), timeout=0.0)
         service.enqueue_payload({
             "request_id": "bat-2", "account_id": "acct",
@@ -1699,7 +1699,7 @@ class BatchSettlementTest(unittest.TestCase):
 
         service.drain_pending()
 
-        response = json.loads(valkey_client.kv["bigqmt:rpc:resp:acct:bat-2"])
+        response = json.loads(vk_client.kv["bigqmt:rpc:resp:acct:bat-2"])
         self.assertTrue(response["ok"], response.get("error"))
         self.assertEqual(response.get("server_error", ""), "")
         self.assertEqual(len(response["data"]), 2)
@@ -1711,7 +1711,7 @@ class BatchSettlementTest(unittest.TestCase):
         that is the whole settlement machinery, and only the batch path had no
         way to use it.
         """
-        valkey_client, _handlers, service = self._service(
+        vk_client, _handlers, service = self._service(
             LateLandingOrderGateway(never=True))
         service.enqueue_payload({
             "request_id": "ord-9", "account_id": "acct", "method": "order_stock",
@@ -1722,7 +1722,7 @@ class BatchSettlementTest(unittest.TestCase):
 
         service.drain_pending()
 
-        self.assertNotIn("bigqmt:rpc:resp:acct:ord-9", valkey_client.kv)
+        self.assertNotIn("bigqmt:rpc:resp:acct:ord-9", vk_client.kv)
         self.assertEqual(service.pending_settlement_count(), 1)
 
 

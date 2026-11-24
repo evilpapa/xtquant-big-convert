@@ -15,7 +15,7 @@ import time
 import traceback
 import uuid
 
-from .adapters.valkey_common import decode_text
+from .adapters.vk_common import decode_text
 from .code_utils import normalize_stock_code
 from . import exec_events as _exec_events
 from .models import AccountSnapshot, OrderRef, OrderRequest
@@ -418,7 +418,7 @@ def _maybe_scalar(value):
     return value
 
 
-def _is_valkey_timeout(exc):
+def _is_vk_timeout(exc):
     name = exc.__class__.__name__.lower()
     module = getattr(exc.__class__, "__module__", "")
     text = str(exc).lower()
@@ -668,9 +668,9 @@ class BigQmtRpcHandlers:
         self.qmt_api = dict(qmt_api or {})
         self._submit_journal = {}
         # 进程内订单身份日志：remark -> strategy_name，提交时写入、查询时回读。
-        # Valkey 身份库覆盖重启和其它进程；这个覆盖完全没有 Valkey 的部署（zmq
+        # VK 身份库覆盖重启和其它进程；这个覆盖完全没有 VK 的部署（zmq
         # 单文件），那里归属过去会永远读到 ""（问题 #156，接 #133）。运行时会在
-        # 开始服务请求之前，为无 Valkey 的部署启用磁盘日志。有界 FIFO，与 Valkey
+        # 开始服务请求之前，为无 VK 的部署启用磁盘日志。有界 FIFO，与 VK
         # 存储相同的七天 TTL。
         self._order_identity_local = collections.OrderedDict()
         # 已结算 id 日志（#299 后续）：remark -> 已发出的 order_sys_ids 的
@@ -1509,23 +1509,23 @@ class BigQmtRpcHandlers:
         manager = self._require_quote_manager()
         return {"unsubscribed": manager.unsubscribe_all()}
 
-    def _identity_valkey(self):
-        """订单身份库用的 Valkey，或 None。
+    def _identity_vk(self):
+        """返回订单身份库使用的 VK 客户端，或 None。
 
-        有意用独立属性，而不是复用下载任务的客户端。只有 valkey **传输** 会构造
+        有意用独立属性，而不是复用下载任务的客户端。只有 VK **传输** 会构造
         那个，所以在 zmq 部署上它是 None——于是委托在提交时从没被记住，查询时
-        也就永远无法归属（问题 #133）。策略无论什么传输都按 valkey 配置把这个
+        也就永远无法归属（问题 #133）。策略无论什么传输都按 VK 配置把这个
         接好，并对早于它的部署回退到下载任务客户端。这里的一切都把 None 当作
         “无归属”，而不是错误：给委托起名字是锦上添花，委托本身不是。
         """
-        return (getattr(self, "order_identity_valkey_client", None)
-                or getattr(self, "download_job_valkey_client", None))
+        return (getattr(self, "order_identity_vk_client", None)
+                or getattr(self, "download_job_vk_client", None))
 
-    def _download_job_valkey(self):
-        valkey_client = getattr(self, "download_job_valkey_client", None)
-        if valkey_client is None:
-            raise RuntimeError("下载任务需要 Valkey 客户端")
-        return valkey_client
+    def _download_job_vk(self):
+        vk_client = getattr(self, "download_job_vk_client", None)
+        if vk_client is None:
+            raise RuntimeError("下载任务需要 VK 客户端")
+        return vk_client
 
     def _require_download_worker(self):
         """拒绝把没人会取的工作排进队列。
@@ -1553,7 +1553,7 @@ class BigQmtRpcHandlers:
         if isinstance(stock_list, str):
             stock_list = [stock_list]
         return submit_download_job(
-            self._download_job_valkey(),
+            self._download_job_vk(),
             self.account_id,
             stock_list,
             params.get("period"),
@@ -1577,7 +1577,7 @@ class BigQmtRpcHandlers:
         job_id = params.get("job_id")
         if not job_id:
             raise ValueError("job_id 是必需的")
-        status = read_download_status(self._download_job_valkey(), self.account_id, job_id)
+        status = read_download_status(self._download_job_vk(), self.account_id, job_id)
         if status is None:
             raise KeyError("下载任务不存在或已过期: %s" % job_id)
         return status
@@ -1589,7 +1589,7 @@ class BigQmtRpcHandlers:
         if not job_id:
             raise ValueError("job_id 是必需的")
         return wait_download_job(
-            self._download_job_valkey(),
+            self._download_job_vk(),
             self.account_id,
             job_id,
             wait_seconds=float(params.get("wait_seconds", 600.0)),
@@ -1691,7 +1691,7 @@ class BigQmtRpcHandlers:
 
     def _recover_order_remarks(self, account_id, snapshots):
         return _exec_events.recover_order_remarks(
-            getattr(self, "order_remark_valkey_client", None), account_id,
+            getattr(self, "order_remark_vk_client", None), account_id,
             self._configured_account_type(account_id), snapshots,
             _exec_events.ORDER_IDENTITY_TTL_SECONDS)
 
@@ -1700,7 +1700,7 @@ class BigQmtRpcHandlers:
 
         get_trade_detail_data 返回的 ORDER 和 DEAL 行都不带 m_strStrategyName
         ——在实盘终端上列举每一个属性验证过。行确实带的（m_strSource）是 QMT 侧
-        策略的注册名——本桥接进程的名字，例如 BIGQMT_VALKEY_DRYRUN——而不是调用
+        策略的注册名——本桥接进程的名字，例如 BIGQMT_VK_DRYRUN——而不是调用
         方下单时传的 strategy_name（#216：以 'DaBanStrategy' 下单，回报成
         '大QMT桥接器'）。#174 把那个字段误读为“passorder 的 strategyName 回来了”。
 
@@ -1714,13 +1714,13 @@ class BigQmtRpcHandlers:
                       if str(getattr(row, "user_order_id", "") or "").strip()]
         if not candidates:
             return rows
-        valkey_client = self._identity_valkey()
-        if valkey_client is not None:
+        vk_client = self._identity_vk()
+        if vk_client is not None:
             try:
                 from .exec_events import order_identity_map
 
                 identities = order_identity_map(
-                    valkey_client, account_id,
+                    vk_client, account_id,
                     [getattr(row, "user_order_id", "") for row in candidates])
                 for row in candidates:
                     identity = identities.get(
@@ -1729,8 +1729,8 @@ class BigQmtRpcHandlers:
                         row.strategy_name = str(identity.get("strategy_name") or "")
             except Exception:
                 pass
-        # 无 Valkey 的部署仍能命名 **本** 进程提交的东西：提交时写入的进程内
-        # 日志（问题 #156）。它在 valkey 存储之后运行，因此本进程自己的记录在
+        # 无 VK 的部署仍能命名 **本** 进程提交的东西：提交时写入的进程内
+        # 日志（问题 #156）。它在 VK 存储之后运行，因此本进程自己的记录在
         # 冲突时胜出。
         journal = getattr(self, "_order_identity_local", None)
         if journal:
@@ -2390,19 +2390,19 @@ class BigQmtRpcHandlers:
     def _handle_probe_order_identity(self, params):
         """逐环节诊断 strategy_name 回填链。
 
-        #156 的报告者：身份记录在 Valkey 里存在、键也对得上，而查询读到的仍是
+        #156 的报告者：身份记录在 VK 里存在、键也对得上，而查询读到的仍是
         strategy_name=""。从外面看，链上没有任何一节能说明是哪一节把它丢了——
-        这里从内部回答：身份 Valkey 到底接上了吗、键是否在 **本** 账户下存在、
+        这里从内部回答：身份 VK 到底接上了吗、键是否在 **本** 账户下存在、
         本地日志是否覆盖了它（#156 的进程内回退）、以及原始查找是否会抛异常。
         """
         account_id = self._request_account_id(params)
         remark = str(params.get("remark") or params.get("user_order_id") or "").strip()
-        valkey_client = self._identity_valkey()
+        vk_client = self._identity_vk()
         journal = getattr(self, "_order_identity_local", None) or {}
         out = {
             "account_id": account_id,
             "remark": remark,
-            "identity_valkey_wired": valkey_client is not None,
+            "identity_valkey_wired": vk_client is not None,
             "local_journal_size": len(journal),
         }
         store = self._load_order_identity_journal(account_id)
@@ -2419,9 +2419,9 @@ class BigQmtRpcHandlers:
 
         key = order_identity_key(account_id, remark)
         out["identity_key"] = key
-        if valkey_client is not None:
+        if vk_client is not None:
             try:
-                identity = _exec_events._read_order_identity(valkey_client, account_id, remark)
+                identity = _exec_events._read_order_identity(vk_client, account_id, remark)
                 out["valkey_hit"] = bool(identity)
                 if identity:
                     out["valkey_strategy_name"] = str(identity.get("strategy_name") or "")
@@ -2588,23 +2588,23 @@ class BigQmtRpcHandlers:
                   "（#330）" % ("[bigqmt_rpc]", request.volume, request.price))
 
         identity = None
-        identity_valkey = self._identity_valkey()
+        identity_vk = self._identity_vk()
         try:
             identity = _exec_events.remember_order_identity(
-                identity_valkey,
+                identity_vk,
                 request.account_id,
                 request.remark,
                 strategy_name=request.strategy_name,
                 stock_code=request.stock_code,
             )
-            if identity is None and identity_valkey is not None:
+            if identity is None and identity_vk is not None:
                 # 重复的备注复用了既有记录。新进程必须缓存 **那个** 名字，否则
-                # 它新的本地日志会覆盖 Valkey 并再次把旧委托改名。
+                # 它新的本地日志会覆盖 VK 并再次把旧委托改名。
                 identity = _exec_events._read_order_identity(
-                    identity_valkey, request.account_id, request.remark)
+                    identity_vk, request.account_id, request.remark)
         except Exception as exc:
             _exec_events._warn_order_identity(exc)
-        # 始终也写本地日志——成本低，而且是无 Valkey 部署唯一的归属来源
+        # 始终也写本地日志——成本低，而且是无 VK 部署唯一的归属来源
         # （问题 #156）。
         self._remember_order_identity_local(
             request.account_id, request.remark,
@@ -2662,14 +2662,14 @@ class BigQmtRpcHandlers:
         return result
 
     def _exec_event_sink(self):
-        """本处理器发出的执行事件投向何处：Valkey，其次行情推送通道，
+        """本处理器优先向 VK 发布执行事件，其次通过行情推送通道发布，
         最后 None。"""
         transport = getattr(self, "rpc_transport", None)
         if getattr(transport, "name", None) == "serial":
             return transport if getattr(self, "exec_events_enabled", True) else None
-        valkey_client = self._identity_valkey()
-        if valkey_client is not None:
-            return valkey_client
+        vk_client = self._identity_vk()
+        if vk_client is not None:
+            return vk_client
         manager = getattr(self, "quote_subscription_manager", None)
         publisher = getattr(manager, "_on_push_publisher", None)
         if callable(publisher):
@@ -3540,15 +3540,15 @@ def decode_rpc_request_payload(text):
     return base64.b64decode(encoded.encode("ascii")).decode("utf-8")
 
 
-class ValkeyPubSubRpcService:
+class VkPubSubRpcService:
     """通过配置的传输层接收 RPC 请求和发送应答。"""
 
     def __init__(
         self,
-        valkey_client,
+        vk_client,
         handlers,
         account_id="",
-        response_valkey_client=None,
+        response_vk_client=None,
         request_channel_template="bigqmt:rpc:req:{account_id}",
         request_queue_template="bigqmt:rpc:queue:{account_id}",
         response_channel_template="bigqmt:rpc:resp:{account_id}:{request_id}",
@@ -3569,7 +3569,7 @@ class ValkeyPubSubRpcService:
         heavy_offload=True,
         heavy_codes_threshold=HEAVY_READ_CODES_THRESHOLD,
     ):
-        self.listen_valkey = valkey_client
+        self.listen_vk = vk_client
         # adjust 处理队列时，大查询可交给一个工作线程（#351）。
         # 启用后台接收线程时，这些查询直接在该线程执行。
         self.heavy_offload = bool(heavy_offload)
@@ -3587,7 +3587,7 @@ class ValkeyPubSubRpcService:
         # 批量处理时定期暂停队列，先确认并应答已提交的委托。
         self.settle_interval_seconds = max(0.0, float(settle_interval_seconds))
         self._expired_request_count = 0
-        self.valkey = response_valkey_client or valkey_client
+        self.vk = response_vk_client or vk_client
         self.handlers = handlers
         self.account_id = str(account_id or "")
         self.request_channel_template = request_channel_template
@@ -3620,14 +3620,14 @@ class ValkeyPubSubRpcService:
         self._thread = None
         self._queue_thread = None
         self._pubsub = None
-        # 通信由传输层负责。未指定 transport 时沿用传入的客户端和模板构造 Valkey 传输。
+        # 通信由传输层负责。未指定 transport 时沿用传入的客户端和模板构造 VK 传输。
         if transport is None:
-            from .transports.valkey_transport import ValkeyTransport
+            from .transports.vk_transport import VkTransport
 
-            transport = ValkeyTransport(
-                valkey_client,
+            transport = VkTransport(
+                vk_client,
                 account_id=self.account_id,
-                response_valkey_client=response_valkey_client,
+                response_vk_client=response_vk_client,
                 request_channel_template=request_channel_template,
                 request_queue_template=request_queue_template,
                 response_channel_template=response_channel_template,
@@ -3665,7 +3665,7 @@ class ValkeyPubSubRpcService:
     def start(self):
         self._running.set()
         # 传输层管理接收线程。enqueue_payload 分发已解码的请求并负责应答，
-        # 返回 None 以避免传输层重复发送。Valkey 的接收循环也可上交原始载荷。
+        # 返回 None 以避免传输层重复发送。VK 的接收循环也可上交原始载荷。
         self._transport.start_receiving(
             self.enqueue_payload,
             background_threads=self.background_threads,
@@ -3800,7 +3800,7 @@ class ValkeyPubSubRpcService:
     def _listen_loop(self):
         while self._running.is_set():
             try:
-                pubsub = self.listen_valkey.pubsub(ignore_subscribe_messages=True)
+                pubsub = self.listen_vk.pubsub(ignore_subscribe_messages=True)
                 self._pubsub = pubsub
                 pubsub.subscribe(self.request_channel)
                 if self.debug_log_limit > 0:
@@ -3836,7 +3836,7 @@ class ValkeyPubSubRpcService:
                     # 被推入后约 1ms 内就被取走，而不是等满
                     # queue_poll_interval_seconds。1s 的上限让我们能重新检查
                     # _running 以干净退出。
-                    item = self.listen_valkey.brpop(self.request_queue, timeout=1)
+                    item = self.listen_vk.brpop(self.request_queue, timeout=1)
                     if not self._running.is_set():
                         break
                     if not item:
@@ -4070,7 +4070,7 @@ class ValkeyPubSubRpcService:
     def _push_shadow_order_error(self, settlement):
         """终端从未记录过的异步委托的 order_error（#345）。
 
-        与废单回调路径相同的通道：有 valkey 客户端时走 valkey 执行事件通道，否则
+        与废单回调路径相同的通道：有 VK 客户端时走 VK 执行事件通道，否则
         走行情推送通道的 exec:* 主题。两个通道都没有的部署无法承载它——客户端在
         那里退回到同步结算。
         """
@@ -4127,14 +4127,14 @@ class ValkeyPubSubRpcService:
         return processed
 
     def drain_request_queue(self, max_items=20):
-        # 由 transport 直接拥有链路时交给它；对 Valkey 来说，transport 的排空驱动
+        # 由 transport 直接拥有链路时交给它；对 VK 来说，transport 的排空驱动
         # _handle_received_payload（它遵守就地/延后的分叉），与原始语义一致。
         transport_drain = getattr(self._transport, "drain_request_queue", None)
         if transport_drain is not None and not isinstance(self._transport, type(None)):
             return transport_drain(max_items=max_items)
         processed = 0
         for _ in range(int(max_items)):
-            item = self.listen_valkey.lpop(self.request_queue)
+            item = self.listen_vk.lpop(self.request_queue)
             if not item:
                 break
             self.process_request(self._loads(item))
@@ -4362,7 +4362,7 @@ class ValkeyPubSubRpcService:
         try:
             self._publish_response(request, response)
         except Exception:
-            # 响应发布失败（例如 valkey 故障）不能传播到 adjust 线程——QMT 在回调抛
+            # 响应发布失败（例如 VK 故障）不能传播到 adjust 线程——QMT 在回调抛
             # 异常时会停掉策略。请求已经执行；客户端只会看到超时。
             import traceback as _tb
             try:
@@ -4468,15 +4468,15 @@ class ValkeyPubSubRpcService:
             # 到达的每次发布——正常回复、RequestExpired 拒绝——都挂在这里。
             self._heavy_replies.put((request, response))
             return
-        # 交给 transport（ValkeyTransport 分发到 key/list/channel；ZMQ/MySQL
+        # 交给 transport（VkTransport 分发到 key/list/channel；ZMQ/MySQL
         # transport 走它们自己的回复路径）。
         self._transport.send_response(request, response)
         self._published_count = getattr(self._transport, "_published_count", self._published_count)
 
     def _response_clients(self):
-        clients = [self.valkey]
-        if self.listen_valkey is not self.valkey:
-            clients.append(self.listen_valkey)
+        clients = [self.vk]
+        if self.listen_vk is not self.vk:
+            clients.append(self.listen_vk)
         return clients
 
     def _write_response_key(self, response_key, ttl_seconds, payload):
@@ -4531,8 +4531,8 @@ class ValkeyPubSubRpcService:
         return receivers
 
 
-def call_valkey_rpc(
-    valkey_client,
+def call_vk_rpc(
+    vk_client,
     account_id,
     method,
     params=None,
@@ -4571,11 +4571,11 @@ def call_valkey_rpc(
     }
     payload = encode_rpc_request_payload(request)
     if str(transport or "queue").lower() in ("queue", "list", "blpop"):
-        valkey_client.rpush(request_queue, payload)
-        valkey_client.expire(request_queue, max(60, int(ttl_seconds)))
+        vk_client.rpush(request_queue, payload)
+        vk_client.expire(request_queue, max(60, int(ttl_seconds)))
         deadline = time.time() + float(timeout_seconds)
         while True:
-            raw_response = valkey_client.get(response_key)
+            raw_response = vk_client.get(response_key)
             if raw_response:
                 return loads_rpc_response(raw_response)
             remaining = deadline - time.time()
@@ -4583,29 +4583,29 @@ def call_valkey_rpc(
                 break
             wait_timeout = max(1, int(min(remaining, 1.0) + 0.999))
             try:
-                item = valkey_client.blpop(response_list, timeout=wait_timeout)
+                item = vk_client.blpop(response_list, timeout=wait_timeout)
             except Exception as exc:
-                if _is_valkey_timeout(exc):
+                if _is_vk_timeout(exc):
                     continue
                 raise
             if item:
                 raw_response = item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else item
                 try:
-                    valkey_client.delete(response_list)
+                    vk_client.delete(response_list)
                 except Exception:
                     pass
                 return loads_rpc_response(raw_response)
-        raw_response = valkey_client.get(response_key)
+        raw_response = vk_client.get(response_key)
         if raw_response:
             return loads_rpc_response(raw_response)
         raise TimeoutError(
-            "valkey rpc 超时: %s account_id=%s request_queue=%s" % (method, account_id, request_queue)
+            "VK rpc 超时: %s account_id=%s request_queue=%s" % (method, account_id, request_queue)
         )
 
-    pubsub = valkey_client.pubsub(ignore_subscribe_messages=True)
+    pubsub = vk_client.pubsub(ignore_subscribe_messages=True)
     try:
         pubsub.subscribe(response_channel)
-        valkey_client.publish(request_channel, payload)
+        vk_client.publish(request_channel, payload)
         deadline = time.time() + float(timeout_seconds)
         while True:
             remaining = deadline - time.time()
@@ -4617,10 +4617,10 @@ def call_valkey_rpc(
             response = loads_rpc_response(message.get("data"))
             if response.get("request_id") == request_id:
                 return response
-        raw_response = valkey_client.get(response_key)
+        raw_response = vk_client.get(response_key)
         if raw_response:
             return loads_rpc_response(raw_response)
-        raise TimeoutError("valkey rpc 超时: %s" % method)
+        raise TimeoutError("VK rpc 超时: %s" % method)
     finally:
         try:
             pubsub.close()

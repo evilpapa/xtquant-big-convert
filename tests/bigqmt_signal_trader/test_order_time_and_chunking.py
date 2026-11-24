@@ -183,7 +183,7 @@ class ChunkingClient(object):
         self.fail_codes = set(fail_codes)
         self.max_codes_per_call = max_codes_per_call
 
-    def _valkey(self):
+    def _vk(self):
         return None
 
     def call(self, method, params=None, account_id=None, timeout_seconds=None):

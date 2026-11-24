@@ -37,18 +37,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.models import OrderSnapshot, OrderSubmitResult  # noqa: E402
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     READ_METHODS,
     BigQmtRpcHandlers,
-    ValkeyPubSubRpcService,
-    call_valkey_rpc,
+    VkPubSubRpcService,
+    call_vk_rpc,
 )
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway  # noqa: E402
 
-from test_valkey_rpc import (  # noqa: E402  -- the established fakes
+from test_vk_rpc import (  # noqa: E402  -- the established fakes
     FakeMarketData,
     FakePositionProvider,
-    FakeValkey,
+    FakeVk,
 )
 
 
@@ -83,12 +83,12 @@ class _SlowGateway(DryRunOrderGateway):
 
 
 def _service(gateway, settle_timeout=5.0, **kwargs):
-    valkey_client = FakeValkey()
+    vk_client = FakeVk()
     handlers = BigQmtRpcHandlers(
         account_id="acct", market_data=FakeMarketData(),
         position_provider=FakePositionProvider(), order_gateway=gateway,
         allow_order_methods=True, order_settle_timeout_seconds=settle_timeout)
-    return valkey_client, ValkeyPubSubRpcService(valkey_client, handlers, account_id="acct", **kwargs)
+    return vk_client, VkPubSubRpcService(vk_client, handlers, account_id="acct", **kwargs)
 
 
 def _order(request_id, timeout_seconds=None, received_at=None, stock="600000.SH", method="order_stock"):
@@ -103,8 +103,8 @@ def _order(request_id, timeout_seconds=None, received_at=None, stock="600000.SH"
     return payload
 
 
-def _reply(valkey_client, request_id):
-    raw = valkey_client.kv.get("bigqmt:rpc:resp:acct:%s" % request_id)
+def _reply(vk_client, request_id):
+    raw = vk_client.kv.get("bigqmt:rpc:resp:acct:%s" % request_id)
     return json.loads(raw) if raw else None
 
 
@@ -112,14 +112,14 @@ class ExpiredRequestIsRefusedTest(unittest.TestCase):
     def test_a_request_past_its_deadline_is_refused_not_dispatched(self):
         """The reported outcome: timed out at 6s, placed at 7s. Never again."""
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         # Received 7s ago by the server clock, caller waited 6s.
         service.enqueue_payload(_order("late", timeout_seconds=6.0, received_at=time.time() - 7.0))
 
         service.drain_pending()
 
         self.assertEqual([], gateway.submitted, "an expired order was placed")
-        reply = _reply(valkey_client, "late")
+        reply = _reply(vk_client, "late")
         self.assertFalse(reply["ok"])
         self.assertIn("RequestExpired", reply["error"])
         self.assertIn("NOT dispatched", reply["error"])
@@ -129,19 +129,19 @@ class ExpiredRequestIsRefusedTest(unittest.TestCase):
         has gone (passorder + one settle tick). Refuse it while the caller
         can still hear the refusal."""
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway, expire_margin_seconds=1.0)
+        vk_client, service = _service(gateway, expire_margin_seconds=1.0)
         service.enqueue_payload(_order("edge", timeout_seconds=6.0, received_at=time.time() - 5.1))
 
         service.drain_pending()
 
         self.assertEqual([], gateway.submitted)
-        self.assertIn("RequestExpired", _reply(valkey_client, "edge")["error"])
+        self.assertIn("RequestExpired", _reply(vk_client, "edge")["error"])
 
     def test_the_margin_never_eats_a_short_timeout(self):
         """A 2s timeout with a 1s margin would refuse at 1s; cap it at a
         quarter of the timeout."""
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway, expire_margin_seconds=1.0)
+        vk_client, service = _service(gateway, expire_margin_seconds=1.0)
         service.enqueue_payload(_order("short", timeout_seconds=2.0, received_at=time.time() - 1.2))
 
         service.drain_pending()
@@ -150,7 +150,7 @@ class ExpiredRequestIsRefusedTest(unittest.TestCase):
 
     def test_a_request_inside_its_deadline_runs(self):
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("fresh", timeout_seconds=6.0, received_at=time.time() - 1.0))
 
         service.drain_pending()
@@ -161,7 +161,7 @@ class ExpiredRequestIsRefusedTest(unittest.TestCase):
         """Clients older than this change send none; they keep the old
         contract rather than gaining a refusal they cannot interpret."""
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("old-client", received_at=time.time() - 3600.0))
 
         service.drain_pending()
@@ -173,7 +173,7 @@ class ExpiredRequestIsRefusedTest(unittest.TestCase):
         from now, so a fresh one runs and one that then waits too long does
         not."""
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("stamped", timeout_seconds=6.0))
 
         queued = service.pending.queue[0]
@@ -185,7 +185,7 @@ class ExpiredRequestIsRefusedTest(unittest.TestCase):
         """Refusing a cancel protects nothing; running it late is exactly
         what the caller who gave up on it still wants."""
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload({
             "request_id": "late-cancel", "account_id": "acct",
             "method": "cancel_order_stock_sysid", "params": {"order_sysid": "sys-1"},
@@ -197,7 +197,7 @@ class ExpiredRequestIsRefusedTest(unittest.TestCase):
 
     def test_the_refusal_is_the_remembered_outcome(self):
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("late", timeout_seconds=6.0, received_at=time.time() - 7.0))
         service.drain_pending()
 
@@ -214,12 +214,12 @@ class RequestOutcomeTest(unittest.TestCase):
 
     def test_unknown_before_the_server_saw_it(self):
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         self.assertEqual("unknown", service._request_outcome({"request_id": "nope"})["state"])
 
     def test_dispatched_while_the_id_is_still_being_looked_up(self):
         gateway = _SlowGateway(reveal_seconds=60.0)
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("ord"))
         service.drain_pending()
 
@@ -229,7 +229,7 @@ class RequestOutcomeTest(unittest.TestCase):
 
     def test_settled_carries_the_reply_the_caller_missed(self):
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("ord"))
         service.drain_pending()
 
@@ -239,29 +239,29 @@ class RequestOutcomeTest(unittest.TestCase):
 
     def test_it_is_served_through_process_request(self):
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("ord"))
         service.drain_pending()
 
         service.process_request({"request_id": "q", "account_id": "acct",
                                  "method": "get_request_outcome",
                                  "params": {"request_id": "ord"}})
-        reply = _reply(valkey_client, "q")
+        reply = _reply(vk_client, "q")
         self.assertTrue(reply["ok"], reply["error"])
         self.assertEqual("settled", reply["data"]["state"])
 
     def test_it_requires_a_request_id(self):
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.process_request({"request_id": "q", "account_id": "acct",
                                  "method": "get_request_outcome", "params": {}})
-        self.assertFalse(_reply(valkey_client, "q")["ok"])
+        self.assertFalse(_reply(vk_client, "q")["ok"])
 
 
 class DrainBudgetTest(unittest.TestCase):
     def test_the_batch_stops_at_the_budget_and_leaves_the_rest_queued(self):
         gateway = _SlowGateway(passorder_seconds=0.05)
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         for i in range(10):
             service.enqueue_payload(_order("o%d" % i))
 
@@ -276,7 +276,7 @@ class DrainBudgetTest(unittest.TestCase):
 
     def test_at_least_one_request_runs_however_small_the_budget(self):
         gateway = _SlowGateway(passorder_seconds=0.02)
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         service.enqueue_payload(_order("o1"))
         service.enqueue_payload(_order("o2"))
 
@@ -285,7 +285,7 @@ class DrainBudgetTest(unittest.TestCase):
 
     def test_no_budget_keeps_the_old_unbounded_batch(self):
         gateway = _SlowGateway(passorder_seconds=0.01)
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         for i in range(5):
             service.enqueue_payload(_order("o%d" % i))
 
@@ -295,7 +295,7 @@ class DrainBudgetTest(unittest.TestCase):
     def test_early_orders_reply_while_the_batch_is_still_running(self):
         """Ready at 0.05s, the first order used to leave with the last."""
         gateway = _SlowGateway(passorder_seconds=0.05)
-        valkey_client, service = _service(gateway, settle_interval_seconds=0.1)
+        vk_client, service = _service(gateway, settle_interval_seconds=0.1)
         for i in range(6):
             service.enqueue_payload(_order("o%d" % i))
         replied_at = {}
@@ -318,7 +318,7 @@ class DrainBudgetTest(unittest.TestCase):
 class SharedSnapshotTest(unittest.TestCase):
     def test_one_settle_pass_queries_once_for_every_pending_order(self):
         gateway = _SlowGateway(reveal_seconds=60.0)     # never lands: every one polls
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         for i in range(8):
             service.enqueue_payload(_order("o%d" % i))
         service.drain_pending()
@@ -332,7 +332,7 @@ class SharedSnapshotTest(unittest.TestCase):
 
     def test_the_shared_snapshot_still_settles_each_order_to_its_own_id(self):
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         for i in range(4):
             service.enqueue_payload(_order("o%d" % i, stock="60000%d.SH" % i))
 
@@ -340,28 +340,28 @@ class SharedSnapshotTest(unittest.TestCase):
 
         self.assertEqual(0, service.pending_settlement_count())
         for i in range(4):
-            self.assertEqual("sys-%d" % (i + 1), _reply(valkey_client, "o%d" % i)["data"]["order_sys_id"])
+            self.assertEqual("sys-%d" % (i + 1), _reply(vk_client, "o%d" % i)["data"]["order_sys_id"])
 
     def test_a_final_lookup_reads_fresh(self):
         """'Not in the system' is a verdict; it must not rest on a list
         fetched for another order earlier in the pass."""
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway, settle_timeout=0.0)
+        vk_client, service = _service(gateway, settle_timeout=0.0)
         service.enqueue_payload(_order("o0"))
         service.enqueue_payload(_order("o1"))
         service.drain_pending()
 
         # Both settled on their (fresh, final) lookups: two queries, not one.
         self.assertEqual(0, service.pending_settlement_count())
-        self.assertEqual("sys-1", _reply(valkey_client, "o0")["data"]["order_sys_id"])
-        self.assertEqual("sys-2", _reply(valkey_client, "o1")["data"]["order_sys_id"])
+        self.assertEqual("sys-1", _reply(vk_client, "o0")["data"]["order_sys_id"])
+        self.assertEqual("sys-2", _reply(vk_client, "o1")["data"]["order_sys_id"])
         self.assertGreaterEqual(gateway.queries, 2)
 
     def test_multi_account_settlements_do_not_share_a_snapshot(self):
         from bigqmt_signal_trader.models import OrderRequest, OrderSubmitResult
-        from bigqmt_signal_trader.valkey_rpc import OrderSettlement
+        from bigqmt_signal_trader.vk_rpc import OrderSettlement
         gateway = _SlowGateway()
-        valkey_client, service = _service(gateway)
+        vk_client, service = _service(gateway)
         seen = []
         original = gateway.query_orders
 
@@ -385,7 +385,7 @@ class SharedSnapshotTest(unittest.TestCase):
 
 class ClientEnvelopeTest(unittest.TestCase):
     def test_the_helper_client_states_its_wait(self):
-        class QueueValkey(object):
+        class QueueVk(object):
             def __init__(self):
                 self.queued = []
                 self.kv = {"bigqmt:rpc:resp:acct:rid-1": json.dumps({"ok": True, "data": 1})}
@@ -399,11 +399,11 @@ class ClientEnvelopeTest(unittest.TestCase):
             def get(self, key):
                 return self.kv.get(key)
 
-        valkey_client = QueueValkey()
-        call_valkey_rpc(valkey_client, "acct", "ping", timeout_seconds=4.5, request_id="rid-1")
+        vk_client = QueueVk()
+        call_vk_rpc(vk_client, "acct", "ping", timeout_seconds=4.5, request_id="rid-1")
 
-        from bigqmt_signal_trader.valkey_rpc import decode_rpc_request_payload
-        request = json.loads(decode_rpc_request_payload(valkey_client.queued[0]))
+        from bigqmt_signal_trader.vk_rpc import decode_rpc_request_payload
+        request = json.loads(decode_rpc_request_payload(vk_client.queued[0]))
         self.assertEqual(4.5, request["timeout_seconds"])
         self.assertEqual("rid-1", request["request_id"])
 

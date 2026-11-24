@@ -1,13 +1,13 @@
 # coding: utf-8
-"""#343: a reply from the background listener thread must be ONE Valkey round
+"""#343: a reply from the background listener thread must be ONE VK round
 trip, not eight.
 
-Every Valkey command on the listener thread releases the GIL for the socket
+Every VK command on the listener thread releases the GIL for the socket
 and has to win it back from QMT's main thread afterwards, and that costs
 about one adjust tick each (#104). ``send_response`` used to run
 SETEX + RPUSH + EXPIRE + PUBLISH on the response client *and again* on the
 listen client -- eight round trips, eight GIL re-acquisitions. Measured on
-the live terminal (0.3.50, valkey, rpc_background_threads=True,
+the live terminal (0.3.50, VK, rpc_background_threads=True,
 100nMilliSecond): ``ping breakdown ... publish=500-700ms`` for a handler
 that took 0.0ms, and every inline read answered in 0.5-0.8s while the
 deferred ones answered from the adjust thread in 7ms.
@@ -25,7 +25,7 @@ SRC = os.path.join(os.path.dirname(__file__), "..", "..", "src")
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
-from bigqmt_signal_trader.transports.valkey_transport import ValkeyTransport  # noqa: E402
+from bigqmt_signal_trader.transports.vk_transport import VkTransport  # noqa: E402
 
 
 class _Pipeline(object):
@@ -56,14 +56,14 @@ class _Pipeline(object):
     def execute(self):
         self.owner.round_trips += 1
         if self.owner.fail:
-            raise ConnectionError("valkey down")
+            raise ConnectionError("VK down")
         results = []
         for command in self.commands:
             results.append(self.owner._apply(command))
         return results
 
 
-class _CountingValkey(object):
+class _CountingVk(object):
     """Counts network round trips: one per direct command, one per
     pipeline.execute()."""
 
@@ -95,7 +95,7 @@ class _CountingValkey(object):
     def _direct(self, *command):
         self.round_trips += 1
         if self.fail:
-            raise ConnectionError("valkey down")
+            raise ConnectionError("VK down")
         return self._apply(command)
 
     def setex(self, key, ttl, value):
@@ -117,7 +117,7 @@ class _CountingValkey(object):
         return _Pipeline(self)
 
 
-class _LegacyValkey(_CountingValkey):
+class _LegacyVk(_CountingVk):
     """A client with no pipeline() at all (the older test fakes)."""
 
     pipeline = None
@@ -139,10 +139,10 @@ def _response():
 
 
 def test_reply_is_one_round_trip_on_one_client():
-    response_client = _CountingValkey()
-    listen_client = _CountingValkey()
-    transport = ValkeyTransport(listen_client, account_id="acc",
-                               response_valkey_client=response_client)
+    response_client = _CountingVk()
+    listen_client = _CountingVk()
+    transport = VkTransport(listen_client, account_id="acc",
+                               response_vk_client=response_client)
 
     transport.send_response(_request(), _response())
 
@@ -159,10 +159,10 @@ def test_reply_is_one_round_trip_on_one_client():
 
 
 def test_reply_falls_back_to_listen_client_when_response_client_fails():
-    response_client = _CountingValkey(fail=True)
-    listen_client = _CountingValkey()
-    transport = ValkeyTransport(listen_client, account_id="acc",
-                               response_valkey_client=response_client)
+    response_client = _CountingVk(fail=True)
+    listen_client = _CountingVk()
+    transport = VkTransport(listen_client, account_id="acc",
+                               response_vk_client=response_client)
 
     transport.send_response(_request(), _response())
 
@@ -173,10 +173,10 @@ def test_reply_falls_back_to_listen_client_when_response_client_fails():
 
 
 def test_reply_raises_when_every_client_fails():
-    response_client = _CountingValkey(fail=True)
-    listen_client = _CountingValkey(fail=True)
-    transport = ValkeyTransport(listen_client, account_id="acc",
-                               response_valkey_client=response_client)
+    response_client = _CountingVk(fail=True)
+    listen_client = _CountingVk(fail=True)
+    transport = VkTransport(listen_client, account_id="acc",
+                               response_vk_client=response_client)
 
     with pytest.raises(ConnectionError):
         transport.send_response(_request(), _response())
@@ -185,8 +185,8 @@ def test_reply_raises_when_every_client_fails():
 def test_reply_without_pipeline_support_still_lands():
     """A client without pipeline() (older fakes, exotic wrappers) keeps the
     per-command path and the reply still arrives."""
-    client = _LegacyValkey()
-    transport = ValkeyTransport(client, account_id="acc")
+    client = _LegacyVk()
+    transport = VkTransport(client, account_id="acc")
 
     transport.send_response(_request(), _response())
 
@@ -196,8 +196,8 @@ def test_reply_without_pipeline_support_still_lands():
 
 
 def test_reply_only_writes_the_targets_the_request_named():
-    client = _CountingValkey()
-    transport = ValkeyTransport(client, account_id="acc")
+    client = _CountingVk()
+    transport = VkTransport(client, account_id="acc")
     request = _request()
     request.pop("reply_list")
 

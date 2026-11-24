@@ -47,7 +47,7 @@ class _FakeExecEvents(object):
     normalize_order_event = staticmethod(exec_events.normalize_order_event)
     normalize_trade_event = staticmethod(exec_events.normalize_trade_event)
     normalize_order_error_event = staticmethod(exec_events.normalize_order_error_event)
-    enrich_order_identity = staticmethod(lambda valkey_client, account_id, event: event)
+    enrich_order_identity = staticmethod(lambda vk_client, account_id, event: event)
     format_raw_snapshot = staticmethod(lambda *args: "")
     raw_field_snapshot = staticmethod(lambda *args: None)
 
@@ -72,11 +72,11 @@ class _StrategyState(unittest.TestCase):
     def setUp(self):
         self._saved = {name: getattr(strategy, name)
                        for name in ("_build_config", "_exec_event_sink",
-                                    "_exec_event_valkey", "_exec_events")}
+                                    "_exec_event_vk", "_exec_events")}
         self._sink = _Sink()
         strategy._build_config = lambda: CFG
         strategy._exec_event_sink = lambda config: self._sink
-        strategy._exec_event_valkey = lambda config: None
+        strategy._exec_event_vk = lambda config: None
         strategy._exec_events = _FakeExecEvents()
         strategy._held_presysid_orders.clear()
         strategy._instrument_name_cache.clear()

@@ -390,7 +390,7 @@ def build_quote_subscription_service(
     context_info,
     transport_name="valkey",
     account_id="",
-    valkey_client=None,
+    vk_client=None,
     enabled=True,
     heartbeat_timeout_seconds=30.0,
     time_func=None,
@@ -409,7 +409,7 @@ def build_quote_subscription_service(
     if not enabled:
         return None
     from .quote_push_channel import (
-        NullQuotePushChannel, ValkeyQuotePushChannel,
+        NullQuotePushChannel, VkQuotePushChannel,
     )
 
     source = ContextInfoQuoteSource(context_info)
@@ -418,13 +418,13 @@ def build_quote_subscription_service(
     if push_channel is not None:
         channel = push_channel
         push_endpoint = ""
-    elif valkey_client is None:
-        # Valkey 被关掉的部署使用静默空通道，而不是
-        # ValkeyQuotePushChannel(None) 每条事件一行 AttributeError。
+    elif vk_client is None:
+        # VK 被关掉的部署使用静默空通道，而不是
+        # VkQuotePushChannel(None) 每条事件一行 AttributeError。
         channel = NullQuotePushChannel()
         push_endpoint = ""
     else:
-        channel = ValkeyQuotePushChannel(valkey_client, account_id=account_id, account_ids=served)
+        channel = VkQuotePushChannel(vk_client, account_id=account_id, account_ids=served)
         push_endpoint = ""
     manager = QuoteSubscriptionManager(
         source,

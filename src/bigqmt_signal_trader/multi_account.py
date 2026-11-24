@@ -71,7 +71,7 @@ class MultiAccountRpcServiceManager:
     """Manages primary + secondary RPC services for multi-account deployment.
 
     Delegates start/stop/drain to all services.  Exposes the primary service's
-    attributes (``valkey``, ``listen_valkey``, ``account_id``, etc.) so that the
+    attributes (``vk``, ``listen_vk``, ``account_id``, etc.) so that the
     strategy module can treat a single-service or multi-service deployment
     identically.
     """
@@ -81,8 +81,8 @@ class MultiAccountRpcServiceManager:
         self.handlers = handlers
         self._primary = services[0]
         self.account_id = services[0].account_id
-        self.valkey = services[0].valkey
-        self.listen_valkey = services[0].listen_valkey
+        self.vk = services[0].vk
+        self.listen_vk = services[0].listen_vk
         # QMT 只为绑定的主账号触发委托和成交回调，其他账号通过轮询获取回报（#320）。
         self.exec_poller = exec_poller
 
@@ -99,26 +99,26 @@ class MultiAccountRpcServiceManager:
                 s.stop()
             except Exception:
                 pass
-            # Close secondary's transport listen_valkey so zombie brpop/pubsub
+            # Close secondary's transport listen_vk so zombie brpop/pubsub
             # threads exit immediately instead of surviving the join timeout
             # and competing for requests after reload.  The primary's
-            # listen_valkey is shared with the service-level attribute and
+            # listen_vk is shared with the service-level attribute and
             # must NOT be closed here — it is managed by the primary's own
             # stop() lifecycle.
             if s is not self._primary:
                 transport = getattr(s, "_transport", None)
                 if transport is not None:
-                    lr = getattr(transport, "listen_valkey", None)
+                    lr = getattr(transport, "listen_vk", None)
                     if lr is not None:
                         try:
                             lr.close()
                         except Exception:
                             pass
-                # Also close the service-level listen_valkey if it is a
+                # Also close the service-level listen_vk if it is a
                 # separate connection (not shared with primary).
-                slr = getattr(s, "listen_valkey", None)
+                slr = getattr(s, "listen_vk", None)
                 if slr is not None and slr is not getattr(
-                    self._primary, "listen_valkey", None
+                    self._primary, "listen_vk", None
                 ):
                     try:
                         slr.close()
@@ -155,7 +155,7 @@ class MultiAccountRpcServiceManager:
 
 
 def build_multi_account_rpc_service(context_info, app, config, build_single_fn):
-    """Build one ``ValkeyPubSubRpcService`` per account in the type map.
+    """Build one ``VkPubSubRpcService`` per account in the type map.
 
     Falls back to the single-service builder (``build_single_fn``) when the
     map is empty or has only one entry — zero behavior change for
@@ -170,7 +170,7 @@ def build_multi_account_rpc_service(context_info, app, config, build_single_fn):
 
     Returns
     -------
-    ValkeyPubSubRpcService or MultiAccountRpcServiceManager or None
+    VkPubSubRpcService or MultiAccountRpcServiceManager or None
     """
     from .account_type_map import get_account_type_map
 
@@ -222,7 +222,7 @@ def _push_sink_from_handlers(handlers):
 
 
 def _build_secondary_exec_poller(context_info, primary, secondary_accounts, config):
-    """The #320 poller, or None when exec events are off / no valkey sink /
+    """The #320 poller, or None when exec events are off / no VK sink /
     the gateway cannot read native rows / the interval is 0."""
     exec_config = dict(config.get("exec_events") or {})
     enabled = exec_config.get("enabled", True)
@@ -239,10 +239,10 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
         return None
     gateway = getattr(primary.handlers, "order_gateway", None)
     query_rows = getattr(gateway, "query_native_rows", None)
-    sink = getattr(primary, "valkey", None)
-    identity_valkey = sink
+    sink = getattr(primary, "vk", None)
+    identity_vk = sink
     if sink is None:
-        # 没有 Valkey 时，可通过推送通道的 exec:* 主题发送交易回报（#76）。
+        # 没有 VK 时，可通过推送通道的 exec:* 主题发送交易回报（#76）。
         sink = _push_sink_from_handlers(primary.handlers)
     if not callable(query_rows) or sink is None:
         logger.warning("多账号：无法轮询附属账号交易回报（网关=%s，发布端可用=%s）",
@@ -250,7 +250,7 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
         return None
     from .secondary_exec_poll import SecondaryExecPoller, build_row_publisher
 
-    publish = build_row_publisher(sink, context_info=context_info, identity_valkey=identity_valkey)
+    publish = build_row_publisher(sink, context_info=context_info, identity_vk=identity_vk)
     poller = SecondaryExecPoller(
         secondary_accounts, query_rows, publish, interval_seconds=interval,
         log=lambda text: logger.warning("多账号：%s", text))
@@ -260,9 +260,9 @@ def _build_secondary_exec_poller(context_info, primary, secondary_accounts, conf
 
 
 def _build_secondary(primary, account_id, config):
-    """为附属账号创建与主账号共享处理器的 ValkeyPubSubRpcService。
+    """为附属账号创建与主账号共享处理器的 VkPubSubRpcService。
 
-    附属账号有独立的 Valkey 连接，停止时不会影响主账号的监听器。
+    附属账号有独立的 VK 连接，停止时不会影响主账号的监听器。
     SecondaryHandlersProxy 将附属账号的 account_id 注入每个请求。
     """
     rpc_config = dict((config.get("rpc") or {}))
@@ -272,28 +272,28 @@ def _build_secondary(primary, account_id, config):
                        transport_name, account_id[:3])
         return None
     try:
-        from .valkey_rpc import ValkeyPubSubRpcService
-        from .transports.valkey_transport import ValkeyTransport
-        from .adapters import valkey_common
+        from .vk_rpc import VkPubSubRpcService
+        from .transports.vk_transport import VkTransport
+        from .adapters import vk_common
     except ImportError:
         logger.warning("多账号：导入依赖失败，无法创建附属账号服务")
         return None
 
-    # 附属账号沿用主账号的 Valkey 地址、数据库和凭据，使用独立连接。
+    # 附属账号沿用主账号的 VK 地址、数据库和凭据，使用独立连接。
     try:
-        valkey_config = dict(config.get("valkey") or {})
-        valkey_config.update(dict(rpc_config.get("valkey") or {}))
-        if valkey_config.get("socket_timeout") in (None, ""):
-            valkey_config["socket_timeout"] = 10
-        secondary_listen_valkey = valkey_common.build_valkey_client(valkey_config)
+        vk_config = dict(config.get("valkey") or {})
+        vk_config.update(dict(rpc_config.get("valkey") or {}))
+        if vk_config.get("socket_timeout") in (None, ""):
+            vk_config["socket_timeout"] = 10
+        secondary_listen_vk = vk_common.build_vk_client(vk_config)
     except Exception:
         # Fallback: share primary's connection (suboptimal but functional)
-        secondary_listen_valkey = primary.listen_valkey
+        secondary_listen_vk = primary.listen_vk
 
-    transport = ValkeyTransport(
-        valkey_client=secondary_listen_valkey,
+    transport = VkTransport(
+        vk_client=secondary_listen_vk,
         account_id=account_id,
-        response_valkey_client=primary.valkey,
+        response_vk_client=primary.vk,
         request_channel_template=rpc_config.get(
             "request_channel_template", "bigqmt:rpc:req:{account_id}"),
         request_queue_template=rpc_config.get(
@@ -311,9 +311,9 @@ def _build_secondary(primary, account_id, config):
         print_prefix="[bigqmt_rpc_2nd]",
     )
 
-    return ValkeyPubSubRpcService(
-        valkey_client=secondary_listen_valkey,
-        response_valkey_client=primary.valkey,
+    return VkPubSubRpcService(
+        vk_client=secondary_listen_vk,
+        response_vk_client=primary.vk,
         handlers=SecondaryHandlersProxy(primary.handlers, account_id),
         account_id=account_id,
         request_channel_template=rpc_config.get(

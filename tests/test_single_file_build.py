@@ -2,7 +2,7 @@
 
 Some brokers' QMT sandboxes reject external imports and file loading outright,
 so the only way in is one self-contained strategy file. tools/build_single_file
-and tools/build_no_valkey_single_file_flat generate those.
+and tools/build_no_vk_single_file_flat generate those.
 
 The flat builder execs every embedded module inside a ``def _mod_N():`` body.
 That is precisely the shape that made ``from xtquant.xtconstant import *`` a
@@ -54,7 +54,7 @@ def build(kind):
 
 
 class BuildsSucceedTest(unittest.TestCase):
-    def test_valkey_build_compiles(self):
+    def test_vk_build_compiles(self):
         path, _source = build("valkey")
         with open(path, "rb") as stream:
             compile(stream.read(), path, "exec")
@@ -173,7 +173,7 @@ class EmbeddedContentTest(unittest.TestCase):
         top_dir, package_dir = build_single_file.resolve_source_dirs()
         with self.assertRaises(SystemExit):
             build_single_file.collect_package(
-                package_dir, top_dir, excluded=("valkey_common.py",))
+                package_dir, top_dir, excluded=("vk_common.py",))
 
     pass
 
@@ -183,7 +183,7 @@ class SimulatorTest(unittest.TestCase):
         return subprocess.run(
             [sys.executable, os.path.join(TOOLS, "simulate_qmt.py"), *args],
             cwd=ROOT,
-            env=dict(os.environ, BIGQMT_ACCOUNT_ID="ignored", BIGQMT_VALKEY_PORT="invalid"),
+            env=dict(os.environ, BIGQMT_ACCOUNT_ID="ignored", BIGQMT_VK_PORT="invalid"),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, encoding="utf-8", timeout=15,
         )
 

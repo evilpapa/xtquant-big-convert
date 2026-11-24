@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-ENTRIES = (("BIGQMT_VALKEY_DRYRUN.py", "utf-8"),)
+ENTRIES = (("BIGQMT_VK_DRYRUN.py", "utf-8"),)
 
 
 class _FakeSys(object):

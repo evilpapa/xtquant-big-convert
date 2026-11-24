@@ -1,27 +1,27 @@
 # coding: utf-8
-"""测量 Valkey RPC 的端到端延迟。"""
+"""测量 VK RPC 的端到端延迟。"""
 import argparse
 import os
 import statistics
 import time
 import uuid
 
-from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
-from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
+from bigqmt_signal_trader.adapters.vk_common import build_vk_client
+from bigqmt_signal_trader.vk_rpc import call_vk_rpc
 
 
-def _load_valkey_config():
+def _load_vk_config():
     """从客户端配置或环境变量读取连接参数。"""
     try:
         from bigqmt_signal_trader.xtquant_compat import load_client_config
 
-        config = load_client_config().get("valkey_config") or {}
+        config = load_client_config().get("vk_config") or {}
     except Exception:
         config = {}
     return dict(config, socket_timeout=8)
 
 
-VALKEY = _load_valkey_config()
+VK_CONFIG = _load_vk_config()
 ACCOUNT = os.environ.get("BIGQMT_ACCOUNT_ID", "")
 
 
@@ -43,30 +43,30 @@ def _stats(name, lats):
     )
 
 
-def bench_valkey(n):
-    r = build_valkey_client(VALKEY)
+def bench_vk(n):
+    r = build_vk_client(VK_CONFIG)
     # 预热并检查连通性
     try:
-        call_valkey_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
+        call_vk_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
     except Exception as e:
-        print("无法连接 Valkey，跳过该项测试：%s" % e)
+        print("无法连接 VK，跳过该项测试：%s" % e)
         return
     lats = []
     for _ in range(n):
         t0 = time.time()
-        call_valkey_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
+        call_vk_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
         lats.append((time.time() - t0) * 1000)
-    _stats("valkey", lats)
+    _stats("VK", lats)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("-n", "--count", type=int, default=100, help="每种传输方式的请求次数")
-    ap.add_argument("--skip-valkey", action="store_true", help="跳过 Valkey 测试")
+    ap.add_argument("--skip-vk", action="store_true", help="跳过 VK 测试")
     args = ap.parse_args()
     print("=== 传输延迟对比（每项 %d 次） ===" % args.count)
-    if not args.skip_valkey:
-        bench_valkey(args.count)
+    if not args.skip_vk:
+        bench_vk(args.count)
 
 
 if __name__ == "__main__":

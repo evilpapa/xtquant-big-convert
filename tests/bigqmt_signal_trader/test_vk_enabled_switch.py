@@ -1,29 +1,29 @@
 # coding: utf-8
-"""A deployment must be able to say it has no valkey (#147).
+"""A deployment must be able to say it has no VK (#147).
 
-Every consumer of the valkey client already guards the same way:
+Every consumer of the VK client already guards the same way:
 
-    valkey_config = dict(config.get("valkey") or {})
-    if not valkey_config:
+    vk_config = dict(config.get("valkey") or {})
+    if not vk_config:
         return None
 
 and every one of those guards was dead code, because configure_runtime emitted
 the block unconditionally from module defaults:
 
-    valkey={"host": VALKEY_HOST,     # "127.0.0.1"
-           "port": VALKEY_PORT,     # 6379
+    valkey={"host": VK_HOST,     # "127.0.0.1"
+           "port": VK_PORT,     # 6379
            ...}
 
-So config["valkey"] was never empty and "I have no valkey" was not expressible.
-The reporter of #145 -- whose broker QMT does not whitelist the valkey import at
-all -- had no lever except patching _exec_event_valkey to key off the transport,
+So config["valkey"] was never empty, even for deployments without VK.
+The reporter of #145 -- whose broker QMT does not whitelist the VK import at
+all -- had no lever except patching _exec_event_vk to key off the transport,
 which would have killed four unrelated features on zmq (the order-identity
 store and download jobs were made transport-independent one day earlier, in
 f20c58c and 053c9dc, for exactly the opposite reason).
 
-valkey_enabled=False now empties the block, and the existing guards do the rest:
-nothing dials valkey even once. transport=valkey overrides it, because there the
-bridge itself needs valkey and honouring the switch would break the RPC rather
+vk_enabled=False now empties the block, and the existing guards do the rest:
+nothing dials VK even once. transport=valkey overrides it, because there the
+bridge itself needs VK and honouring the switch would break the RPC rather
 than the optional extras.
 """
 
@@ -35,12 +35,12 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-import bigqmt_signal_trader_valkey_rpc_runtime as runtime
+import bigqmt_signal_trader_vk_rpc_runtime as runtime
 
 
 class _RuntimeState(unittest.TestCase):
-    KEYS = ("VALKEY_ENABLED", "RPC_TRANSPORT", "VALKEY_HOST", "VALKEY_PORT", "VALKEY_DB",
-            "VALKEY_ENABLED_EXPLICIT")
+    KEYS = ("VK_ENABLED", "RPC_TRANSPORT", "VK_HOST", "VK_PORT", "VK_DB",
+            "VK_ENABLED_EXPLICIT")
 
     def setUp(self):
         self._saved = {k: getattr(runtime, k) for k in self.KEYS}
@@ -50,30 +50,30 @@ class _RuntimeState(unittest.TestCase):
             setattr(runtime, k, v)
 
     def _configure(self, enabled, transport, explicit=True):
-        runtime.VALKEY_ENABLED = enabled
-        runtime.VALKEY_ENABLED_EXPLICIT = explicit
+        runtime.VK_ENABLED = enabled
+        runtime.VK_ENABLED_EXPLICIT = explicit
         runtime.RPC_TRANSPORT = transport
 
 
-class ValkeyBlockTest(_RuntimeState):
+class VkBlockTest(_RuntimeState):
 
 
     def test_disabled_on_shm(self):
         for transport in ("shm",):
             self._configure(False, transport)
 
-            self.assertEqual(runtime._valkey_block(), {}, transport)
+            self.assertEqual(runtime._vk_block(), {}, transport)
 
-    def test_the_valkey_transport_overrides_the_switch(self):
-        """That deployment has no bridge at all without valkey; honouring the
+    def test_the_vk_transport_overrides_the_switch(self):
+        """That deployment has no bridge at all without VK; honouring the
         switch would break the RPC instead of the optional extras."""
         for transport in ("valkey", "", "default"):
             self._configure(False, transport)
 
-            self.assertNotEqual(runtime._valkey_block(), {}, transport)
+            self.assertNotEqual(runtime._vk_block(), {}, transport)
 
     def test_the_default_keeps_existing_deployments_unchanged(self):
-        self.assertTrue(self._saved["VALKEY_ENABLED"])
+        self.assertTrue(self._saved["VK_ENABLED"])
 
 
 class ConfigReadingTest(_RuntimeState):
@@ -88,34 +88,34 @@ class ConsumersSeeAnEmptyBlockTest(_RuntimeState):
     def test_the_strategy_builds_no_client_from_an_empty_block(self):
         import bigqmt_signal_trader_strategy as strategy
 
-        saved = strategy._exec_event_valkey_client
+        saved = strategy._exec_event_vk_client
         service = strategy._rpc_service
         try:
-            strategy._exec_event_valkey_client = None
+            strategy._exec_event_vk_client = None
             strategy._rpc_service = None
 
-            self.assertIsNone(strategy._exec_event_valkey({"valkey": {}}))
-            self.assertIsNone(strategy._exec_event_valkey({}))
+            self.assertIsNone(strategy._exec_event_vk({"valkey": {}}))
+            self.assertIsNone(strategy._exec_event_vk({}))
         finally:
-            strategy._exec_event_valkey_client = saved
+            strategy._exec_event_vk_client = saved
             strategy._rpc_service = service
 
     def test_a_populated_block_still_builds_one(self):
-        """The switch must not break deployments that do have valkey."""
+        """The switch must preserve deployments that use VK."""
         import bigqmt_signal_trader_strategy as strategy
 
-        saved = strategy._exec_event_valkey_client
+        saved = strategy._exec_event_vk_client
         service = strategy._rpc_service
         try:
-            strategy._exec_event_valkey_client = None
+            strategy._exec_event_vk_client = None
             strategy._rpc_service = None
 
-            client = strategy._exec_event_valkey(
+            client = strategy._exec_event_vk(
                 {"valkey": {"host": "127.0.0.1", "port": 6379, "db": 5}})
 
             self.assertIsNotNone(client)
         finally:
-            strategy._exec_event_valkey_client = saved
+            strategy._exec_event_vk_client = saved
             strategy._rpc_service = service
 
 
@@ -127,7 +127,7 @@ class ExampleConfigTest(unittest.TestCase):
                             "bigqmt_signal_trader_qmt_config.example.py")
         text = io.open(path, encoding="utf-8").read()
 
-        self.assertIn("valkey_enabled", text)
+        self.assertIn("vk_enabled", text)
 
     def test_the_example_states_what_it_costs(self):
         """Turning it on silently loses strategy_name backfill (#133); saying
@@ -148,8 +148,8 @@ class ExampleConfigTest(unittest.TestCase):
         path = os.path.join(ROOT, "src",
                             "bigqmt_signal_trader_qmt_config.example.py")
         for line in io.open(path, encoding="utf-8"):
-            if "valkey_enabled" in line and "#" not in line.split("valkey_enabled")[0]:
-                self.fail("valkey_enabled is live in the example: %r" % line)
+            if "vk_enabled" in line and "#" not in line.split("vk_enabled")[0]:
+                self.fail("vk_enabled is live in the example: %r" % line)
 
 
 
@@ -160,13 +160,22 @@ class ExampleConfigTest(unittest.TestCase):
 class RuntimeConfigReadingTest(_RuntimeState):
     pass
 
-    def test_valkey_enabled_explicit_flag_is_tracked(self):
-        runtime.VALKEY_ENABLED_EXPLICIT = False
-        runtime.configure_runtime_valkey({"transport": "shm"})
-        self.assertFalse(runtime.VALKEY_ENABLED_EXPLICIT)
+    def test_vk_enabled_explicit_flag_is_tracked(self):
+        runtime.VK_ENABLED_EXPLICIT = False
+        runtime.configure_runtime_vk({"transport": "shm"})
+        self.assertFalse(runtime.VK_ENABLED_EXPLICIT)
 
-        runtime.configure_runtime_valkey({"transport": "shm", "valkey_enabled": True})
-        self.assertTrue(runtime.VALKEY_ENABLED_EXPLICIT)
+        runtime.configure_runtime_vk({"transport": "shm", "vk_enabled": True})
+        self.assertTrue(runtime.VK_ENABLED_EXPLICIT)
+
+    def test_legacy_disable_setting_is_honored_until_new_key_is_set(self):
+        runtime.configure_runtime_vk({"transport": "shm", "valkey_enabled": False})
+        self.assertTrue(runtime.VK_ENABLED_EXPLICIT)
+        self.assertEqual(runtime._vk_block(), {})
+
+        runtime.configure_runtime_vk(
+            {"transport": "shm", "valkey_enabled": False, "vk_enabled": True})
+        self.assertTrue(runtime._vk_block())
 
 
 class ModuleLevelReadTest(unittest.TestCase):
@@ -180,15 +189,14 @@ class ModuleLevelReadTest(unittest.TestCase):
 
         stub = types.ModuleType("bigqmt_signal_trader_qmt_config")
         stub.BIGQMT_ACCOUNT_ID = ""
-        stub.BIGQMT_CONFIG = {"transport": "shm",
-                                    "valkey_enabled": False}
+        stub.BIGQMT_CONFIG = {"transport": "shm", "valkey_enabled": False}
         saved_module = sys.modules.get("bigqmt_signal_trader_qmt_config")
         sys.modules["bigqmt_signal_trader_qmt_config"] = stub
         try:
             importlib.reload(runtime)
             self.assertEqual("shm", runtime.RPC_TRANSPORT)
-            self.assertTrue(runtime.VALKEY_ENABLED_EXPLICIT)
-            self.assertFalse(runtime.VALKEY_ENABLED)
+            self.assertTrue(runtime.VK_ENABLED_EXPLICIT)
+            self.assertFalse(runtime.VK_ENABLED)
         finally:
             if saved_module is None:
                 sys.modules.pop("bigqmt_signal_trader_qmt_config", None)

@@ -6,7 +6,7 @@ QMT 只往**被挂载的那个文件**的命名空间里注入全局函数，所
 是这份名单的唯一来源，它自己的注释就写着「do not hand-copy the names
 elsewhere」。
 
-但 BIGQMT_VALKEY_DRYRUN.py 里就有一张手抄表。给策略模块加
+但 BIGQMT_VK_DRYRUN.py 里就有一张手抄表。给策略模块加
 `query_credit_account` 时漏了那张表，于是：
 
   - 桥拿不到这个函数
@@ -38,7 +38,7 @@ from bigqmt_signal_trader_strategy import (  # noqa: E402
 
 # 会被 QMT 挂载、因而必须自己做捕获的入口文件。
 MOUNTED_ENTRIES = (
-    os.path.join("src", "BIGQMT_VALKEY_DRYRUN.py"),
+    os.path.join("src", "BIGQMT_VK_DRYRUN.py"),
 )
 
 # 手抄表的特征：一串 QMT 全局函数名字面量凑在一起。真正的手抄表有 13-16 个

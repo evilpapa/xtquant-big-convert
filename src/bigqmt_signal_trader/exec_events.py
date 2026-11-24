@@ -1,8 +1,8 @@
-"""通过 Valkey 实时推送委托/成交（执行）事件。
+"""通过 VK 实时推送委托/成交（执行）事件。
 
 Big QMT 在策略进程中触发 ``order_callback(ContextInfo, orderInfo)`` 和
 ``deal_callback(ContextInfo, dealInfo)``。我们将 QMT 委托/成交对象（ThinkTrader
-的 ``m_*`` 字段）标准化为普通字典，并发布到 Valkey 频道，使客户端能够实时收到
+的 ``m_*`` 字段）标准化为普通字典，并发布到 VK 频道，使客户端能够实时收到
 ``on_stock_order`` / ``on_stock_trade`` 回调（MiniQMT 风格），无需轮询。
 
 频道（同时作为带容量上限的短期重放流使用，采用 xadd + publish）：
@@ -17,7 +17,7 @@ import json
 import time
 
 from .order_remarks import recover_order_remarks, bounded_identity_client
-from .valkey_safe_value import (
+from .vk_safe_value import (
     PREFIX as _ORDER_IDENTITY_PREFIX,
     LUA_ENCODE, LUA_RESEGMENT,
     encode_json as _encode_order_identity,
@@ -456,7 +456,7 @@ def normalize_order_event(order, account_id=""):
         # order this bridge sent names itself here -- no identity store, no
         # remark matching, and it still works for one submitted before this
         # process started (issue #174). The publisher enriches from the journal
-        # / valkey only when this comes back empty.
+        # / VK only when this comes back empty.
         "strategy_name": _strategy_name_of(order),
         "instrument_name": str(
             _attr(order, ["m_strInstrumentName", "instrument_name"], "") or ""),
@@ -486,7 +486,7 @@ ORDER_IDENTITY_TTL_SECONDS = 7 * 86400
 _last_identity_warning = -float("inf")
 
 # An old JSON value can be rejected before Python receives it. Migrate that
-# one key inside Valkey, returning only the safe representation. SETRANGE
+# one key inside VK, returning only the safe representation. SETRANGE
 # preserves its exact expiry (including no expiry); the encoded value is
 # always longer, so no old suffix survives. Do not re-serialize with cjson:
 # preserving the original bytes also preserves timestamp precision.
@@ -553,17 +553,17 @@ def _warn_order_identity(exc):
               % (exc.__class__.__name__, exc))
 
 
-def _read_order_identity(valkey_client, account_id, user_order_id):
+def _read_order_identity(vk_client, account_id, user_order_id):
     key = order_identity_key(account_id, user_order_id)
     try:
-        raw = valkey_client.get(key)
+        raw = vk_client.get(key)
     except Exception as exc:
         if "Sensitive Data Detected, Forbidden!" not in str(exc):
             raise
-        migrate = getattr(valkey_client, "eval", None)
+        migrate = getattr(vk_client, "eval", None)
         if not callable(migrate):
             raise RuntimeError(
-                "QMT blocked a legacy order identity and Valkey EVAL is unavailable; "
+                "QMT blocked a legacy order identity and VK EVAL is unavailable; "
                 "the existing record was preserved (#393)")
         raw = migrate(_MIGRATE_ORDER_IDENTITY, 1, key,
                       str(account_id or ""), str(user_order_id or ""),
@@ -571,7 +571,7 @@ def _read_order_identity(valkey_client, account_id, user_order_id):
     return _decode_order_identity(raw)
 
 
-def remember_order_identity(valkey_client, account_id, user_order_id, strategy_name="", stock_code="", ttl_seconds=ORDER_IDENTITY_TTL_SECONDS):
+def remember_order_identity(vk_client, account_id, user_order_id, strategy_name="", stock_code="", ttl_seconds=ORDER_IDENTITY_TTL_SECONDS):
     """Record who submitted an order, keyed by the remark it rides out as.
 
     The first NAMED record wins (#393): a remark reused across submits
@@ -587,7 +587,7 @@ def remember_order_identity(valkey_client, account_id, user_order_id, strategy_n
     next-day re-read used to come back renamed under the bridge process.
     """
     user_order_id = str(user_order_id or "").strip()
-    if not user_order_id or valkey_client is None:
+    if not user_order_id or vk_client is None:
         return None
     payload = {
         "account_id": str(account_id or ""),
@@ -600,12 +600,12 @@ def remember_order_identity(valkey_client, account_id, user_order_id, strategy_n
     ttl = int(ttl_seconds or ORDER_IDENTITY_TTL_SECONDS)
     key = order_identity_key(account_id, user_order_id)
     try:
-        created = valkey_client.set(key, blob, ex=ttl, nx=True)
+        created = vk_client.set(key, blob, ex=ttl, nx=True)
         if created:
             return payload
         # The key exists: this remark was used before.
         existing_name = ""
-        existing = _read_order_identity(valkey_client, account_id, user_order_id)
+        existing = _read_order_identity(vk_client, account_id, user_order_id)
         if existing is None:
             # An unreadable/mismatched old value is not evidence of an unnamed
             # submit. Preserve it rather than silently changing ownership.
@@ -623,14 +623,14 @@ def remember_order_identity(valkey_client, account_id, user_order_id, strategy_n
         if not new_name:
             return None
         # The existing record is unnamed; this named submit knows better.
-        valkey_client.setex(key, ttl, blob)
+        vk_client.setex(key, ttl, blob)
         return payload
     except Exception as exc:
         _warn_order_identity(exc)
     return payload
 
 
-def order_identity_map(valkey_client, account_id, user_order_ids, limit=500):
+def order_identity_map(vk_client, account_id, user_order_ids, limit=500):
     """user_order_id -> remembered identity, for a whole result set at once.
 
     Neither ORDER nor DEAL rows have m_strStrategyName (verified by listing
@@ -662,19 +662,19 @@ def order_identity_map(valkey_client, account_id, user_order_ids, limit=500):
             wanted.append(text)
         if len(wanted) >= limit:
             break
-    if not wanted or valkey_client is None:
+    if not wanted or vk_client is None:
         return {}
 
     keys = [order_identity_key(account_id, text) for text in wanted]
     raws = None
-    read = getattr(valkey_client, "eval", None)
+    read = getattr(vk_client, "eval", None)
     if callable(read):
         try:
             raws = read(_READ_ORDER_IDENTITIES, len(keys),
                         *(keys + [_ORDER_IDENTITY_PREFIX]))
         except Exception:
             pass
-    mget = getattr(valkey_client, "mget", None)
+    mget = getattr(vk_client, "mget", None)
     if raws is None and mget is not None:
         try:
             raws = mget(keys)
@@ -684,7 +684,7 @@ def order_identity_map(valkey_client, account_id, user_order_ids, limit=500):
         found = {}
         for text in wanted:
             try:
-                identity = _read_order_identity(valkey_client, account_id, text)
+                identity = _read_order_identity(vk_client, account_id, text)
                 if identity is not None:
                     found[text] = identity
             except Exception as exc:
@@ -699,14 +699,14 @@ def order_identity_map(valkey_client, account_id, user_order_ids, limit=500):
     return found
 
 
-def enrich_order_identity(valkey_client, account_id, event):
-    if valkey_client is None or not isinstance(event, dict):
+def enrich_order_identity(vk_client, account_id, event):
+    if vk_client is None or not isinstance(event, dict):
         return event
     user_order_id = str(event.get("user_order_id") or event.get("remark") or "").strip()
     if not user_order_id:
         return event
     try:
-        identity = _read_order_identity(valkey_client, account_id, user_order_id)
+        identity = _read_order_identity(vk_client, account_id, user_order_id)
     except Exception as exc:
         _warn_order_identity(exc)
         return event
@@ -714,7 +714,7 @@ def enrich_order_identity(valkey_client, account_id, event):
         return event
     if identity.get("strategy_name"):
         # The row's strategy-name field carries the QMT-side strategy's
-        # registered name (the bridge process, e.g. BIGQMT_VALKEY_DRYRUN), not
+        # registered name (the bridge process, e.g. BIGQMT_VK_DRYRUN), not
         # the strategy_name the caller passed at order time (#216: an order
         # placed with strategy_name='DaBanStrategy' reported back
         # '大QMT桥接器'). The identity was written at submit time from the
@@ -775,7 +775,7 @@ def normalize_trade_event(trade, account_id=""):
 
 
 # Push-channel topics, used when exec events travel over the quote push channel
-# instead of Valkey pub/sub. They mirror the Valkey channel names minus the
+# instead of VK pub/sub. They mirror the VK channel names minus the
 # account (a zmq PUB socket is already per-account).
 EXEC_TOPICS = {
     EVENT_ORDER: "exec:order",
@@ -792,13 +792,13 @@ def exec_topic(event_type):
 def publish_exec_event(sink, account_id, event):
     """Publish one exec event through whichever sink the deployment has.
 
-    ``sink`` is either a Valkey client or a QuotePushChannel. Valkey stays on the
+    ``sink`` is either a VK client or a QuotePushChannel. VK stays on the
     original per-account channels (streams + pub/sub, so short replay keeps
     working); a push channel gets one topic per event type.
 
-    Exec events used to be Valkey-only, which meant a zmq deployment silently
+    Exec events used to require VK, which meant a zmq deployment silently
     received no order/trade callbacks at all (issue #76) -- the publish path
-    just returned when no Valkey client could be built.
+    just returned when no VK client could be built.
     """
     event_type = str((event or {}).get("event_type") or EVENT_ORDER)
     if hasattr(sink, "publish") and not hasattr(sink, "xadd"):
@@ -814,40 +814,40 @@ def publish_exec_event(sink, account_id, event):
     return publish_order_event(sink, account_id, event)
 
 
-def _publish(valkey_client, channel, event, maxlen=2000):
-    from .adapters.valkey_common import (
+def _publish(vk_client, channel, event, maxlen=2000):
+    from .adapters.vk_common import (
         note_stream_failure, streams_dead, touch_stream_ttl,
     )
 
     raw = json.dumps(event, ensure_ascii=False, default=str)
     if not streams_dead():
         try:
-            valkey_client.xadd(channel, {"payload": raw}, maxlen=maxlen, approximate=True)
+            vk_client.xadd(channel, {"payload": raw}, maxlen=maxlen, approximate=True)
             # maxlen 只挡单键膨胀，挡不住键永远不消失：换个账号、停用一个部署，
             # 键就一直留着。续期一次，停写的流自然过期（#213）。
-            touch_stream_ttl(valkey_client, channel)
+            touch_stream_ttl(vk_client, channel)
         except Exception as exc:
             # If XADD is unavailable, log once and keep the pub/sub path.
             # Anything else stays silent and retried, as before (issue #163).
             note_stream_failure(exc)
-    valkey_client.publish(channel, raw)
+    vk_client.publish(channel, raw)
     return event
 
 
-def publish_order_event(valkey_client, account_id, event):
-    return _publish(valkey_client, order_channel(account_id), event)
+def publish_order_event(vk_client, account_id, event):
+    return _publish(vk_client, order_channel(account_id), event)
 
 
-def publish_trade_event(valkey_client, account_id, event):
-    return _publish(valkey_client, trade_channel(account_id), event)
+def publish_trade_event(vk_client, account_id, event):
+    return _publish(vk_client, trade_channel(account_id), event)
 
 
-def publish_order_error_event(valkey_client, account_id, event):
-    return _publish(valkey_client, order_error_channel(account_id), event)
+def publish_order_error_event(vk_client, account_id, event):
+    return _publish(vk_client, order_error_channel(account_id), event)
 
 
-def publish_cancel_error_event(valkey_client, account_id, event):
-    return _publish(valkey_client, cancel_error_channel(account_id), event)
+def publish_cancel_error_event(vk_client, account_id, event):
+    return _publish(vk_client, cancel_error_channel(account_id), event)
 
 
 def normalize_order_error_event(order_error, account_id=""):

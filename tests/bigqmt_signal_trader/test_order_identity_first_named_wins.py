@@ -12,7 +12,7 @@ paths produce that flip, all fixed together:
 - a same-remark submit under a *different* strategy renamed rows that were
   already reported under the first name;
 - a 24h TTL on both stores renamed everything still queryable the next day;
-  and a reload wiped the in-process journal on no-Valkey deployments.
+  and a reload wiped the in-process journal on no-VK deployments.
 
 The rule now, in both stores: the first NAMED record wins. A blank submit
 never erases a name; an unnamed record yields to a later named one.
@@ -33,13 +33,13 @@ from bigqmt_signal_trader.exec_events import (  # noqa: E402
     remember_order_identity,
 )
 from bigqmt_signal_trader.models import OrderSnapshot  # noqa: E402
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers  # noqa: E402
 
-from test_valkey_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
+from test_vk_rpc import FakeMarketData, FakePositionProvider  # noqa: E402
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway  # noqa: E402
 
 
-class FakeValkey(object):
+class FakeVk(object):
     def __init__(self):
         self.kv = {}
         self.ttls = {}
@@ -73,52 +73,52 @@ class FakeValkey(object):
         return [self.kv.get(k) for k in keys]
 
 
-def _name_in(valkey_client, account_id="acct", remark="sig-1"):
-    identities = order_identity_map(valkey_client, account_id, [remark])
+def _name_in(vk_client, account_id="acct", remark="sig-1"):
+    identities = order_identity_map(vk_client, account_id, [remark])
     identity = identities.get(remark) or {}
     return identity.get("strategy_name")
 
 
-class ValkeyIdentityFirstNamedWinsTest(unittest.TestCase):
+class VkIdentityFirstNamedWinsTest(unittest.TestCase):
     def test_blank_submit_does_not_erase_a_named_record(self):
-        valkey_client = FakeValkey()
-        remember_order_identity(valkey_client, "acct", "sig-1", "my_strat")
+        vk_client = FakeVk()
+        remember_order_identity(vk_client, "acct", "sig-1", "my_strat")
 
-        result = remember_order_identity(valkey_client, "acct", "sig-1", "")
+        result = remember_order_identity(vk_client, "acct", "sig-1", "")
 
         self.assertIsNone(result)
-        self.assertEqual(_name_in(valkey_client), "my_strat")
+        self.assertEqual(_name_in(vk_client), "my_strat")
 
     def test_conflicting_name_keeps_the_first(self):
-        valkey_client = FakeValkey()
-        remember_order_identity(valkey_client, "acct", "sig-1", "strat_a")
+        vk_client = FakeVk()
+        remember_order_identity(vk_client, "acct", "sig-1", "strat_a")
 
-        remember_order_identity(valkey_client, "acct", "sig-1", "strat_b")
+        remember_order_identity(vk_client, "acct", "sig-1", "strat_b")
 
-        self.assertEqual(_name_in(valkey_client), "strat_a")
+        self.assertEqual(_name_in(vk_client), "strat_a")
 
     def test_unnamed_record_yields_to_a_later_named_submit(self):
-        valkey_client = FakeValkey()
-        remember_order_identity(valkey_client, "acct", "sig-1", "")
+        vk_client = FakeVk()
+        remember_order_identity(vk_client, "acct", "sig-1", "")
 
-        remember_order_identity(valkey_client, "acct", "sig-1", "my_strat")
+        remember_order_identity(vk_client, "acct", "sig-1", "my_strat")
 
-        self.assertEqual(_name_in(valkey_client), "my_strat")
+        self.assertEqual(_name_in(vk_client), "my_strat")
 
     def test_same_name_resubmit_is_a_quiet_no_op(self):
-        valkey_client = FakeValkey()
-        remember_order_identity(valkey_client, "acct", "sig-1", "my_strat")
+        vk_client = FakeVk()
+        remember_order_identity(vk_client, "acct", "sig-1", "my_strat")
 
-        remember_order_identity(valkey_client, "acct", "sig-1", "my_strat")
+        remember_order_identity(vk_client, "acct", "sig-1", "my_strat")
 
-        self.assertEqual(_name_in(valkey_client), "my_strat")
+        self.assertEqual(_name_in(vk_client), "my_strat")
 
     def test_ttl_is_seven_days_so_next_day_reads_keep_the_name(self):
-        valkey_client = FakeValkey()
-        remember_order_identity(valkey_client, "acct", "sig-1", "my_strat")
+        vk_client = FakeVk()
+        remember_order_identity(vk_client, "acct", "sig-1", "my_strat")
 
         key = order_identity_key("acct", "sig-1")
-        self.assertEqual(valkey_client.ttls.get(key), 7 * 86400)
+        self.assertEqual(vk_client.ttls.get(key), 7 * 86400)
         self.assertEqual(exec_events.ORDER_IDENTITY_TTL_SECONDS, 7 * 86400)
 
 
@@ -165,7 +165,7 @@ def _submit(handlers, remark, strategy_name):
 class LocalJournalFirstNamedWinsTest(unittest.TestCase):
     def test_blank_submit_does_not_erase_the_name(self):
         handlers = _handlers([_row(user_order_id="sig-1")])
-        self.assertIsNone(handlers._identity_valkey())  # no-Valkey shape
+        self.assertIsNone(handlers._identity_vk())  # no-VK shape
 
         _submit(handlers, "sig-1", "my_strat")
         _submit(handlers, "sig-1", "")
@@ -191,7 +191,7 @@ class LocalJournalFirstNamedWinsTest(unittest.TestCase):
 
         self.assertEqual(rows[0].strategy_name, "my_strat")
 
-    def test_journal_ttl_matches_the_valkey_store(self):
+    def test_journal_ttl_matches_the_vk_store(self):
         self.assertEqual(BigQmtRpcHandlers._ORDER_IDENTITY_LOCAL_TTL_SECONDS,
                          exec_events.ORDER_IDENTITY_TTL_SECONDS)
 

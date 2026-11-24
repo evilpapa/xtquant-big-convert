@@ -63,9 +63,10 @@ def test_bridge_detection_ignores_shell_processes():
     assert not core._is_python_or_bridge_name("bash.exe")
     assert not core._is_python_or_bridge_name("powershell.exe")
 
-    cmdline = ["python.exe", "-m", "bigqmt_signal_trader.serial_valkey_bridge",
+    cmdline = ["python.exe", "-m", "bigqmt_signal_trader.serial_vk_bridge",
                "--port", "COM11"]
     assert core._is_bridge_command(cmdline)
+    assert core._is_bridge_command(["python.exe", "-m", "bigqmt_signal_trader.serial_valkey_bridge"])
     assert core._command_line_port(cmdline) == "COM11"
     assert core._command_line_port(["--port=COM12"]) == "COM12"
 
@@ -96,7 +97,7 @@ def test_normalize_qmt_root_accepts_root_bin_and_exe(tmp_path):
     assert os.path.normcase(core.normalize_qmt_root(str(exe))) == os.path.normcase(str(root))
 
 
-def test_valkey_url_from_qmt_config_dict(tmp_path):
+def test_vk_url_from_qmt_config_dict(tmp_path):
     path = tmp_path / "bigqmt_signal_trader_qmt_config.py"
     path.write_text(
         "BIGQMT_CONFIG = {\n"
@@ -108,7 +109,7 @@ def test_valkey_url_from_qmt_config_dict(tmp_path):
         "}\n",
         encoding="utf-8")
 
-    assert core.valkey_url_from_config(str(path)) == "valkey://192.168.2.112:6379/5"
+    assert core.vk_url_from_config(str(path)) == "valkey://192.168.2.112:6379/5"
 
 
 def test_load_config_reads_explicit_env_file(tmp_path):
@@ -118,7 +119,7 @@ def test_load_config_reads_explicit_env_file(tmp_path):
         "BIGQMT_QMT_DIR=D:/qmt\n"
         "BIGQMT_SERIAL_PORT=COM12\n"
         "BIGQMT_SERIAL_BAUDRATE=115200\n"
-        "BIGQMT_SERIAL_VALKEY_URL=valkey://127.0.0.1:6379/7\n"
+        "BIGQMT_SERIAL_VK_URL=valkey://127.0.0.1:6379/7\n"
         "BIGQMT_QMT_MODE=login\n",
         encoding="utf-8")
 
@@ -129,7 +130,7 @@ def test_load_config_reads_explicit_env_file(tmp_path):
     assert config.qmt_root == os.path.abspath("D:/qmt")
     assert config.port == "COM12"
     assert config.baudrate == 115200
-    assert config.valkey_url == "valkey://127.0.0.1:6379/7"
+    assert config.vk_url == "valkey://127.0.0.1:6379/7"
     assert config.qmt_mode == "login"
 
 
@@ -166,7 +167,7 @@ def test_bridge_command_carries_no_login_password(tmp_path):
     assert "--account-id" in command
     assert "secret-value" not in command
     assert command[:3] == ["python.exe", "-m",
-                           "bigqmt_signal_trader.serial_valkey_bridge"]
+                           "bigqmt_signal_trader.serial_vk_bridge"]
 
 
 def test_child_env_passes_login_credentials_from_dotenv(tmp_path, monkeypatch):
@@ -283,39 +284,39 @@ def test_update_env_file_round_trips_passwords_and_keeps_comments(tmp_path):
     assert values["BIGQMT_LOGIN_USER"] == ""
 
 
-def test_build_and_parse_valkey_url():
-    url = core.build_valkey_url("192.168.2.112", 6379, 5, "user", "p@ss word")
+def test_build_and_parse_vk_url():
+    url = core.build_vk_url("192.168.2.112", 6379, 5, "user", "p@ss word")
     assert url == "valkey://user:p%40ss%20word@192.168.2.112:6379/5"
-    assert core.parse_valkey_url(url) == {
+    assert core.parse_vk_url(url) == {
         "host": "192.168.2.112", "port": 6379, "db": 5,
         "username": "user", "password": "p@ss word",
     }
-    assert core.build_valkey_url("127.0.0.1:6380", 6379, 0) == "valkey://127.0.0.1:6380/0"
-    assert core.build_valkey_url("") == ""
+    assert core.build_vk_url("127.0.0.1:6380", 6379, 0) == "valkey://127.0.0.1:6380/0"
+    assert core.build_vk_url("") == ""
 
 
-def test_load_config_reads_valkey_parts_and_login_credentials(tmp_path, monkeypatch):
-    for key in ("BIGQMT_VALKEY_HOST", "BIGQMT_VALKEY_PORT", "BIGQMT_VALKEY_DB",
-                "BIGQMT_VALKEY_USERNAME", "BIGQMT_VALKEY_PASSWORD",
-                "BIGQMT_SERIAL_VALKEY_URL", "BIGQMT_VALKEY_URL",
+def test_load_config_reads_vk_parts_and_login_credentials(tmp_path, monkeypatch):
+    for key in ("BIGQMT_VK_HOST", "BIGQMT_VK_PORT", "BIGQMT_VK_DB",
+                "BIGQMT_VK_USERNAME", "BIGQMT_VK_PASSWORD",
+                "BIGQMT_SERIAL_VK_URL", "BIGQMT_VK_URL",
                 "BIGQMT_LOGIN_USER", "BIGQMT_LOGIN_PASSWORD"):
         monkeypatch.delenv(key, raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text(
         "BIGQMT_ACCOUNT_ID=123456\n"
-        "BIGQMT_VALKEY_HOST=10.0.0.5\n"
-        "BIGQMT_VALKEY_PORT=6380\n"
-        "BIGQMT_VALKEY_DB=3\n"
-        "BIGQMT_VALKEY_USERNAME=valkey-user\n"
-        "BIGQMT_VALKEY_PASSWORD=valkey-pass\n"
+        "BIGQMT_VK_HOST=10.0.0.5\n"
+        "BIGQMT_VK_PORT=6380\n"
+        "BIGQMT_VK_DB=3\n"
+        "BIGQMT_VK_USERNAME=valkey-user\n"
+        "BIGQMT_VK_PASSWORD=valkey-pass\n"
         "BIGQMT_LOGIN_USER=login-user\n"
         "BIGQMT_LOGIN_PASSWORD=login-pass\n",
         encoding="utf-8")
 
     config = core.load_config(env_file=str(env_file))
 
-    assert config.valkey_url == "valkey://valkey-user:valkey-pass@10.0.0.5:6380/3"
-    assert (config.valkey_host, config.valkey_port, config.valkey_db) == ("10.0.0.5", 6380, 3)
-    assert config.valkey_username == "valkey-user"
-    assert config.valkey_password == "valkey-pass"
+    assert config.vk_url == "valkey://valkey-user:valkey-pass@10.0.0.5:6380/3"
+    assert (config.vk_host, config.vk_port, config.vk_db) == ("10.0.0.5", 6380, 3)
+    assert config.vk_username == "valkey-user"
+    assert config.vk_password == "valkey-pass"
     assert config.login_credentials() == ("login-user", "login-pass")

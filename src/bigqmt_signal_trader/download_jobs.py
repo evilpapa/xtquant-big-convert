@@ -1,14 +1,14 @@
 """Big QMT 的异步分块下载任务。
 
-客户端将下载任务（发射后不等待）提交到 Valkey 队列，并轮询任务状态。
+客户端将下载任务（发射后不等待）提交到 VK 队列，并轮询任务状态。
 Big QMT 策略线程一次只处理一个任务，每个 tick 最多下载固定数量的
 标的（``chunk_size`` 个标的，并受运行时间预算限制），因此耗时较长的
 ``download_history_data2`` 不会阻塞策略线程或 RPC 泵。历史 K 线会落到
 Big QMT 机器的本地存储中；客户端随后可通过快速的 ``get_local_data`` /
 ``get_market_data`` 调用读取这些数据。
 
-Valkey 布局（按账户区分）。所有存储的 VALUE 都采用无数字编码（见 _enc），
-避免 QMT 终端的 Valkey 合规过滤器因泵回读任务数据中的股票代码而拦截：
+VK 布局（按账户区分）。所有存储的 VALUE 都采用无数字编码（见 _enc），
+避免 QMT 终端的 VK 合规过滤器因泵回读任务数据中的股票代码而拦截：
 - ``bigqmt:dljob:pending:{account_id}``      待读取任务 ID 列表（RPUSH/LPOP）
 - ``bigqmt:dljob:item:{account_id}:{job_id}`` 包含进度的编码任务数据
 - ``bigqmt:dljob:active:{account_id}``        当前正在处理的任务 ID
@@ -57,10 +57,10 @@ def _text(value):
 
 
 # The client bundled in earlier 国金证券 QMT builds had check_response() raise
-# "Sensitive Data Detected, Forbidden!" whenever a Valkey *response* contains a
+# "Sensitive Data Detected, Forbidden!" whenever a VK *response* contains a
 # stock-code + operation-code DIGIT pattern (a brokerage control against trading
-# signals flowing through Valkey). The pump runs inside that terminal and must read
-# job data (which contains stock codes) back from Valkey. So every value the pump
+# signals flowing through VK). The pump runs inside that terminal and must read
+# job data (which contains stock codes) back from VK. So every value the pump
 # reads is stored as a DIGIT-FREE token: hex-encode, then shift digits 0-9 -> the
 # letters g-p, making the stored value all letters (a-p). The stock-code regex
 # requires digits, so it can never match. Reversible; writes are never filtered
@@ -116,7 +116,7 @@ def _new_download_job(
 
 
 def submit_download_job(
-    valkey_client,
+    vk_client,
     account_id,
     stock_list,
     period,
@@ -133,18 +133,18 @@ def submit_download_job(
         job_id, stock_list, period, method, start_time, end_time, incrementally, chunk_size,
     )
     ttl = int(max(1, job_ttl_seconds))
-    valkey_client.setex(job_key(account_id, job_id), ttl, _enc(json.dumps(job, ensure_ascii=False)))
-    valkey_client.rpush(queue_key(account_id), _enc(job_id))
+    vk_client.setex(job_key(account_id, job_id), ttl, _enc(json.dumps(job, ensure_ascii=False)))
+    vk_client.rpush(queue_key(account_id), _enc(job_id))
     try:
-        valkey_client.expire(queue_key(account_id), ttl)
+        vk_client.expire(queue_key(account_id), ttl)
     except Exception:
         pass
     return job
 
 
-def read_download_status(valkey_client, account_id, job_id):
+def read_download_status(vk_client, account_id, job_id):
     """Return the current job status dict, or None if unknown/expired."""
-    decoded = _dec(valkey_client.get(job_key(account_id, job_id)))
+    decoded = _dec(vk_client.get(job_key(account_id, job_id)))
     if not decoded:
         return None
     try:
@@ -155,7 +155,7 @@ def read_download_status(valkey_client, account_id, job_id):
 
 
 def wait_download_job(
-    valkey_client,
+    vk_client,
     account_id,
     job_id,
     wait_seconds=600.0,
@@ -164,7 +164,7 @@ def wait_download_job(
     """Block (client-side only) until the job reaches a terminal state or timeout."""
     deadline = time.time() + max(0.0, float(wait_seconds))
     while True:
-        status = read_download_status(valkey_client, account_id, job_id)
+        status = read_download_status(vk_client, account_id, job_id)
         if status and status.get("state") in (DONE, FAILED):
             return status
         if time.time() >= deadline:
@@ -172,28 +172,28 @@ def wait_download_job(
         time.sleep(max(0.05, float(poll_interval_seconds)))
 
 
-def _write_job(valkey_client, account_id, job, job_ttl_seconds):
+def _write_job(vk_client, account_id, job, job_ttl_seconds):
     job["updated_at_ts"] = time.time()
     ttl = int(max(1, job_ttl_seconds))
-    valkey_client.setex(job_key(account_id, job["job_id"]), ttl, _enc(json.dumps(job, ensure_ascii=False)))
+    vk_client.setex(job_key(account_id, job["job_id"]), ttl, _enc(json.dumps(job, ensure_ascii=False)))
 
 
-def _acquire_current_job(valkey_client, account_id):
+def _acquire_current_job(vk_client, account_id):
     ckey = current_key(account_id)
-    current_id = _dec(valkey_client.get(ckey))
+    current_id = _dec(vk_client.get(ckey))
     if current_id:
-        job = read_download_status(valkey_client, account_id, current_id)
+        job = read_download_status(vk_client, account_id, current_id)
         if job and job.get("state") in _ACTIVE_STATES:
             return job
         # Stale pointer (job done/failed/expired): drop it and pick the next one.
-        valkey_client.delete(ckey)
+        vk_client.delete(ckey)
     while True:
-        job_id = _dec(valkey_client.lpop(queue_key(account_id)))
+        job_id = _dec(vk_client.lpop(queue_key(account_id)))
         if not job_id:
             return None
-        job = read_download_status(valkey_client, account_id, job_id)
+        job = read_download_status(vk_client, account_id, job_id)
         if job and job.get("state") in _ACTIVE_STATES:
-            valkey_client.set(ckey, _enc(job_id))
+            vk_client.set(ckey, _enc(job_id))
             return job
         # Skip unknown/expired/finished ids left in the queue.
 
@@ -217,7 +217,7 @@ def _download_chunk(market_data, method, chunk, period, start_time, end_time, in
 
 
 def pump_download_jobs(
-    valkey_client,
+    vk_client,
     market_data,
     account_id,
     chunk_size=DEFAULT_CHUNK_SIZE,
@@ -230,7 +230,7 @@ def pump_download_jobs(
     until the wall-clock budget is spent. Returns a small status summary, or None
     when there is no active job. Runs on the caller (strategy) thread.
     """
-    job = _acquire_current_job(valkey_client, account_id)
+    job = _acquire_current_job(vk_client, account_id)
     if job is None:
         return None
     stock_list = job.get("stock_list") or []
@@ -261,16 +261,16 @@ def pump_download_jobs(
         job["state"] = FAILED
         job["error"] = "%s: %s" % (exc.__class__.__name__, exc)
         job["done"] = done
-        _write_job(valkey_client, account_id, job, job_ttl_seconds)
-        valkey_client.delete(current_key(account_id))
+        _write_job(vk_client, account_id, job, job_ttl_seconds)
+        vk_client.delete(current_key(account_id))
         return {"job_id": job["job_id"], "state": FAILED, "done": done, "total": total, "error": job["error"]}
 
     job["done"] = done
     if done >= total:
         job["state"] = DONE
-        _write_job(valkey_client, account_id, job, job_ttl_seconds)
-        valkey_client.delete(current_key(account_id))
+        _write_job(vk_client, account_id, job, job_ttl_seconds)
+        vk_client.delete(current_key(account_id))
         return {"job_id": job["job_id"], "state": DONE, "done": done, "total": total}
     job["state"] = RUNNING
-    _write_job(valkey_client, account_id, job, job_ttl_seconds)
+    _write_job(vk_client, account_id, job, job_ttl_seconds)
     return {"job_id": job["job_id"], "state": RUNNING, "done": done, "total": total}

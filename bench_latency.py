@@ -1,5 +1,5 @@
 # coding: utf-8
-"""大 QMT Valkey RPC 延迟测试。
+"""大 QMT VK RPC 延迟测试。
 
 分别测量 ping 和 get_full_tick，观察传输与行情接口的耗时。
 """
@@ -7,23 +7,23 @@ import os
 import statistics
 import time
 
-from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
-from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
+from bigqmt_signal_trader.adapters.vk_common import build_vk_client
+from bigqmt_signal_trader.vk_rpc import call_vk_rpc
 
 
-def _load_valkey_config():
+def _load_vk_config():
     """从客户端配置或环境变量读取连接参数。"""
     try:
         from bigqmt_signal_trader.xtquant_compat import load_client_config
 
-        config = load_client_config().get("valkey_config") or {}
+        config = load_client_config().get("vk_config") or {}
     except Exception:
         config = {}
     return dict(config, socket_timeout=8)
 
 
 ACCOUNT = os.environ.get("BIGQMT_ACCOUNT_ID", "")
-VALKEY = _load_valkey_config()
+VK_CONFIG = _load_vk_config()
 
 
 def bench(r, method, params, n=20, timeout=6):
@@ -32,7 +32,7 @@ def bench(r, method, params, n=20, timeout=6):
     for i in range(n):
         t0 = time.time()
         try:
-            resp = call_valkey_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
+            resp = call_vk_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
             dt = (time.time() - t0) * 1000
             if resp.get("ok"):
                 lats.append(dt)
@@ -67,10 +67,10 @@ def bench(r, method, params, n=20, timeout=6):
 
 
 def main():
-    r = build_valkey_client(VALKEY)
+    r = build_vk_client(VK_CONFIG)
     # 预热连接
     try:
-        call_valkey_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
+        call_vk_rpc(r, ACCOUNT, "ping", {}, timeout_seconds=6)
         print("ping 预热成功\n")
     except Exception as e:
         print("预热失败：%s\n" % e)

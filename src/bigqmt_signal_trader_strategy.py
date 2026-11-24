@@ -24,7 +24,7 @@ except NameError:
 
 if _load_bridge_module is not None:
     _adapter_factory     = _load_bridge_module("bigqmt_signal_trader.adapter_factory")
-    _valkey_settings     = _load_bridge_module("bigqmt_signal_trader.adapters.valkey_common")
+    _vk_settings     = _load_bridge_module("bigqmt_signal_trader.adapters.vk_common")
     _runner              = _load_bridge_module("bigqmt_signal_trader.runner")
     _runtime_bigqmt      = _load_bridge_module("bigqmt_signal_trader.runtime_bigqmt")
     _order_watch         = _load_bridge_module("bigqmt_signal_trader.order_watch")
@@ -38,7 +38,7 @@ if _load_bridge_module is not None:
     BigQmtRuntimeAdapter = _runtime_bigqmt.BigQmtRuntimeAdapter
 
 else:
-    from bigqmt_signal_trader.adapters import valkey_common as _valkey_settings
+    from bigqmt_signal_trader.adapters import vk_common as _vk_settings
     from bigqmt_signal_trader.adapter_factory import build_app as _default_build_app
     from bigqmt_signal_trader.runner import (
         forward_order_event,
@@ -120,7 +120,7 @@ _adjust_logged = False
 _credit_callback_fired      =     0
 _rpc_service                = None
 _quote_subscription_service = None  # (QuoteSubscriptionManager, QuotePushChannel)
-_exec_event_valkey_client   = None  # reused;                    building          a new client per trade callback leaks
+_exec_event_vk_client   = None  # reused;                    building          a new client per trade callback leaks
 _scheduled_adjust           = False
 
 # 大 QMT 进程内的延迟诊断。缩短 GIL 切换间隔可减少后台 RPC 线程的等待。
@@ -183,7 +183,7 @@ def request_reload(reason=""):
     handlers, the models and the transports -- where nearly all changes land.
 
     What it CANNOT refresh, and no amount of importlib will: this file and the
-    BIGQMT_VALKEY_DRYRUN entry. QMT execs those itself, and a module cannot
+    BIGQMT_VK_DRYRUN entry. QMT execs those itself, and a module cannot
     reload the module it is running in. Those still need a strategy restart.
 
     Deliberately explicit: reloading a live trading process is not free. QMT's
@@ -384,7 +384,7 @@ def _perform_reload(context_info):
 
 def reset_app():
     global _adjust_logged, _rpc_service, _scheduled_adjust, _last_full_tick_refresh_at, _last_full_tick_market_refresh_at
-    global _quote_subscription_service, _exec_event_valkey_client
+    global _quote_subscription_service, _exec_event_vk_client
     _adjust_logged = False
     _scheduled_adjust = False
     _last_full_tick_refresh_at = 0.0
@@ -414,7 +414,7 @@ def reset_app():
             pass
     _quote_subscription_service = None
     # 清除缓存的成交回报客户端，供下次启动重新创建。
-    _exec_event_valkey_client = None
+    _exec_event_vk_client = None
     _reset_runner_app()
 
 
@@ -440,7 +440,7 @@ def _detect_account_id(context_info=None):
         _local_config = importlib.reload(_local_config)
         value = str(
             getattr(_local_config, "BIGQMT_ACCOUNT_ID", "")
-            or _valkey_settings.local_valkey_config(_local_config).get("account_id")
+            or _vk_settings.local_vk_config(_local_config).get("account_id")
             or ""
         )
         if value:
@@ -562,11 +562,11 @@ def _native_xtdata_enabled(rpc_config):
     return bool(enabled)
 
 
-_VALKEY_TRANSPORT_NAMES = ("valkey", "", "default")
+_VK_TRANSPORT_NAMES = ("valkey", "", "default")
 
 
-def _is_valkey_transport(transport_name):
-    return str(transport_name or "valkey").lower() in _VALKEY_TRANSPORT_NAMES
+def _is_vk_transport(transport_name):
+    return str(transport_name or "valkey").lower() in _VK_TRANSPORT_NAMES
 
 
 def _resolve_background_threads(transport_name, configured):
@@ -575,7 +575,7 @@ def _resolve_background_threads(transport_name, configured):
     ``configured`` is None when the local config never set
     ``rpc_background_threads`` (the runtime only forwards the key when it was
     given explicitly). That used to mean the historical default -- receiver
-    threads on -- for every non-valkey transport. Since #343 it means the
+    threads on -- for every non-VK transport. Since #343 it means the
     adjust drain wherever the transport can drain: measured on the live
     terminal, drain is <= 1 tick on every transport while a background thread
     pays a tick per GIL acquisition (zmq+thread 490ms for a deferred query,
@@ -590,14 +590,14 @@ def _resolve_background_threads(transport_name, configured):
 
     Only transports that implement a *real* drain_request_queue may honor the
     override; anything else keeps the receiver thread it needs to be polled by.
-    Valkey honors either value (blocking brpop path AND an adjust lpop drain).
+    VK honors either value (blocking brpop path AND an adjust lpop drain).
 
     Ask the transport class whether it implements draining.
     """
     normalized = str(transport_name or "valkey").lower()
     if normalized == "serial":
         return False
-    if _is_valkey_transport(normalized):
+    if _is_vk_transport(normalized):
         return bool(configured)
     if not _transport_can_drain(normalized):
         return True
@@ -619,7 +619,7 @@ def _transport_can_drain(transport_name):
 
 
 def _build_quote_subscription_service(context_info, config, transport_name, account_id,
-                                      valkey_client, push_channel=None):
+                                      vk_client, push_channel=None):
     """Assemble the server-side whole-quote push service (manager + channel).
 
     Returns ``(manager, channel)`` or ``None`` when disabled. The channel publisher
@@ -642,7 +642,7 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
         context_info,
         transport_name=transport_name,
         account_id=account_id,
-        valkey_client=valkey_client,
+        vk_client=vk_client,
         enabled=True,
         heartbeat_timeout_seconds=heartbeat_timeout,
         push_channel=push_channel,
@@ -656,21 +656,21 @@ def _build_rpc_service(context_info, app, config):
     if not enabled:
         return None
     transport_name = str(rpc_config.get("transport") or "valkey").lower()
-    valkey_transport = transport_name in ("valkey", "", "default")
+    vk_transport = transport_name in ("valkey", "", "default")
 
     import importlib
     if _load_bridge_module is not None:
         _market_bigqmt         = _load_bridge_module("bigqmt_signal_trader.adapters.market_bigqmt")
         _position_bigqmt       = _load_bridge_module("bigqmt_signal_trader.adapters.position_bigqmt")
-        _valkey_rpc            = _load_bridge_module("bigqmt_signal_trader.valkey_rpc")
-        BigQmtRpcHandlers      = _valkey_rpc.BigQmtRpcHandlers
-        ValkeyPubSubRpcService = _valkey_rpc.ValkeyPubSubRpcService
+        _vk_rpc            = _load_bridge_module("bigqmt_signal_trader.vk_rpc")
+        BigQmtRpcHandlers      = _vk_rpc.BigQmtRpcHandlers
+        VkPubSubRpcService = _vk_rpc.VkPubSubRpcService
     else:
         from bigqmt_signal_trader.adapters import market_bigqmt as _market_bigqmt
         from bigqmt_signal_trader.adapters import position_bigqmt as _position_bigqmt
-        from bigqmt_signal_trader import valkey_rpc as _valkey_rpc
-        BigQmtRpcHandlers = _valkey_rpc.BigQmtRpcHandlers
-        ValkeyPubSubRpcService = _valkey_rpc.ValkeyPubSubRpcService
+        from bigqmt_signal_trader import vk_rpc as _vk_rpc
+        BigQmtRpcHandlers = _vk_rpc.BigQmtRpcHandlers
+        VkPubSubRpcService = _vk_rpc.VkPubSubRpcService
 
     # QMT 重跑策略时会沿用进程内的模块缓存，重载适配器以应用已同步的修改。
     _market_bigqmt = importlib.reload(_market_bigqmt)
@@ -687,39 +687,39 @@ def _build_rpc_service(context_info, app, config):
         except Exception as _reload_err:
             print("[bigqmt_rpc] 重新加载 %s 失败：%s" % (_mod_name, _reload_err))
     # 复用 RPC 已加载的回报模块，避免在 C++ 回调中导入。
-    _exec_events = _valkey_rpc._exec_events
+    _exec_events = _vk_rpc._exec_events
     BigQmtMarketDataProvider = _market_bigqmt.BigQmtMarketDataProvider
     BigQmtPositionProvider = _position_bigqmt.BigQmtPositionProvider
 
     qmt_api = dict(config.get("qmt_api") or {})
-    valkey_client = None
-    response_valkey_client = None
-    if valkey_transport:
+    vk_client = None
+    response_vk_client = None
+    if vk_transport:
         if _load_bridge_module is not None:
-            _valkey_common = _load_bridge_module("bigqmt_signal_trader.adapters.valkey_common")
+            _vk_common = _load_bridge_module("bigqmt_signal_trader.adapters.vk_common")
         else:
-            from bigqmt_signal_trader.adapters import valkey_common as _valkey_common
+            from bigqmt_signal_trader.adapters import vk_common as _vk_common
 
-        _valkey_common = importlib.reload(_valkey_common)
-        valkey_config = dict(config.get("valkey") or {})
-        valkey_config.update(dict(rpc_config.get("valkey") or {}))
-        listen_valkey_config = dict(valkey_config)
-        # Valkey 直连模式的 LPOP 与监听共用客户端。设定 Socket 超时，
-        # 避免 Valkey 无响应时长时间阻塞策略线程。BRPOP 自身仍有 1 秒命令超时。
-        if listen_valkey_config.get("socket_timeout") in (None, ""):
-            listen_valkey_config["socket_timeout"] = 10
-        valkey_client = rpc_config.get("valkey_client") or config.get("valkey_client") or _valkey_common.build_valkey_client(listen_valkey_config)
-        response_valkey_client = (
-            rpc_config.get("response_valkey_client")
-            or config.get("response_valkey_client")
-            or _valkey_common.build_valkey_client(valkey_config)
+        _vk_common = importlib.reload(_vk_common)
+        vk_config = dict(config.get("valkey") or {})
+        vk_config.update(dict(rpc_config.get("valkey") or {}))
+        listen_vk_config = dict(vk_config)
+        # VK 直连模式的 LPOP 与监听共用客户端。设定 Socket 超时，
+        # 避免 VK 无响应时长时间阻塞策略线程。BRPOP 自身仍有 1 秒命令超时。
+        if listen_vk_config.get("socket_timeout") in (None, ""):
+            listen_vk_config["socket_timeout"] = 10
+        vk_client = rpc_config.get("vk_client") or config.get("vk_client") or _vk_common.build_vk_client(listen_vk_config)
+        response_vk_client = (
+            rpc_config.get("response_vk_client")
+            or config.get("response_vk_client")
+            or _vk_common.build_vk_client(vk_config)
         )
     account_id = str(rpc_config.get("account_id") or config.get("account_id") or _account_id or "")
     if not account_id:
         print("[bigqmt_rpc] 已禁用：account_id 为空")
         return None
     transport = None
-    if not valkey_transport:
+    if not vk_transport:
         if _load_bridge_module is not None:
             build_transport = _load_bridge_module("bigqmt_signal_trader.transports.factory").build_transport
         else:
@@ -729,7 +729,7 @@ def _build_rpc_service(context_info, app, config):
     allow_order_methods = _config_bool(rpc_config.get("allow_order_methods"), False)
     global _quote_subscription_service
     _quote_subscription_service = _build_quote_subscription_service(
-        context_info, config, transport_name, account_id, valkey_client,
+        context_info, config, transport_name, account_id, vk_client,
         transport if transport_name == "serial" else None,
     )
     quote_manager = (
@@ -760,12 +760,12 @@ def _build_rpc_service(context_info, app, config):
         # 空字符串表示让报单来源留空（#154）。
         default_strategy_name=rpc_config.get("default_strategy_name"),
     )
-    # 下载任务和委托归属共用已配置的 Valkey 客户端（#133）。
-    # 串口模式下 _exec_event_valkey 返回 None，相关存储功能随之停用。
-    _store_valkey                         = response_valkey_client or valkey_client or _exec_event_valkey(config)
-    handlers.download_job_valkey_client   = _store_valkey
-    handlers.order_identity_valkey_client = _store_valkey
-    handlers.order_remark_valkey_client   = _exec_events.bounded_identity_client(_store_valkey)
+    # 下载任务和委托归属共用已配置的 VK 客户端（#133）。
+    # 串口模式下 _exec_event_vk 返回 None，相关存储功能随之停用。
+    _store_vk                         = response_vk_client or vk_client or _exec_event_vk(config)
+    handlers.download_job_vk_client   = _store_vk
+    handlers.order_identity_vk_client = _store_vk
+    handlers.order_remark_vk_client   = _exec_events.bounded_identity_client(_store_vk)
     handlers.order_watch_table            = _order_watch_table      # 确认委托时优先查回调写入的跟踪表（#164）。
     handlers.reload_hook                  = request_reload # 通过钩子将 reload_deployment 交给策略模块处理。
     handlers.reload_status_hook           = reload_status
@@ -787,9 +787,9 @@ def _build_rpc_service(context_info, app, config):
         "[bigqmt_rpc] transport=%s 模式配置 process_in_listener=%s listener_methods=%s allow_order_methods=%s background_threads=%s"
         % (transport_name, process_in_listener, listener_methods, allow_order_methods, background_threads)
     )
-    service = ValkeyPubSubRpcService(
-        valkey_client=valkey_client,
-        response_valkey_client=response_valkey_client,
+    service = VkPubSubRpcService(
+        vk_client=vk_client,
+        response_vk_client=response_vk_client,
         handlers=handlers,
         account_id=account_id,
         request_channel_template=rpc_config.get("request_channel_template", "bigqmt:rpc:req:{account_id}"),
@@ -934,14 +934,14 @@ def _refresh_full_tick_cache(context_info, config):
     do_market = now - _last_full_tick_market_refresh_at >= market_interval
     if not do_symbol and not do_market:
         return 0
-    valkey_client = getattr(_rpc_service, "valkey", None)
-    if valkey_client is None:
-        valkey_config = dict(config.get("valkey") or {})
-        if not valkey_config:
+    vk_client = getattr(_rpc_service, "vk", None)
+    if vk_client is None:
+        vk_config = dict(config.get("valkey") or {})
+        if not vk_config:
             return 0
-        from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
+        from bigqmt_signal_trader.adapters.vk_common import build_vk_client
 
-        valkey_client = build_valkey_client(valkey_config)
+        vk_client = build_vk_client(vk_config)
     demand_ttl = float(cache_config.get("demand_ttl_seconds") or 10)
     cache_ttl = float(cache_config.get("cache_ttl_seconds") or 10)
     max_requests = int(cache_config.get("max_requests") or 8)
@@ -955,7 +955,7 @@ def _refresh_full_tick_cache(context_info, config):
         _last_full_tick_refresh_at = now
         try:
             refreshed += refresh_full_tick_cache(
-                valkey_client,
+                vk_client,
                 context_info,
                 account_id,
                 demand_ttl_seconds=demand_ttl,
@@ -970,7 +970,7 @@ def _refresh_full_tick_cache(context_info, config):
         _last_full_tick_market_refresh_at = now
         try:
             refreshed += refresh_full_tick_cache(
-                valkey_client,
+                vk_client,
                 context_info,
                 account_id,
                 demand_ttl_seconds=demand_ttl,
@@ -1417,11 +1417,11 @@ def _pump_download_jobs(context_info, config):
     # Python swallows as "Exception ignored in". It never reaches a log the
     # package writes; it only shows up in the QMT panel.
     #
-    # _exec_event_valkey already learned this lesson and caches; this path was
+    # _exec_event_vk already learned this lesson and caches; this path was
     # missed. Both only build a client when _rpc_service has none, which is the
     # zmq-transport case.
-    valkey_client = _exec_event_valkey(config)
-    if valkey_client is None:
+    vk_client = _exec_event_vk(config)
+    if vk_client is None:
         return None
     market_data = getattr(getattr(_rpc_service, "handlers", None), "market_data", None)
     if market_data is None:
@@ -1436,7 +1436,7 @@ def _pump_download_jobs(context_info, config):
         from bigqmt_signal_trader.download_jobs import pump_download_jobs
 
         return pump_download_jobs(
-            valkey_client,
+            vk_client,
             market_data,
             account_id,
             chunk_size=int(job_config.get("chunk_size") or 10),
@@ -1453,7 +1453,7 @@ def _adjust_phase(name, fn, *args):
     the 500ms adjust cycle holds the GIL (the gil_probe shows the stall exists;
     this shows WHERE). The finally-log never alters the call's result/exception.
 
-    Guard with except: an exception here (e.g. valkey outage inside the LPOP
+    Guard with except: an exception here (e.g. VK outage inside the LPOP
     drain) must NOT propagate into adjust/handlebar — QMT stops the strategy on
     a callback raise, which is the 'auto-exit' users report. Log and continue.
     """
@@ -1520,13 +1520,13 @@ def handlebar(ContextInfo):
     return adjust(ContextInfo, _source="handlebar")
 
 
-# Valkey is preferred for exec events, but only while it actually works.
+# VK is preferred for exec events, but only while it actually works.
 # "Configured" is not "reachable": valkey-py builds a client lazily and does not
-# dial until the first command, so a stale valkey block in the config yields a
+# dial until the first command, so a stale VK block in the config yields a
 # perfectly good-looking client that times out on every publish -- and the zmq
 # push channel sitting right next to it never gets used (issue #145).
-_EXEC_VALKEY_FAILURE_LIMIT = 3
-_exec_sink_state = {"valkey_failures": 0, "reports": 0, "demoted": False}
+_EXEC_VK_FAILURE_LIMIT = 3
+_exec_sink_state = {"vk_failures": 0, "reports": 0, "demoted": False}
 
 # issue #161: QMT fires the order callback once when the order row appears and
 # again when m_strOrderSysID is populated (#152's window) -- the client then
@@ -1648,38 +1648,38 @@ def _push_channel_sink():
 
 
 def _exec_event_sink(config):
-    """Where exec events go: a Valkey client, or the quote push channel.
+    """Where exec events go: a VK client, or the quote push channel.
 
-    Exec events were Valkey-only, so a zmq deployment with no Valkey configured
+    Exec events used to require VK, so a zmq deployment with no VK configured
     silently delivered no order/trade callbacks at all -- _publish_exec_event
     simply returned (issue #76). zmq deployments already run a push channel for
     whole-quote data, so reuse it rather than opening a second socket.
 
-    Valkey stays first *while it works*: its channels carry streams for short
+    VK stays first *while it works*: its channels carry streams for short
     replay, which the push channel has no equivalent of. After
-    _EXEC_VALKEY_FAILURE_LIMIT consecutive publish failures it is demoted and
-    the push channel takes over, because an unreachable valkey was otherwise
+    _EXEC_VK_FAILURE_LIMIT consecutive publish failures it is demoted and
+    the push channel takes over, because an unreachable VK was otherwise
     swallowing every callback while a working channel stood idle (issue #145).
     """
     if not _exec_sink_state["demoted"]:
-        valkey_client = _exec_event_valkey(config)
-        if valkey_client is not None:
-            return valkey_client
+        vk_client = _exec_event_vk(config)
+        if vk_client is not None:
+            return vk_client
     return _push_channel_sink()
 
 
 def _note_exec_publish_failure(kind, exc):
-    """Count a failure, demote valkey once it is clearly not coming back, and
+    """Count a failure, demote VK once it is clearly not coming back, and
     keep the log readable.
 
     The full traceback is deliberate -- issue #76 took a day because str(exc)
     alone read "error return without exception set" with no origin. But a
-    persistently unreachable valkey prints that for EVERY order and deal, which
+    persistently unreachable VK prints that for EVERY order and deal, which
     buries the log it is meant to explain. Full detail the first few times,
     a one-liner after that.
     """
     state = _exec_sink_state
-    state["valkey_failures"] += 1
+    state["vk_failures"] += 1
     state["reports"] += 1
     if state["reports"] <= 3:
         _log_err(
@@ -1693,13 +1693,13 @@ def _note_exec_publish_failure(kind, exc):
             "发布 %s 已连续失败 %d 次：%s（%s）"
             % (kind, state["reports"], exc, exc.__class__.__name__),
         )
-    if not state["demoted"] and state["valkey_failures"] >= _EXEC_VALKEY_FAILURE_LIMIT:
+    if not state["demoted"] and state["vk_failures"] >= _EXEC_VK_FAILURE_LIMIT:
         state["demoted"] = bool(_push_channel_sink())
         if state["demoted"]:
-            print("[bigqmt_exec_events] valkey 已连续失败 %d 次；委托和成交回调"
+            print("[bigqmt_exec_events] VK 已连续失败 %d 次；委托和成交回调"
                   "将改用行情推送通道。若不需要该能力，可从本地配置中删除 "
-                  "valkey 配置块。"
-                  % state["valkey_failures"])
+                  "VK 配置块。"
+                  % state["vk_failures"])
 
 
 def _publish_one(exec_events, sink, account_id, event, kind, config):
@@ -1711,7 +1711,7 @@ def _publish_one(exec_events, sink, account_id, event, kind, config):
     """
     try:
         exec_events.publish_exec_event(sink, account_id, event)
-        _exec_sink_state["valkey_failures"] = 0
+        _exec_sink_state["vk_failures"] = 0
         return True
     except Exception as exc:
         _note_exec_publish_failure(kind, exc)
@@ -1755,54 +1755,54 @@ def _publish_synthesized_cancel_error(account_id, event):
         return False
 
 
-def _exec_event_valkey(config):
-    """Return a valkey client for exec-event publishing, reusing one instance.
+def _exec_event_vk(config):
+    """Return a VK client for exec-event publishing, reusing one instance.
 
     Previously a new client was built per order/trade callback when the RPC
     service had none (the zmq-transport case), leaking a connection pool per
     event. Reuse one; build failure returns None so publishing just skips.
 
-    A non-Valkey transport may retain a Valkey block for optional download jobs
+    A non-VK transport may retain a VK block for optional download jobs
     or exec-event replay. Skip that block only when both consumers are
     explicitly disabled; omitted flags retain the legacy enabled behavior.
     """
-    global _exec_event_valkey_client
+    global _exec_event_vk_client
     if str((config.get("rpc") or {}).get("transport") or "").lower() == "serial":
         return None
-    existing = getattr(_rpc_service, "valkey", None) if _rpc_service is not None else None
+    existing = getattr(_rpc_service, "vk", None)
     if existing is not None:
         return existing
-    if _exec_event_valkey_client is not None:
-        return _exec_event_valkey_client
+    if _exec_event_vk_client is not None:
+        return _exec_event_vk_client
     if not _config_bool((config.get("download_jobs") or {}).get("enabled"), True) and not _config_bool(
         (config.get("exec_events") or {}).get("enabled"), True
     ):
         return None
-    valkey_config = dict(config.get("valkey") or {})
-    if not valkey_config:
+    vk_config = dict(config.get("valkey") or {})
+    if not vk_config:
         return None
     try:
-        from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client
+        from bigqmt_signal_trader.adapters.vk_common import build_vk_client
 
-        _exec_event_valkey_client = build_valkey_client(valkey_config)
+        _exec_event_vk_client = build_vk_client(vk_config)
     except Exception as exc:
         # 静默 None 会让事件悄悄全丢（issue #71 的 protocol 崩溃就是这样没的），
         # 必须留痕。
         try:
             from bigqmt_signal_trader.logging_setup import get_logger
 
-            get_logger("strategy").error("成交回报 Valkey 客户端创建失败：%s", exc)
+            get_logger("strategy").error("成交回报 VK 客户端创建失败：%s", exc)
         except Exception:
             pass
         return None
-    return _exec_event_valkey_client
+    return _exec_event_vk_client
 
 
 def _local_identity_strategy_name(account_id, event):
     """strategy_name from the in-process submit journal, or "".
 
     The journal (#156) is written by the RPC handlers at submit time and is
-    all a deployment has when valkey is absent -- or, the reported case in
+    all a deployment has when VK is absent -- or, the reported case in
     #174, configured but not reachable, which fails silently.
     """
     service = _rpc_service
@@ -1841,14 +1841,14 @@ def _enrich_event_identity(exec_events, config, account_id, event):
 
     The in-process journal is consulted FIRST, and deliberately so. This runs
     on QMT's C++ callback thread, and for an order this process submitted the
-    journal already holds the same string that was written to valkey -- so
-    asking valkey first would buy nothing and cost a round trip per event. It
-    costs a lot when valkey is configured and not reachable: valkey-py does not
+    journal already holds the same string that was written to VK -- so
+    asking VK first would buy nothing and cost a round trip per event. It
+    costs a lot when VK is configured and not reachable: valkey-py does not
     dial until the first command, so every callback would pay the full
     timeout (#145's shape). That is precisely the deployment #174 was reported
     from.
 
-    Valkey is the fallback rather than the primary because its extra reach --
+    VK is the fallback rather than the primary because its extra reach --
     naming an order some OTHER process submitted -- is the rarer case.
 
     Both branches call this. Enriching only orders is what left
@@ -1863,10 +1863,10 @@ def _enrich_event_identity(exec_events, config, account_id, event):
     if name:
         event["strategy_name"] = name
         return event
-    valkey_client = _exec_event_valkey(config)
-    if valkey_client is not None:
+    vk_client = _exec_event_vk(config)
+    if vk_client is not None:
         try:
-            event = exec_events.enrich_order_identity(valkey_client, account_id, event)
+            event = exec_events.enrich_order_identity(vk_client, account_id, event)
         except Exception:
             pass
     return event
@@ -1904,7 +1904,7 @@ def _recover_callback_remark(kind, obj):
 
 
 def _publish_exec_event(kind, obj, context_info=None, normalized_event=None):
-    """Push a normalized order/trade event to Valkey for real-time client callbacks."""
+    """Push a normalized order/trade event to VK for real-time client callbacks."""
     config = _build_config()
     event_config = dict(config.get("exec_events") or {})
     # Raw-field diagnostics run BEFORE every other check (and before the

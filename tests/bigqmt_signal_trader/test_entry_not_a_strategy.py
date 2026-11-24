@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 SRC = os.path.join(ROOT, "src")
 sys.path.insert(0, SRC)
 
-ENTRY = os.path.join(SRC, "BIGQMT_VALKEY_DRYRUN.py")
+ENTRY = os.path.join(SRC, "BIGQMT_VK_DRYRUN.py")
 
 
 def _source():

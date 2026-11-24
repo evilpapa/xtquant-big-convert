@@ -1,19 +1,19 @@
-"""Valkey signal state store."""
+"""VK signal state store."""
 
 import datetime as _dt
 
 
-class ValkeyStateStore:
+class VkStateStore:
     def __init__(
         self,
-        valkey_client,
+        vk_client,
         account_id="default",
         claim_key_template="bigqmt:signal_claim:{account_id}:{signal_id}",
         status_key_template="bigqmt:signal_status:{account_id}:{signal_id}",
         claim_ttl_seconds=3600,
         status_ttl_seconds=86400,
     ):
-        self.valkey = valkey_client
+        self.vk = vk_client
         self.account_id = account_id
         self.claim_key_template = claim_key_template
         self.status_key_template = status_key_template
@@ -42,15 +42,15 @@ class ValkeyStateStore:
             "updated_at": self._now_text(),
         }
         fields.update({k: "" if v is None else str(v) for k, v in mapping.items()})
-        self.valkey.hset(key, mapping=fields)
+        self.vk.hset(key, mapping=fields)
         if self.status_ttl_seconds > 0:
-            self.valkey.expire(key, self.status_ttl_seconds)
+            self.vk.expire(key, self.status_ttl_seconds)
 
     def claim(self, signal, consumer_id):
         account_id = signal.account_id or self.account_id
         self._accounts_by_signal_id[signal.signal_id] = account_id
         key = self._claim_key(account_id, signal.signal_id)
-        ok = self.valkey.set(key, consumer_id, nx=True, ex=self.claim_ttl_seconds)
+        ok = self.vk.set(key, consumer_id, nx=True, ex=self.claim_ttl_seconds)
         if ok:
             self._write_status(
                 account_id,

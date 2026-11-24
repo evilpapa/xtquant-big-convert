@@ -1,10 +1,10 @@
-﻿# 大 QMT Valkey Queue RPC 说明
+﻿# 大 QMT VK Queue RPC 说明
 
 更新时间：2026-11-21
 
 ## 目标
 
-在大 QMT 策略进程内启动一个 Valkey RPC 服务，用来远程调用少量白名单方法。默认由 QMT `run_time("adjust", ...)` 调度读取 Valkey 请求队列。直连需要在 QMT 策略的 Python 3.12+ 环境中安装 `valkey`。
+在大 QMT 策略进程内启动一个 VK RPC 服务，用来远程调用少量白名单方法。默认由 QMT `run_time("adjust", ...)` 调度读取 VK 请求队列。直连需要在 QMT 策略的 Python 3.12+ 环境中安装 `valkey`。
 
 - `ping`
 - `get_ticks`
@@ -35,7 +35,7 @@ RPC 服务端会把以下 MiniQMT 常用方法名映射到大 QMT 适配器：
 | `query_stock_position` | `query_stock_position` | 查询单只持仓，按 `stock_code` 过滤 |
 | `query_stock_orders` | `query_orders` | 查询委托；支持 `cancelable_only` 过滤 |
 | `query_stock_trades` | `query_trades` | 查询成交 |
-| `get_full_tick` | `get_ticks` | 默认直接 RPC 调用；可选开启 Valkey 快照缓存降载 |
+| `get_full_tick` | `get_ticks` | 默认直接 RPC 调用；可选开启 VK 快照缓存降载 |
 | `get_instrument_detail` / `get_instrumentdetail` | `get_instrument` | 查询合约详情 |
 | `order_stock` / `order_stock_async` | `submit_order` | 买卖下单；默认关闭 |
 | `cancel_order_stock` / `cancel_order_stock_sysid` | `cancel_order` | 撤单；默认关闭 |
@@ -46,16 +46,16 @@ RPC 服务端会把以下 MiniQMT 常用方法名映射到大 QMT 适配器：
 
 `get_full_tick/get_ticks` 的 `codes` 参数支持两种写法：传合约代码如 `["600000.SH", "000001.SZ"]` 查询指定标的；传市场代码如 `["SH", "SZ"]` 查询全市场全推快照。
 
-注意：兼容层的 `xtdata.get_full_tick(codes)` 默认走 Valkey RPC 现调大 QMT。若需要降低全市场行情的大 payload 压力，可在客户端和 QMT 本地配置里显式打开 `full_tick_cache_enabled=True` / `BIGQMT_FULL_TICK_CACHE_CONFIG["enabled"]=True`，改为 Valkey 需求驱动快照。
+注意：兼容层的 `xtdata.get_full_tick(codes)` 默认走 VK RPC 现调大 QMT。若需要降低全市场行情的大 payload 压力，可在客户端和 QMT 本地配置里显式打开 `full_tick_cache_enabled=True` / `BIGQMT_FULL_TICK_CACHE_CONFIG["enabled"]=True`，改为 VK 需求驱动快照。
 
 ## 实现文件
 
-- `src/bigqmt_signal_trader/valkey_rpc.py`：RPC 协议、Valkey queue 服务、外部客户端 helper。
+- `../src/bigqmt_signal_trader/vk_rpc.py`：RPC 协议、VK queue 服务、外部客户端 helper。
 - `src/bigqmt_signal_trader/xtquant_compat.py`：MiniQMT 风格客户端兼容层。
 - `src/xtquant/`：可选的 `xtquant` import shim，用于最终替换老 import。
-- `src/bigqmt_signal_trader_strategy.py`：在 `init` 中启动 RPC；默认由 QMT `run_time("adjust", ...)` drain Valkey queue，避免大 QMT 冻结自建后台线程。
-- `src/bigqmt_signal_trader_valkey_rpc_runtime.py`：大 QMT 策略入口，默认不消费交易信号，只启用 RPC 和持仓同步。
-- `tests/bigqmt_signal_trader/test_valkey_rpc.py`：RPC 单测。
+- `src/bigqmt_signal_trader_strategy.py`：在 `init` 中启动 RPC；默认由 QMT `run_time("adjust", ...)` drain VK queue，避免大 QMT 冻结自建后台线程。
+- `src/bigqmt_signal_trader_vk_rpc_runtime.py`：大 QMT 策略入口，默认不消费交易信号，只启用 RPC 和持仓同步。
+- `tests/bigqmt_signal_trader/test_vk_rpc.py`：RPC 单测。
 
 ## 运行方式
 
@@ -72,8 +72,8 @@ Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_strategy.py' `
   -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_strategy.py' `
   -Force
 
-Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_valkey_rpc_runtime.py' `
-  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_valkey_rpc_runtime.py' `
+Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_vk_rpc_runtime.py' `
+  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_vk_rpc_runtime.py' `
   -Force
 ```
 
@@ -86,7 +86,7 @@ QMT 本地私有配置文件：
 BIGQMT_ACCOUNT_ID = "你的资金账号"
 
 BIGQMT_CONFIG = {
-    "host": "YOUR_VALKEY_HOST",
+    "host": "YOUR_VK_HOST",
     "port": 6379,
     "db": 5,
     "username": "",
@@ -105,12 +105,12 @@ BIGQMT_CONFIG = {
 }
 ```
 
-这个文件含账号和 Valkey 密码，只放 QMT 本地目录，不提交。
+这个文件含账号和 VK 密码，只放 QMT 本地目录，不提交。
 
 QMT 策略编辑器内容：
 
 ```python
-#coding:gbk
+# coding:gbk
 import sys
 import os
 import importlib
@@ -122,13 +122,15 @@ if _qmt_path not in sys.path:
     sys.path.insert(0, _qmt_path)
 
 try:
-    import bigqmt_signal_trader.valkey_rpc as _valkey_rpc
-    _valkey_rpc = importlib.reload(_valkey_rpc)
+    import bigqmt_signal_trader.vk_rpc as _vk_rpc
+
+    _vk_rpc = importlib.reload(_vk_rpc)
 except Exception:
     pass
 
 try:
     import bigqmt_signal_trader_strategy as _strategy
+
     try:
         _strategy.reset_app()
     except Exception:
@@ -137,17 +139,20 @@ try:
 except Exception:
     pass
 
-import bigqmt_signal_trader_valkey_rpc_runtime as _runtime
+import bigqmt_signal_trader_vk_rpc_runtime as _runtime
+
 _runtime = importlib.reload(_runtime)
 
 try:
     from bigqmt_signal_trader_qmt_config import BIGQMT_CONFIG
-    _runtime.configure_runtime_valkey(BIGQMT_CONFIG)
+
+    _runtime.configure_runtime_vk(BIGQMT_CONFIG)
 except Exception:
     pass
 
 try:
     from bigqmt_signal_trader_qmt_config import BIGQMT_ACCOUNT_ID
+
     _runtime.configure_runtime_account(BIGQMT_ACCOUNT_ID)
 except Exception:
     pass
@@ -170,7 +175,7 @@ deal_callback = _runtime.deal_callback
 
 不要勾选“启动本地 python”。
 
-## Valkey 协议
+## VK 协议
 
 ### RPC 请求/响应
 
@@ -244,13 +249,13 @@ bigqmt:full_tick:demand:{account_id}
 bigqmt:full_tick:cache:{account_id}:{request_id}
 ```
 
-快照 Valkey key 的 TTL 默认是 10 秒；客户端还会校验 `updated_at_ts`，超过 `cache_ttl_seconds` 的快照不会返回。第一次调用如果还没有快照，客户端默认最多等待 `3.5s` 等下一轮大 QMT 刷新；**个股列表**仍然没有新快照时回退一次 live RPC(`get_full_tick`)以避免冷启动硬停；**市场代码**(`SH/SZ/BJ/HK`)则抛出超时、不回退 live 拉全市场。
+快照 VK key 的 TTL 默认是 10 秒；客户端还会校验 `updated_at_ts`，超过 `cache_ttl_seconds` 的快照不会返回。第一次调用如果还没有快照，客户端默认最多等待 `3.5s` 等下一轮大 QMT 刷新；**个股列表**仍然没有新快照时回退一次 live RPC(`get_full_tick`)以避免冷启动硬停；**市场代码**(`SH/SZ/BJ/HK`)则抛出超时、不回退 live 拉全市场。
 
 ### 异步下载任务（download jobs）
 
-`download_history_data` / `download_history_data2` 是耗时的长调用：如果走同步 RPC，服务端会在**策略线程**上一直下载，冻结整个 RPC pump（且客户端 6s 就超时崩）。因此这两个方法改为**异步分块任务**：客户端把任务写入 Valkey 队列立即返回，大 QMT 的策略线程每个 tick 只下载 `download_job_chunk_size` 只（受 `download_job_max_wall_seconds` 墙钟预算约束），永不长时间阻塞。
+`download_history_data` / `download_history_data2` 是耗时的长调用：如果走同步 RPC，服务端会在**策略线程**上一直下载，冻结整个 RPC pump（且客户端 6s 就超时崩）。因此这两个方法改为**异步分块任务**：客户端把任务写入 VK 队列立即返回，大 QMT 的策略线程每个 tick 只下载 `download_job_chunk_size` 只（受 `download_job_max_wall_seconds` 墙钟预算约束），永不长时间阻塞。
 
-Valkey 布局（按账户）：
+VK 布局（按账户）：
 
 ```text
 bigqmt:download:queue:{account_id}          # 待处理 job_id 列表（RPUSH/LPOP）
@@ -276,9 +281,9 @@ status = xtdata.wait_download(job["job_id"])          # 阻塞轮询到 done/fai
 
 ### 实时成交/委托回调推送（exec events）
 
-大 QMT 的 `order_callback(ContextInfo, orderInfo)` / `deal_callback(ContextInfo, dealInfo)` 在策略进程内触发。服务端把 QMT 对象的 ThinkTrader `m_*` 字段规范化后 publish 到 Valkey，客户端后台线程订阅并回调 —— 无需轮询即可**实时**拿到成交/委托。
+大 QMT 的 `order_callback(ContextInfo, orderInfo)` / `deal_callback(ContextInfo, dealInfo)` 在策略进程内触发。服务端把 QMT 对象的 ThinkTrader `m_*` 字段规范化后发布到 VK 频道，客户端后台线程订阅并回调 —— 无需轮询即可**实时**拿到成交/委托。
 
-Valkey 频道（同名 stream，xadd + publish，供短时回放）：
+VK 频道（同名 stream，xadd + publish，供短时回放）：
 
 ```text
 bigqmt:order_events:{account_id}
@@ -311,17 +316,17 @@ import valkey
 
 sys.path.insert(0, r"<REPO_ROOT>\src")
 
-from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
+from bigqmt_signal_trader.vk_rpc import call_vk_rpc
 
 r = valkey.Valkey(
-    host="YOUR_VALKEY_HOST",
+    host="YOUR_VK_HOST",
     port=6379,
     db=5,
     username="",
     password="...",
 )
 
-response = call_valkey_rpc(
+response = call_vk_rpc(
     r,
     account_id="YOUR_ACCOUNT_ID",
     method="get_positions",
@@ -387,14 +392,14 @@ QMT 终端自身的 C++ 主循环占着 GIL**,`setswitchinterval`/精简 adjust 
 
 **deferred 交易查询的下限是一拍，上限看 `get_trade_detail_data` 自己**：2026-09-04 实测
 p50 1012~1013ms（与 interval 无关），2026-09-22 同一终端 drain 下 103ms —— 差的是柜台查询
-自身的开销（当天委托/成交行数），调 interval 无效。要低延迟拿持仓,走**客户端 valkey
+自身的开销（当天委托/成交行数），调 interval 无效。要低延迟拿持仓,走**客户端 VK
 缓存**(position_sync 已在写)而非每次实时查。
 
 ### 传输与后台线程
 
 - **valkey**(默认,跨机):`rpc_process_in_listener=True`。
 - **`rpc_background_threads` 一律 `False`**(adjust drain)。后台收包线程每拿一次 GIL 付一个
-  adjust tick,valkey 回包 8 次往返就是 ~400ms(#343);drain 下所有传输都是 ≤1 tick。不写这个
+  adjust tick，VK 回包 8 次往返就是 ~400ms（#343），drain 下所有传输都是 ≤1 tick。不写这个
   键时能 drain 的传输默认就是 drain,只有没有 drain 实现的保留收包线程。
 - **重读走工作线程**(`rpc_heavy_offload`,默认 `True`,#351)。drain 下所有请求都在 adjust 线程上
   跑,一次 1.8s 的 `get_market_data_ex` 就是策略自己的 `tick_app` 停 1.8s——这正是 #321 把 LPOP
@@ -418,7 +423,7 @@ p50 1012~1013ms（与 interval 无关），2026-09-22 同一终端 drain 下 103
 - 默认生产模式不在自建线程里调用 QMT API；QMT API 调用在 `adjust/handlebar` 中处理。
 - 默认只读，远程下单关闭。
 - 账号不匹配会拒绝请求。
-- 响应写 Valkey key 并设置 TTL，方便调用端超时后排查。
+- 响应写 VK key 并设置 TTL，方便调用端超时后排查。
 
 ## 本地测试
 
@@ -438,6 +443,6 @@ OK
 
 ### QMT 重启后的委托备注
 
-ORDER/DEAL 查询（包括组合快照）与原生回调会在现有 Valkey identity 存储记录原生系统委托号和备注的精确关联，回调记录不依赖推送是否开启或成功。原生非空备注优先；只有空备注才恢复。关联按账户、账户类型、源交易日期、交易所、完整系统委托号隔离，证券与方向须一致；同一关联出现冲突后在有效期内拒绝恢复。不根据证券、数量或价格猜配，不改变数量、资金、成交状态或成交号。
+ORDER/DEAL 查询（包括组合快照）与原生回调会在现有 VK identity 存储记录原生系统委托号和备注的精确关联，回调记录不依赖推送是否开启或成功。原生非空备注优先；只有空备注才恢复。关联按账户、账户类型、源交易日期、交易所、完整系统委托号隔离，证券与方向须一致；同一关联出现冲突后在有效期内拒绝恢复。不根据证券、数量或价格猜配，不改变数量、资金、成交状态或成交号。
 
-该关联沿用 7 天有效期，独立连接池采用 250ms 连接/读取超时且不重试。适用于 raw passorder 与 order_stock 在系统委托号已由回调或查询实际观察后的恢复。尚未观察到关联、关联过期或 Valkey 丢失/不可用时仍返回原生空备注，调用方应继续按未知委托处理；本能力不提供跨 Valkey 重启的持久保证，也不重发委托。安装前已有且原生备注已丢失的旧记录不会被补造。
+该关联沿用 7 天有效期，独立连接池采用 250ms 连接/读取超时且不重试。适用于 raw passorder 与 order_stock 在系统委托号已由回调或查询实际观察后的恢复。尚未观察到关联、关联过期或 VK 丢失/不可用时仍返回原生空备注，调用方应继续按未知委托处理；本能力不提供跨 VK 重启的持久保证，也不重发委托。安装前已有且原生备注已丢失的旧记录不会被补造。

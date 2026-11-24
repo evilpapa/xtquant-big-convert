@@ -1,7 +1,6 @@
 """通过大 QMT RPC 提供 MiniQMT 兼容接口。
 
-保留 query_stock_positions、get_full_tick 等现有调用形式，由大 QMT
-进程调用终端运行时 API。
+保留 query_stock_positions、get_full_tick 等现有调用形式，由大 QMT 进程调用终端运行时 API。
 """
 
 import os
@@ -21,8 +20,8 @@ from xtquant import xtconstant as _xtconstant
 from xtquant.xtconstant import ORDER_UNKNOWN, STOCK_BUY, STOCK_SELL
 from xtquant.xttype import StockAccount
 
-from .adapters.valkey_common import (
-    local_valkey_config, normalize_valkey_url, valkey_client_class, valkey_connection_options,
+from .adapters.vk_common import (
+    local_vk_config, normalize_vk_url, vk_client_class, vk_connection_options,
 )
 from .code_utils import is_bond_code
 from .download_jobs import DONE, FAILED
@@ -30,7 +29,7 @@ from .full_tick_cache import request_full_tick_cache, wait_full_tick_cache
 from .local_cache import LocalMarketCache
 from .order_id import OrderId, order_sys_id_of
 from .option_order_type import option_order_type
-from .valkey_rpc import TYPED_PAYLOAD_FLAG, call_valkey_rpc
+from .vk_rpc import TYPED_PAYLOAD_FLAG, call_vk_rpc
 from .logging_setup import get_logger
 
 log = get_logger("xtquant_compat")
@@ -191,14 +190,14 @@ def _first_set(*values):
 
 
 class _ClientSetting(object):
-    """单个客户端功能项的取值顺序：显式 ``valkey_config`` 优先，其次本地
+    """单个客户端功能项的取值顺序：显式 ``vk_config`` 优先，其次本地
     .env、配置模块的 section，最后是环境变量 / 内置默认值——与构造函数对
     host/port/password 已经承诺的顺序一致。
 
     问题 #289：三个功能块各自以不同方式破坏了这个顺序。``local_cache``
     先读模块 section，只把显式值当作 ``.get`` 的兜底；``formula_server``
     用 ``or`` 把模块 section 串在显式 dict 前面，于是任何模块 section 都会
-    直接丢弃显式 dict；``full_tick`` 根本不读 ``valkey_config``，所以即使
+    直接丢弃显式 dict；``full_tick`` 根本不读 ``vk_config``，所以即使
     没有模块，它的构造参数也不起作用。
 
     ``section`` 是 load_client_config 交过来的东西：模块专属的 dict
@@ -261,25 +260,24 @@ def _quote_client_id():
 
 
 def _build_quote_push_channel(client):
-    """配置了 Valkey 时构造 Valkey 推送订阅者。"""
-    from .quote_push_channel import ValkeyQuotePushChannel
+    """配置了 VK 时构造 VK 推送订阅者。"""
+    from .quote_push_channel import VkQuotePushChannel
 
     transport_name = str(getattr(client, "transport_name", "valkey") or "valkey").lower()
     if (transport_name not in ("valkey", "", "default")
-            and not getattr(client, "_valkey_explicit", True)):
+            and not getattr(client, "_vk_explicit", True)):
         raise RuntimeError(
             "transport=%s 没有全推推送通道（服务端 0.3.58 起也不再发）："
-            "请改用 get_full_tick 轮询；或在客户端配置里显式给出 valkey 块，"
-            "全推才会走 valkey pub/sub。" % transport_name)
-    return ValkeyQuotePushChannel(client._valkey(), account_id=client.account_id)
+            "请改用 get_full_tick 轮询；或在客户端配置里显式给出 VK 块，"
+            "全推才会走 VK pub/sub。" % transport_name)
+    return VkQuotePushChannel(client._vk(), account_id=client.account_id)
 
 
 def _missing_account_id_message():
     """说明查了哪些地方、该怎么做，而不只是说缺东西。
 
     原来的提示「Big QMT account_id 是必需的」完全没告诉读者配置去哪儿找了，
-    于是放在离运行解释器一个 sys.path 之外的配置文件，看起来和完全没有配置
-    一样（问题 #90）。
+    于是放在离运行解释器一个 sys.path 之外的配置文件，看起来和完全没有配置一样（问题 #90）。
     """
     searched = list(DEFAULT_CLIENT_CONFIG_MODULES)
     selected = os.environ.get(CLIENT_CONFIG_MODULE_ENV)
@@ -293,11 +291,9 @@ def _missing_account_id_message():
         pass
 
     if found:
-        detail = ("imported %s, but it defines no BIGQMT_ACCOUNT_ID"
-                  % found)
+        detail = ("imported %s, but it defines no BIGQMT_ACCOUNT_ID" % found)
     else:
-        detail = ("none of these modules could be imported: %s"
-                  % ", ".join(searched))
+        detail = ("none of these modules could be imported: %s" % ", ".join(searched))
     lines = [
         "Big QMT account_id is required -- %s." % detail,
         "Fix it in any one of these ways:",
@@ -333,17 +329,17 @@ def load_client_config(module_name=None):
         module = _import_optional_module(candidate)
         if module is None:
             continue
-        valkey_config = local_valkey_config(module)
-        account_id = getattr(module, "BIGQMT_ACCOUNT_ID", None) or valkey_config.get("account_id")
+        vk_config = local_vk_config(module)
+        account_id = getattr(module, "BIGQMT_ACCOUNT_ID", None) or vk_config.get("account_id")
         timeout_seconds = getattr(module, "BIGQMT_RPC_TIMEOUT_SECONDS", None)
         if timeout_seconds is None:
-            timeout_seconds = valkey_config.get("rpc_timeout_seconds")
+            timeout_seconds = vk_config.get("rpc_timeout_seconds")
         download_wait_seconds = getattr(module, "BIGQMT_DOWNLOAD_WAIT_SECONDS", None)
         if download_wait_seconds is None:
-            download_wait_seconds = valkey_config.get("download_wait_seconds")
+            download_wait_seconds = vk_config.get("download_wait_seconds")
         download_poll_interval_seconds = getattr(module, "BIGQMT_DOWNLOAD_POLL_INTERVAL_SECONDS", None)
         if download_poll_interval_seconds is None:
-            download_poll_interval_seconds = valkey_config.get("download_poll_interval_seconds")
+            download_poll_interval_seconds = vk_config.get("download_poll_interval_seconds")
         full_tick_cache_config = dict(getattr(module, "BIGQMT_FULL_TICK_CACHE_CONFIG", {}) or {})
         for key in (
             "full_tick_cache_enabled",
@@ -352,18 +348,18 @@ def load_client_config(module_name=None):
             "full_tick_wait_seconds",
             "full_tick_poll_interval_seconds",
         ):
-            if key in valkey_config:
-                full_tick_cache_config[key] = valkey_config[key]
+            if key in vk_config:
+                full_tick_cache_config[key] = vk_config[key]
         local_cache_config = dict(getattr(module, "BIGQMT_LOCAL_CACHE_CONFIG", {}) or {})
         for key in ("local_cache_enabled", "local_cache_dir", "local_cache_fallback_rpc", "local_cache_format"):
-            if key in valkey_config:
-                local_cache_config[key.replace("local_cache_", "")] = valkey_config[key]
+            if key in vk_config:
+                local_cache_config[key.replace("local_cache_", "")] = vk_config[key]
         formula_server_config = dict(getattr(module, "BIGQMT_FORMULA_SERVER_CONFIG", {}) or {})
-        formula_server_config.update(dict(valkey_config.get("formula_server") or {}))
+        formula_server_config.update(dict(vk_config.get("formula_server") or {}))
         return {
             "module": candidate,
             "account_id": account_id,
-            "valkey_config": valkey_config,
+            "vk_config": vk_config,
             "timeout_seconds": timeout_seconds,
             "download_wait_seconds": download_wait_seconds,
             "download_poll_interval_seconds": download_poll_interval_seconds,
@@ -1295,66 +1291,66 @@ class BigQmtRpcClient:
     def __init__(
         self,
         account_id=None,
-        valkey_client=None,
-        valkey_config=None,
+        vk_client=None,
+        vk_config=None,
         timeout_seconds=None,
         transport=None,
     ):
         local_env = _client_local_env()
         client_config = load_client_config(local_env.get(CLIENT_CONFIG_MODULE_ENV))
-        valkey_config = valkey_config or {}
-        module_valkey_config = client_config.get("valkey_config") or {}
-        local_valkey_config = {
+        vk_config = vk_config or {}
+        module_vk_config = client_config.get("vk_config") or {}
+        local_vk_config = {
             key: local_env[variable]
             for key in ("host", "port", "db", "username", "password", "protocol", "url")
-            if (variable := "BIGQMT_VALKEY_" + key.upper()) in local_env
+            if (variable := "BIGQMT_VK_" + key.upper()) in local_env
         }
-        merged_valkey_config = dict(module_valkey_config)
-        merged_valkey_config.update(local_valkey_config)
-        merged_valkey_config.update(valkey_config)
+        merged_vk_config = dict(module_vk_config)
+        merged_vk_config.update(local_vk_config)
+        merged_vk_config.update(vk_config)
         self.account_id = str(
             account_id
-            or valkey_config.get("account_id")
+            or vk_config.get("account_id")
             or local_env.get("BIGQMT_ACCOUNT_ID", "").strip()
-            or module_valkey_config.get("account_id")
+            or module_vk_config.get("account_id")
             or client_config.get("account_id")
             or os.environ.get("BIGQMT_ACCOUNT_ID")
             or ""
         )
-        self.valkey_client = valkey_client
-        db = merged_valkey_config.get("db")
+        self.vk_client = vk_client
+        db = merged_vk_config.get("db")
         if db is None or db == "":
-            db = os.environ.get("BIGQMT_VALKEY_DB") or 5
-        # 「用户显式配了 valkey」和「默认填充」要分得开：非 valkey 传输的客户端
-        # 默认没有 valkey 可连，事件线程每轮开头那次 ping 会照
+            db = os.environ.get("BIGQMT_VK_DB") or 5
+        # 「用户显式配了 VK」和「默认填充」要分得开：非 VK 传输的客户端
+        # 默认没有 VK 可连，事件线程每轮开头那次 ping 会照
         # 127.0.0.1:6379 拨——在外连即杀的沙箱里一次探测就死（2026-09-24
         # 实盘逐行核对）。显式信号：合并后的配置或环境变量里给了 host /
         # username / password 任何一个。
-        self._valkey_explicit = bool(
-            merged_valkey_config.get("host")
-            or merged_valkey_config.get("username")
-            or merged_valkey_config.get("password")
-            or merged_valkey_config.get("url")
-            or os.environ.get("BIGQMT_VALKEY_HOST")
-            or os.environ.get("BIGQMT_VALKEY_USERNAME")
-            or os.environ.get("BIGQMT_VALKEY_PASSWORD")
-            or os.environ.get("BIGQMT_VALKEY_URL")
+        self._vk_explicit = bool(
+            merged_vk_config.get("host")
+            or merged_vk_config.get("username")
+            or merged_vk_config.get("password")
+            or merged_vk_config.get("url")
+            or os.environ.get("BIGQMT_VK_HOST")
+            or os.environ.get("BIGQMT_VK_USERNAME")
+            or os.environ.get("BIGQMT_VK_PASSWORD")
+            or os.environ.get("BIGQMT_VK_URL")
         )
-        self.valkey_config = {
-            "host": merged_valkey_config.get("host") or os.environ.get("BIGQMT_VALKEY_HOST", "127.0.0.1"),
-            "port": int(merged_valkey_config.get("port") or os.environ.get("BIGQMT_VALKEY_PORT") or 6379),
+        self.vk_config = {
+            "host": merged_vk_config.get("host") or os.environ.get("BIGQMT_VK_HOST", "127.0.0.1"),
+            "port": int(merged_vk_config.get("port") or os.environ.get("BIGQMT_VK_PORT") or 6379),
             "db": int(db),
-            "username": merged_valkey_config.get("username", os.environ.get("BIGQMT_VALKEY_USERNAME") or ""),
-            "password": merged_valkey_config.get("password", os.environ.get("BIGQMT_VALKEY_PASSWORD") or ""),
-            "protocol": merged_valkey_config.get("protocol") or os.environ.get("BIGQMT_VALKEY_PROTOCOL") or 2,
+            "username": merged_vk_config.get("username", os.environ.get("BIGQMT_VK_USERNAME") or ""),
+            "password": merged_vk_config.get("password", os.environ.get("BIGQMT_VK_PASSWORD") or ""),
+            "protocol": merged_vk_config.get("protocol") or os.environ.get("BIGQMT_VK_PROTOCOL") or 2,
         }
-        self._valkey_url = merged_valkey_config.get("url") or os.environ.get("BIGQMT_VALKEY_URL")
-        if local_valkey_config:
-            for settings in (valkey_config, local_valkey_config):
+        self._vk_url = merged_vk_config.get("url") or os.environ.get("BIGQMT_VK_URL")
+        if local_vk_config:
+            for settings in (vk_config, local_vk_config):
                 if settings.get("url") or any(
                     settings.get(key) not in (None, "") for key in ("host", "port", "db")
                 ):
-                    self._valkey_url = settings.get("url")
+                    self._vk_url = settings.get("url")
                     break
         config_timeout = _first_set(
             local_env.get("BIGQMT_RPC_TIMEOUT_SECONDS") or None, client_config.get("timeout_seconds"))
@@ -1382,7 +1378,7 @@ class BigQmtRpcClient:
         )
         # 功能配置沿用连接配置的优先级（#289）：显式参数、本地 .env、
         # 配置模块、进程环境、默认值。
-        full_tick = _ClientSetting(valkey_config, client_config.get("full_tick_cache_config"), local_env)
+        full_tick = _ClientSetting(vk_config, client_config.get("full_tick_cache_config"), local_env)
         self.full_tick_cache_config = {
             "enabled": _bool_value(
                 full_tick.get("full_tick_cache_enabled", "enabled"),
@@ -1403,7 +1399,7 @@ class BigQmtRpcClient:
         }
         # get_market_data_ex 将结果写入本地缓存。get_local_data 默认通过
         # RPC 补齐缓存，支持下载原始数据后按其他复权方式读取。
-        local_cache = _ClientSetting(valkey_config, client_config.get("local_cache_config"), local_env)
+        local_cache = _ClientSetting(vk_config, client_config.get("local_cache_config"), local_env)
         self.local_cache_config = {
             "enabled": _bool_value(
                 local_cache.get("local_cache_enabled", "enabled"),
@@ -1424,12 +1420,12 @@ class BigQmtRpcClient:
                 or "auto"  # 有 pyarrow 时用 Parquet，否则用 pickle
             ),
         }
-        # 默认使用 call_valkey_rpc，其余传输交给传输工厂。
+        # 默认使用 call_vk_rpc，其余传输交给传输工厂。
         self.transport_name = str(
             transport
-            or valkey_config.get("transport")
+            or vk_config.get("transport")
             or local_env.get("BIGQMT_RPC_TRANSPORT")
-            or module_valkey_config.get("transport")
+            or module_vk_config.get("transport")
             or os.environ.get("BIGQMT_RPC_TRANSPORT")
             or "valkey"
         ).lower()
@@ -1439,30 +1435,30 @@ class BigQmtRpcClient:
         formula_config = dict(client_config.get("formula_server_config") or {})
         if local_env.get("BIGQMT_FORMULA_ENABLED"):
             formula_config["enabled"] = _bool_value(local_env["BIGQMT_FORMULA_ENABLED"])
-        formula_config.update(valkey_config.get("formula_server") or {})
+        formula_config.update(vk_config.get("formula_server") or {})
         if "enabled" not in formula_config:
             formula_config["enabled"] = _env_bool("BIGQMT_FORMULA_ENABLED", True)
         self.formula_server_config = formula_config
         self._formula_router_instance = None  # 由 _formula_router() 按需创建
 
-    def _valkey(self):
-        if self.valkey_client is None:
-            client_class = valkey_client_class()
-            cfg = dict(self.valkey_config)
-            options = valkey_connection_options(cfg.pop("protocol"))
-            if self._valkey_url:
-                url = normalize_valkey_url(self._valkey_url)
-                self.valkey_client = client_class.from_url(url, **options)
+    def _vk(self):
+        if self.vk_client is None:
+            client_class = vk_client_class()
+            cfg = dict(self.vk_config)
+            options = vk_connection_options(cfg.pop("protocol"))
+            if self._vk_url:
+                url = normalize_vk_url(self._vk_url)
+                self.vk_client = client_class.from_url(url, **options)
             else:
                 cfg["username"] = cfg["username"] or None
                 cfg["password"] = cfg["password"] or None
-                self.valkey_client = client_class(**cfg, **options)
-        return self.valkey_client
+                self.vk_client = client_class(**cfg, **options)
+        return self.vk_client
 
     def _transport(self):
         if self._transport_instance is None:
             if self.transport_name in ("valkey", "", "default"):
-                # Valkey 路径由 call_valkey_rpc 构造请求。
+                # VK 路径由 call_vk_rpc 构造请求。
                 return None
             from .transports.factory import build_transport
 
@@ -1555,7 +1551,7 @@ class BigQmtRpcClient:
                 pass
         transport = self._transport()
         if transport is not None:
-            # 与 call_valkey_rpc 使用相同的请求结构。
+            # 与 call_vk_rpc 使用相同的请求结构。
             request = {
                 "schema_version": 1,
                 "request_id": str(request_id or uuid.uuid4().hex),
@@ -1568,8 +1564,8 @@ class BigQmtRpcClient:
             }
             response = transport.send_request(request, wait_seconds)
         else:
-            response = call_valkey_rpc(
-                self._valkey(),
+            response = call_vk_rpc(
+                self._vk(),
                 account_id=target_account,
                 method=method,
                 params=params or {},
@@ -1662,17 +1658,17 @@ class BigQmtRpcClient:
         }
         raw = json.dumps(event, ensure_ascii=False, default=str)
         stream_key = stream_template.format(account_id=account_id)
-        valkey_client = self._valkey()
+        vk_client = self._vk()
         try:
-            valkey_client.xadd(stream_key, {"payload": raw}, maxlen=1000, approximate=True)
+            vk_client.xadd(stream_key, {"payload": raw}, maxlen=1000, approximate=True)
             # 客户端侧写的流同样要能自己消失（#213）。
-            from .adapters.valkey_common import touch_stream_ttl
+            from .adapters.vk_common import touch_stream_ttl
 
-            touch_stream_ttl(valkey_client, stream_key)
+            touch_stream_ttl(vk_client, stream_key)
         except Exception:
             pass
         try:
-            valkey_client.publish(stream_key, raw)
+            vk_client.publish(stream_key, raw)
         except Exception:
             pass
         return event
@@ -1680,16 +1676,16 @@ class BigQmtRpcClient:
     def save_quote_subscription(self, seq, payload, active=True):
         account_id = str(self.account_id or "")
         key = "bigqmt:quote_subscriptions:%s" % account_id
-        valkey_client = self._valkey()
+        vk_client = self._vk()
         if active:
             value = json.dumps(payload or {}, ensure_ascii=False, default=str)
             try:
-                valkey_client.hset(key, str(seq), value)
+                vk_client.hset(key, str(seq), value)
             except Exception:
                 pass
         else:
             try:
-                valkey_client.hdel(key, str(seq))
+                vk_client.hdel(key, str(seq))
             except Exception:
                 pass
 
@@ -2059,16 +2055,16 @@ class BigQmtXtData:
             return {}
         cache_config = dict(getattr(self.client, "full_tick_cache_config", {}) or {})
         if not types and _bool_value(cache_config.get("enabled"), False):
-            valkey_client = self.client._valkey()
+            vk_client = self.client._vk()
             request_full_tick_cache(
-                valkey_client,
+                vk_client,
                 self.client.account_id,
                 codes,
                 demand_ttl_seconds=cache_config.get("demand_ttl_seconds", 10),
                 cache_ttl_seconds=cache_config.get("cache_ttl_seconds", 10),
             )
             data = wait_full_tick_cache(
-                valkey_client,
+                vk_client,
                 self.client.account_id,
                 codes,
                 max_age_seconds=cache_config.get("cache_ttl_seconds", 10),
@@ -2081,7 +2077,7 @@ class BigQmtXtData:
             if upper_codes & {"SH", "SZ", "BJ", "HK"}:
                 # 全市场快照必须留在按需缓存上。这里走实时 RPC 会在每次未命中
                 # 时传约 5 万行，所以直接把超时抛出来。
-                raise TimeoutError("全推 tick 的 valkey 缓存超时: %s" % ",".join(str(code) for code in codes))
+                raise TimeoutError("全推 tick 的 VK 缓存超时: %s" % ",".join(str(code) for code in codes))
             # 代码清单未命中（冷启动 / 快照过期）：改走实时 RPC，使首次调用约
             # 几毫秒，而不是死等 wait_seconds。
             rpc_timeout = timeout_seconds if timeout_seconds is not None else None
@@ -3245,7 +3241,7 @@ class BigQmtXtData:
             return DEFAULT_BAR_POLL_INTERVAL_SECONDS
 
     def _record_subscription(self, seq, payload, active=True):
-        """只是记账——服务端没有任何东西消费它，而且它需要 Valkey 客户端，
+        """只是记账——服务端没有任何东西消费它，而且它需要 VK 客户端，
         zmq 部署没有。绝不让它弄坏一个本来可用的订阅。"""
         try:
             self.client.save_quote_subscription(seq, dict(payload, seq=seq), active=active)
@@ -3400,7 +3396,7 @@ class BigQmtXtData:
 
     def unsubscribe_quote(self, seq):
         # 现在有三类句柄：推送会话持有的全推/tick 订阅、这里持有的 K 线轮询，
-        # 以及只作为 valkey 记账存在过的历史 seq。
+        # 以及只作为 VK 记录存在过的历史 seq。
         with self._bar_poller_lock:
             poller = self._bar_pollers.pop(seq, None)
         if poller is not None:
@@ -3759,7 +3755,7 @@ class BigQmtXtData:
         return self._call("download_etf_info")
 
     # 下面四个的服务端实现和 RPC 白名单一直都在（market_bigqmt 的
-    # download_* 方法 + valkey_rpc 的 MARKET_DATA_METHODS），只是客户端漏了这层
+    # download_* 方法 + vk_rpc 的 MARKET_DATA_METHODS），只是客户端漏了这层
     # 包装，于是外部调用直接撞 AttributeError（issue #130）。
     def download_sector_data(self):
         return self._call("download_sector_data")
@@ -4397,16 +4393,16 @@ class BigQmtXtTrader:
         path=None,
         session_id=None,
         account_id=None,
-        valkey_client=None,
-        valkey_config=None,
+        vk_client=None,
+        vk_config=None,
         timeout_seconds=None,
     ):
         self.path = path
         self.session_id = session_id
         self.client = BigQmtRpcClient(
             account_id=account_id,
-            valkey_client=valkey_client,
-            valkey_config=valkey_config,
+            vk_client=vk_client,
+            vk_config=vk_config,
             timeout_seconds=timeout_seconds,
         )
         self.callback = None
@@ -4445,17 +4441,17 @@ class BigQmtXtTrader:
         except (TypeError, ValueError):
             self.event_listener_ready_timeout = 1.0
         # 账户查询缓存兜底（#243）。默认关闭：失败的 POSITION/ASSET 查询必须
-        # 传到调用方，就像它在所有非 valkey 传输上已经做到的那样。改用最近的
-        # valkey 快照作答，会把“查询失败”变成“这是你持仓”，而那是策略绝不能
+        # 传到调用方，就像它在所有非 VK 传输上已经做到的那样。改用最近的
+        # VK 快照作答，会把“查询失败”变成“这是你持仓”，而那是策略绝不能
         # 拿到的错误答案。
         #
         # 有意 **不** 绑定 local_cache_enabled：那个键是客户端的 *行情* 缓存。
         # 两个不同的缓存，两个开关——把它们混为一谈，正是
         # local_cache_enabled=False 看起来应该关掉这里却没关的原因。
         # 按交给我们的配置读：BigQmtRpcClient 会规范化自己的副本并丢掉不认识的
-        # 键，所以这里不能用 self.client.valkey_config 作来源。
-        cache_config = dict((load_client_config() or {}).get("valkey_config") or {})
-        cache_config.update(dict(valkey_config or {}))
+        # 键，所以这里不能用 self.client.vk_config 作来源。
+        cache_config = dict((load_client_config() or {}).get("vk_config") or {})
+        cache_config.update(dict(vk_config or {}))
         self.account_cache_fallback = _bool_value(
             cache_config.get("account_cache_fallback"),
             _env_bool("BIGQMT_ACCOUNT_CACHE_FALLBACK", False),
@@ -4496,7 +4492,7 @@ class BigQmtXtTrader:
         """
         if not self.account_cache_fallback:
             return None
-        if not self._valkey_cache_enabled():
+        if not self._vk_cache_enabled():
             return None
         snapshot = self._cached_position_snapshot(account_id)
         if not snapshot:
@@ -4512,14 +4508,14 @@ class BigQmtXtTrader:
                 what, age, self.account_cache_max_age_seconds)
             return None
         log.warning(
-            "%s: 原生查询失败，改用 %.1fs 前的 valkey 缓存作答（"
+            "%s: 原生查询失败，改用 %.1fs 前的 VK 缓存作答（"
             "account_cache_fallback=True 打开的行为）", what, age)
         return snapshot
 
     def _cached_position_snapshot(self, account_id):
         key = "bigqmt:positions:%s" % str(account_id or self.client.account_id or "")
         try:
-            raw = self.client._valkey().get(key)
+            raw = self.client._vk().get(key)
         except Exception:
             return {}
         if not raw:
@@ -4543,7 +4539,7 @@ class BigQmtXtTrader:
         asset = snapshot.get("asset") if isinstance(snapshot, dict) else None
         return asset if isinstance(asset, dict) else {}
 
-    def _valkey_cache_enabled(self):
+    def _vk_cache_enabled(self):
         return str(getattr(self.client, "transport_name", "valkey") or "valkey").lower() in (
             "valkey",
             "",
@@ -4572,9 +4568,9 @@ class BigQmtXtTrader:
             return 0
         except Exception:
             # connect 失败必须拆掉 start() 拉起的事件监听线程。否则它持有的
-            # Valkey pubsub 订阅(每实例 4 个 exec 事件频道)随丢弃的实例永久
+            # VK pubsub 订阅(每实例 4 个 exec 事件频道)随丢弃的实例永久
             # 留在服务端: 调用方重连风暴每次重试泄漏一个, 实测单日 8000+ 个
-            # subscribe 连接, 逼近 maxclients 后整个 Valkey 拒绝新连接。
+            # subscribe 连接, 逼近 maxclients 后整个 VK 拒绝新连接。
             try:
                 self.stop()
             except Exception:
@@ -4731,12 +4727,12 @@ class BigQmtXtTrader:
     def _event_loop_poll(self):
         """一轮轮询：通过对比查询结果合成执行事件（#372）。
 
-        没有推送通道、valkey 也不可达时，查询 RPC 仍然通——按
+        没有推送通道、VK 也不可达时，查询 RPC 仍然通——按
         「服务端给副账号做的 #320 轮询」同一个模式，在客户端按 sysid+status
         diff，合成与推送完全同形的 on_stock_order / on_stock_trade /
         on_order_error。首轮只建状态不补发（已有委托不是「新事件」）；回调
         延迟 = 轮询间隔（BIGQMT_EXEC_POLL_SECONDS，默认 1s）。查询连续失败
-        （比如 valkey 传输的 valkey 宕了）时退回外层重新选通道。
+        （比如 VK 传输的 VK 宕了）时退回外层重新选通道。
         """
         from .exec_events import normalize_order_error_event
 
@@ -4757,7 +4753,7 @@ class BigQmtXtTrader:
                     log.warning("成交回报轮询本轮失败，已连续 %d 次：%s：%s",
                                 failures, exc.__class__.__name__, exc)
                 if failures >= 5:
-                    return   # 通道可能整体坏了（比如 valkey 宕了）-> 外层重选
+                    return   # 通道可能整体坏了（比如 VK 宕了）-> 外层重选
                 time.sleep(interval)
                 continue
             failures = 0
@@ -4772,7 +4768,7 @@ class BigQmtXtTrader:
                     tid = str(getattr(trade, "trade_id", "") or "")
                     if tid:
                         seen_trades.add(tid)
-                self._event_ready.set()      # 见 valkey 路径（#247）
+                self._event_ready.set()      # 见 VK 路径（#247）
                 time.sleep(interval)
                 continue
             for order in orders:
@@ -4846,7 +4842,7 @@ class BigQmtXtTrader:
             time.sleep(interval)
 
     def _on_push_exec_event(self, topic, data):
-        """推送通道回调。载荷已经是解码后的 dict，不像 Valkey 路径交来的是原始
+        """推送通道回调。载荷已经是解码后的 dict，不像 VK 路径交来的是原始
         bytes。"""
         try:
             self._dispatch_event(data)
@@ -4856,42 +4852,42 @@ class BigQmtXtTrader:
     def _event_loop(self):
         """接收执行事件，镜像服务端的 sink 选择。
 
-        服务端只要能构造出 Valkey 客户端就 **优先** 发布到 Valkey（它的频道带
-        stream，可做短时回放），即使 RPC 传输是 zmq；只有在 Valkey 发布反复
+        服务端只要能构造出 VK 客户端就 **优先** 发布到 VK（它的频道带
+        stream，可做短时回放），即使 RPC 传输是 zmq；只有在 VK 发布反复
         失败之后才落到行情推送通道（策略 _exec_event_sink，问题 #145）。这个
-        循环过去却按传输来选——zmq 就只走推送通道——于是一个 Valkey 可用的 zmq
-        部署把每个委托/成交事件都发布到 Valkey，而客户端在推送通道上收听：回调
-        从不触发（问题 #144；2026-09-02 复现，当天的事件积在 Valkey stream 里，
+        循环过去却按传输来选——zmq 就只走推送通道——于是一个 VK 可用的 zmq
+        部署把每个委托/成交事件都发布到 VK，而客户端在推送通道上收听：回调
+        从不触发（问题 #144；2026-09-02 复现，当天的事件积在 VK stream 里，
         而 zmq 传输的监听器什么也没看到）。
 
-        每轮重连都重新选择，使客户端能跟随一个在盘中降级 Valkey 的服务端（它
-        的 Valkey 发布失败，通常也意味着我们的 Valkey 读取会失败）。
+        每轮重连都重新选择，使客户端能跟随一个在盘中降级 VK 的服务端（它
+        的 VK 发布失败，通常也意味着我们的 VK 读取会失败）。
         """
         while self._event_running:
-            valkey_client = self._exec_events_valkey_or_none()
-            if valkey_client is not None:
-                self._event_loop_valkey(valkey_client)
+            vk_client = self._exec_events_vk_or_none()
+            if vk_client is not None:
+                self._event_loop_vk(vk_client)
             else:
-                # mysql 没有推送通道（valkey 传输的 valkey 宕了也是）——
+                # mysql 没有推送通道（VK 传输的 VK 宕了也是）——
                 # 查询 RPC 还通，就轮询合成回调（#372）；查询也连续失败时
-                # 它会自己退回来，外层重新探 valkey。
+                # 它会自己退回来，外层重新探测 VK。
                 self._event_loop_poll()
 
-    def _exec_events_valkey_or_none(self):
-        """执行事件频道可用的 Valkey 客户端，或 None。
+    def _exec_events_vk_or_none(self):
+        """执行事件频道可用的 VK 客户端，或 None。
 
-        _valkey() 只构造客户端对象；连接是惰性的，所以不可达的服务端也会返回
+        _vk() 只构造客户端对象；连接是惰性的，所以不可达的服务端也会返回
         一个。要 ping 它——频道选择必须反映可达性，而不是配置。
 
-        非 valkey 传输且没有显式 valkey 配置时整步跳过（不建 client、不 ping），
-        避免去连未配置的 Valkey。
+        非 VK 传输且没有显式 VK 配置时整步跳过（不建 client、不 ping），
+        避免连接未配置的 VK 服务。
         """
         transport_name = str(getattr(self.client, "transport_name", "valkey") or "valkey").lower()
         if (transport_name not in ("valkey", "", "default")
-                and not getattr(self.client, "_valkey_explicit", True)):
+                and not getattr(self.client, "_vk_explicit", True)):
             return None
         try:
-            client = self.client._valkey()
+            client = self.client._vk()
             if client is None:
                 return None
             client.ping()
@@ -4899,8 +4895,8 @@ class BigQmtXtTrader:
         except Exception:
             return None
 
-    def _event_loop_valkey(self, valkey_client):
-        """一轮 Valkey：订阅按账户划分的频道，直到账户变化或连接断开，然后
+    def _event_loop_vk(self, vk_client):
+        """订阅按账户划分的 VK 频道，直到账户变化或连接断开，然后
         返回以便重新选择。"""
         from .exec_events import (
             order_channel,
@@ -4912,7 +4908,7 @@ class BigQmtXtTrader:
         account_id = str(self.client.account_id or "")
         pubsub = None
         try:
-            pubsub = valkey_client.pubsub(ignore_subscribe_messages=True)
+            pubsub = vk_client.pubsub(ignore_subscribe_messages=True)
             pubsub.subscribe(
                 order_channel(account_id),
                 trade_channel(account_id),
@@ -4938,7 +4934,7 @@ class BigQmtXtTrader:
                 pass
 
     def _dispatch_event(self, raw):
-        """接受原始 bytes/str（Valkey 发布/订阅）或已解码的 dict。
+        """接受原始 bytes/str（VK 发布/订阅）或已解码的 dict。
 
         推送通道自己完成 msgpack/json 解码，所以交过来的是 dict——str(dict)
         不是合法 JSON，会在这里被静默丢弃。
@@ -5366,7 +5362,7 @@ class BigQmtXtTrader:
         get_deployment_info()）。
 
         会刷新 bigqmt_signal_trader/ 下的所有内容。它无法刷新
-        bigqmt_signal_trader_strategy.py 或 BIGQMT_VALKEY_DRYRUN 入口——那些由
+        bigqmt_signal_trader_strategy.py 或 BIGQMT_VK_DRYRUN 入口——那些由
         QMT 执行，而模块无法重载自己正在其中运行的那一个。那边的改动仍需重启
         策略。
         """
@@ -5912,7 +5908,7 @@ class BigQmtXtTrader:
     # issue #51 A: 同一笔委托的 async_response 必须先于它的 order/trade 到达。
     #
     # 两条回调走的是不同线程和不同通道: async_response 在异步下单的工作线程上
-    # 触发, order/trade 来自 Valkey pub/sub 监听线程。服务端在 order_callback
+    # 触发, order/trade 来自 VK pub/sub 监听线程。服务端在 order_callback
     # 里先推事件再回 RPC, 所以顺序颠倒是常态而非偶发。
     #
     # 做法是给「已提交但尚未收到 async_response」的委托设一道屏障: 它的
@@ -6174,7 +6170,7 @@ class BigQmtXtTrader:
     def _has_push_channel(self):
         """执行事件到底能否到达本客户端（#345）。
 
-        Valkey 通过发布/订阅承载它们；没有推送路径的传输无法送达回复之后产生的
+        VK 通过发布/订阅承载它们；没有推送路径的传输无法送达回复之后产生的
         事件。
         """
         transport_name = str(getattr(self.client, "transport_name", "valkey") or "valkey").lower()
@@ -7025,16 +7021,16 @@ xt_trader = None
 xtdata = None
 
 
-def configure(account_id=None, valkey_client=None, valkey_config=None, timeout_seconds=None):
+def configure(account_id=None, vk_client=None, vk_config=None, timeout_seconds=None):
     global _default_client, xt_trader, xtdata
     _default_client = BigQmtRpcClient(
         account_id=account_id,
-        valkey_client=valkey_client,
-        valkey_config=valkey_config,
+        vk_client=vk_client,
+        vk_config=vk_config,
         timeout_seconds=timeout_seconds,
     )
     if xt_trader is None:
-        xt_trader = BigQmtXtTrader(account_id=_default_client.account_id, valkey_client=_default_client.valkey_client)
+        xt_trader = BigQmtXtTrader(account_id=_default_client.account_id, vk_client=_default_client.vk_client)
     xt_trader.client = _default_client
     if xtdata is None:
         xtdata = BigQmtXtData(_default_client)

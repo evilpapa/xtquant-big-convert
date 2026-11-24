@@ -21,7 +21,7 @@ object graph.
 
 Two things it cannot do, stated rather than papered over:
 
-  * bigqmt_signal_trader_strategy.py and the BIGQMT_VALKEY_DRYRUN entry. QMT
+  * bigqmt_signal_trader_strategy.py and the BIGQMT_VK_DRYRUN entry. QMT
     execs those; a module cannot reload the one it is running in.
   * happen inside the RPC handler. Performing it calls reset_app(), which stops
     the service answering the request, so the reply has to go out first. It is
@@ -36,7 +36,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.valkey_rpc import (
+from bigqmt_signal_trader.vk_rpc import (
     LISTENER_DEFERRED_METHODS,
     READ_METHODS,
     BigQmtRpcHandlers,
@@ -367,7 +367,7 @@ class FlushBeforeTeardownTest(unittest.TestCase):
         self.assertFalse(strategy._wait_for_responses_to_flush(timeout_seconds=0.3))
 
     def test_no_transport_is_not_an_error(self):
-        """valkey deployments have no response queue of their own."""
+        """VK deployments have no response queue of their own."""
         strategy._rpc_service = None
 
         self.assertEqual(strategy._pending_response_count(), 0)

@@ -6,7 +6,7 @@
 
 产物：dist/BigQMTSerialController.exe
 
-exe 只是前端：serial_valkey_bridge 和 qmt_launcher 仍由外部 Python 执行
+exe 只是前端：serial_vk_bridge 和 qmt_launcher 仍由外部 Python 执行
 （BIGQMT_PYTHON / PATH 里的 python，且该环境已安装 xtquant-big-convert）。
 """
 

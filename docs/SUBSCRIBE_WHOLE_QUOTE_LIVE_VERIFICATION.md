@@ -1,6 +1,6 @@
 # subscribe_whole_quote 全推行情 — 真机联调验证报告
 
-> 本文记录迁移 Valkey 前的实盘验证。当前路径和配置见[传输层说明](RPC_TRANSPORTS.md)。
+> 本文记录迁移 VK 前的实盘验证。当前路径和配置见[传输层说明](RPC_TRANSPORTS.md)。
 
 > 日期:2026-08-10(周一,交易日)
 > 环境:本地客户端 + Windows QMT 服务端(内网联调)
@@ -16,12 +16,12 @@
 ```
 本地客户端 (venv, Python 3.10)
   └─ bigqmt_signal_trader (editable 安装, 指向仓库 src/)
-      ├─ BigQmtRpcClient ── valkey (内网, db5) ──► 服务端 RPC
-      └─ ValkeyQuotePushChannel (pub/sub bigqmt:quote_push:{acct}:{topic})
+      ├─ BigQmtRpcClient ── VK (内网, db5) ──► 服务端 RPC
+      └─ VkQuotePushChannel (pub/sub bigqmt:quote_push:{acct}:{topic})
                                 ▲
-                                │ valkey pub/sub
+                                │ VK pub/sub
 Windows 服务端 (QMT 交易端, Python 3.6)
-  └─ <QMT python 目录>/  (策略 BIGQMT_VALKEY_DRYRUN)
+  └─ <QMT python 目录>/  (策略 BIGQMT_VK_DRYRUN)
       ├─ bigqmt_signal_trader_strategy.py ── 启动 QuoteSubscriptionManager
       ├─ quote_subscription_manager.py     ── 引用计数订阅管理
       └─ quote_push_channel.py             ── 推送通道(服务端, json 兜底编码)

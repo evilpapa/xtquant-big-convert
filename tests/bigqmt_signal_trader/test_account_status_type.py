@@ -56,8 +56,8 @@ class FakeClient(object):
             return reply
         return {}
 
-    def _valkey(self):
-        raise AssertionError("valkey not expected here")
+    def _vk(self):
+        raise AssertionError("VK not expected here")
 
 
 def _trader(server_type="CREDIT"):
@@ -179,7 +179,7 @@ class MismatchIsAnnouncedTest(unittest.TestCase):
 
 class ServerSideTest(unittest.TestCase):
     def test_ping_carries_the_configured_type(self):
-        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
         handlers = BigQmtRpcHandlers.__new__(BigQmtRpcHandlers)
 
@@ -191,7 +191,7 @@ class ServerSideTest(unittest.TestCase):
         self.assertEqual(handlers._reported_account_type(), "CREDIT")
 
     def test_no_gateway_reports_nothing_rather_than_guessing(self):
-        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
         handlers = BigQmtRpcHandlers.__new__(BigQmtRpcHandlers)
         handlers.order_gateway = None

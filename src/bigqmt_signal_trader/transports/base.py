@@ -17,7 +17,7 @@ Two roles, one interface
 The request dict always carries the existing envelope (``schema_version``,
 ``request_id``, ``account_id``, ``method``, ``params``). It MAY carry reply
 routing hints (``reply_key``/``reply_channel``/``reply_list``/``ttl_seconds``);
-Valkey uses them, other transports may ignore them and use native routing.
+VK uses them, other transports may ignore them and use native routing.
 """
 
 
@@ -69,7 +69,7 @@ class RpcTransport(object):
         """Deliver ``response`` back to the client that sent ``request``.
 
         Reply routing is read from ``request`` (e.g. ``reply_key`` /
-        ``reply_channel`` / ``reply_list`` for Valkey, or a native peer handle
+        ``reply_channel`` / ``reply_list`` for VK, or a native peer handle
         for ZMQ). Must be safe to call from the request-handling callback.
         """
         raise NotImplementedError
@@ -86,7 +86,7 @@ class RpcTransport(object):
         callback returns a non-None response dict, it is delivered back to the
         client via :meth:`send_response` automatically — so a callback only
         needs to ``return response``. Callbacks that send the response
-        themselves (e.g. the Valkey service path, which routes through
+        themselves (e.g. the VK service path, which routes through
         ``_publish_response``) should return ``None`` to suppress the auto-send.
 
         Handler exceptions are turned into an ``ok=False`` response envelope so

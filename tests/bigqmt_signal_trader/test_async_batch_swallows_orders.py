@@ -40,9 +40,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
-from test_valkey_rpc import FakeMarketData, FakePositionProvider
+from test_vk_rpc import FakeMarketData, FakePositionProvider
 
 
 def _handlers(gateway):

@@ -2,7 +2,7 @@
 """The runtime forwards rpc.background_threads only when the local config
 named rpc_background_threads explicitly.
 
-Why it has to work this way: on non-valkey transports the strategy side treats
+Why it has to work this way: on non-VK transports the strategy side treats
 an ABSENT key as "historical default" (background receiver threads on) and an
 explicit False as the opt-in to the adjust-driven drain that drops the
 cross-thread GIL handoffs from the round trip (#104). If the runtime emitted
@@ -17,7 +17,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-import bigqmt_signal_trader_valkey_rpc_runtime as runtime
+import bigqmt_signal_trader_vk_rpc_runtime as runtime
 
 
 class ForwardingTest(unittest.TestCase):
@@ -77,7 +77,7 @@ class ExplicitFlagTest(unittest.TestCase):
             setattr(runtime, key, value)
 
     def test_key_present_marks_explicit(self):
-        runtime.configure_runtime_valkey({"rpc_background_threads": False})
+        runtime.configure_runtime_vk({"rpc_background_threads": False})
         self.assertTrue(runtime.RPC_BACKGROUND_THREADS_EXPLICIT)
         self.assertFalse(runtime.RPC_BACKGROUND_THREADS)
 

@@ -2,7 +2,7 @@
 """QMT 端的私有配置示例。
 
 复制为 bigqmt_signal_trader_qmt_config.py，放到 QMT 的 python 目录。
-真实配置可能含账号和 Valkey 凭据，请勿提交到版本库。
+真实配置可能含账号和 VK 凭据，请勿提交到版本库。
 """
 
 BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
@@ -22,18 +22,18 @@ BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
 BIGQMT_ACCOUNT_TYPE = "STOCK"
 
 BIGQMT_CONFIG = {
-    # 这台机器上有没有 valkey 可用。默认 True，仅对非 valkey 传输生效。
+    # 这台机器上有没有 VK 可用。默认 True，仅对非 VK 传输生效。
     #
-    # 设 False 时整个 valkey 块不再下发给策略，于是委托身份库、异步下载任务、
-    # 全推快照缓存、exec 事件推送都不会去连 valkey —— 一次都不试。用在券商 QMT
+    # 设 False 时整个 VK 块不再下发给策略，于是委托身份库、异步下载任务、
+    # 全推快照缓存、exec 事件推送都不会去连 VK —— 一次都不试。用在券商 QMT
     # 的 import 白名单不含 RESP 客户端的场景
     # （issue #145 / #147）。下面的 host/port 有默认值，所以不设这一项时
-    # 「配了 valkey」和「什么都没写」是分辨不出来的。
+    # 「配了 VK」和「什么都没写」是分辨不出来的。
     #
-    # 代价：查询里的 strategy_name 回填失效（那份记录只存在 valkey 里，见 #133）；
+    # 代价：查询里的 strategy_name 回填失效（那份记录只存在 VK 里，见 #133）；
     # 异步下载任务和全推快照缓存不可用（这两个在大 QMT 上本来就默认关闭）。
     # 委托/成交回调不受影响
-    # "valkey_enabled": False,
+    # "vk_enabled": False,
     "host":     "127.0.0.1",
     "port":            6379,
     "db":                 5,
@@ -88,7 +88,7 @@ BIGQMT_CONFIG = {
     "download_job_max_wall_seconds":   0.5,
     "download_job_ttl_seconds":       3600,
 
-    # 通过 Valkey 推送委托和成交回报，供客户端触发 on_stock_order / on_stock_trade。
+    # 通过 VK 推送委托和成交回报，供客户端触发 on_stock_order / on_stock_trade。
     "exec_events_enabled": True,
     # 诊断时可开启，在策略面板打印每次回调的原始字段，并随 raw_fields 发布。
     # 用于核对 m_nDirection / m_nOffsetFlag 的实际值，当前买卖映射按 48/49 处理。

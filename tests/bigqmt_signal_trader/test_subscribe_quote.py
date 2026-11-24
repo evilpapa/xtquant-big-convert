@@ -79,8 +79,8 @@ class FakeClient(object):
     def publish_event(self, event_type, payload, **kwargs):
         pass
 
-    def _valkey(self):
-        raise AssertionError("valkey must not be needed here")
+    def _vk(self):
+        raise AssertionError("VK must not be needed here")
 
 
 def _xtdata(client=None, session=None):

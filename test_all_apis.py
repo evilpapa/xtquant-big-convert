@@ -6,8 +6,8 @@ bigqmt_signal_trader_qmt_config 或环境变量配置连接。运行示例：
 
     PYTHONPATH="src;D:\\国金证券QMT交易端\\python" python test_all_apis.py
 
-可设置 BIGQMT_ACCOUNT_ID、BIGQMT_VALKEY_HOST、BIGQMT_VALKEY_PORT、
-BIGQMT_VALKEY_DB 和 BIGQMT_VALKEY_PASSWORD。
+可设置 BIGQMT_ACCOUNT_ID、BIGQMT_VK_HOST、BIGQMT_VK_PORT、
+BIGQMT_VK_DB 和 BIGQMT_VK_PASSWORD。
 """
 import os
 import sys
@@ -16,37 +16,37 @@ import time
 # 从仓库运行时，将 src 加入模块搜索路径。
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from bigqmt_signal_trader.valkey_rpc import call_valkey_rpc
-from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client, local_valkey_config
+from bigqmt_signal_trader.vk_rpc import call_vk_rpc
+from bigqmt_signal_trader.adapters.vk_common import build_vk_client, local_vk_config
 
 
 def _load_config():
     cfg = {}
     try:
         import bigqmt_signal_trader_qmt_config as _c  # noqa
-        cfg = local_valkey_config(_c)
+        cfg = local_vk_config(_c)
         account = getattr(_c, "BIGQMT_ACCOUNT_ID", None) or cfg.get("account_id")
     except Exception:
         account = None
     account = account or os.environ.get("BIGQMT_ACCOUNT_ID", "")
-    valkey_cfg = dict(cfg, socket_timeout=15)
+    vk_cfg = dict(cfg, socket_timeout=15)
     transport = str(
         os.environ.get("BIGQMT_RPC_TRANSPORT") or cfg.get("transport") or "valkey"
     ).lower()
-    return str(account), valkey_cfg, transport
+    return str(account), vk_cfg, transport
 
 
-ACCOUNT, VALKEY, TRANSPORT = _load_config()
+ACCOUNT, VK_CONFIG, TRANSPORT = _load_config()
 
 
 def _build_caller():
-    """Build the Valkey caller used by the checks."""
+    """Build the VK caller used by the checks."""
     if TRANSPORT not in ("valkey", "", "default"):
-        raise ValueError("test_all_apis.py requires Valkey transport")
-    r = build_valkey_client(VALKEY)
+        raise ValueError("test_all_apis.py requires transport='valkey' (VK)")
+    r = build_vk_client(VK_CONFIG)
 
     def call(method, params, timeout):
-        return call_valkey_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
+        return call_vk_rpc(r, ACCOUNT, method, params, timeout_seconds=timeout)
 
     return call
 # account_id placeholder filled in main() once ACCOUNT is confirmed.
@@ -143,7 +143,7 @@ def main():
         if "timeout" in ping_err.lower():
             print("   可能原因: 客户端 transport 和服务端不匹配")
             print("   - 客户端配置 transport=%s" % TRANSPORT)
-            print("   - 如果服务端是 valkey, 客户端保持 valkey 即可")
+            print("   - 服务端使用 VK 时，将客户端的 transport 设为 valkey")
         return
     print("✅ ping OK (%.0fms) — 客户端/服务端连通 (%s)" % (ping_ms, TRANSPORT.upper()))
 

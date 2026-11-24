@@ -1,4 +1,4 @@
-"""Valkey-free attribution must survive a new handler and a new process."""
+"""Attribution without VK must survive a new handler and a new process."""
 
 import json
 import os
@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
 from bigqmt_signal_trader.models import OrderSnapshot
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
 
 ACCOUNT = "issue393-test"
@@ -39,9 +39,9 @@ def handlers(directory):
     return instance
 
 
-def test_without_valkey_recovers_name_and_preserves_remark_after_restart(tmp_path):
+def test_without_vk_recovers_name_and_preserves_remark_after_restart(tmp_path):
     before = handlers(tmp_path)
-    assert before._identity_valkey() is None
+    assert before._identity_vk() is None
     before._handle_submit_order({
         "stock_code": "600036.SH", "action": "BUY", "volume": 100,
         "price": 10, "remark": REMARK, "strategy_name": NAME,
@@ -65,7 +65,7 @@ import json
 import sys
 from types import SimpleNamespace
 sys.path.insert(0, sys.argv[1])
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 account, remark, directory = sys.argv[2:]
 h = BigQmtRpcHandlers(account, None, None, order_gateway=SimpleNamespace(account_type='STOCK'))
 h.enable_order_identity_persistence(directory, {account: 'STOCK'})

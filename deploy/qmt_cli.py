@@ -1,5 +1,5 @@
 # coding: utf-8
-"""大 QMT Valkey 桥接命令行客户端（江海证券部署）。
+"""大 QMT VK 桥接命令行客户端（江海证券部署）。
 
 在外部 Python 环境运行，通过 xtquant_big_convert RPC 查询资产、持仓、委托、
 成交和行情，也可提交委托和撤单。用法示例：
@@ -18,7 +18,7 @@
     python qmt_cli.py watch
 
 账号依次来自 --account、本地 .env、环境变量或客户端配置模块。
-`discover` 在 Valkey 中查找已注册的账号。
+`discover` 在 VK 中查找已注册的账号。
 """
 import argparse
 import json
@@ -38,7 +38,7 @@ from bigqmt_signal_trader.xtquant_compat import (  # noqa: E402
     BigQmtXtTrader,
     BigQmtXtData,
 )
-from bigqmt_signal_trader.adapters.valkey_common import build_valkey_client, local_valkey_config
+from bigqmt_signal_trader.adapters.vk_common import build_vk_client, local_vk_config
 from bigqmt_signal_trader.local_env import read_local_env
 from xtquant import xtconstant  # noqa: E402
 from xtquant.xttype import StockAccount  # noqa: E402
@@ -59,11 +59,11 @@ def account_id(args):
     return value
 
 
-def raw_valkey():
+def raw_vk():
     client = BigQmtRpcClient()
-    config = local_valkey_config(cfg)
-    config.update(client.valkey_config, url=client._valkey_url)
-    return build_valkey_client(config, environ={})
+    config = local_vk_config(cfg)
+    config.update(client.vk_config, url=client._vk_url)
+    return build_vk_client(config, environ={})
 
 
 def make_trader(acc_id):
@@ -91,10 +91,10 @@ def fmt_row(obj, fields):
 
 
 def cmd_discover(args):
-    r = raw_valkey()
+    r = raw_vk()
     keys = [k.decode() if isinstance(k, bytes) else k for k in r.keys("bigqmt:*")]
     if not keys:
-        print("Valkey 数据库 %s 中没有 bigqmt:* 键，请确认 QMT 策略是否正在运行。"
+        print("VK 数据库 %s 中没有 bigqmt:* 键，请确认 QMT 策略是否正在运行。"
               % r.connection_pool.connection_kwargs.get("db"))
         return
     accounts = set()
@@ -102,7 +102,7 @@ def cmd_discover(args):
         for prefix in ("bigqmt:positions:", "bigqmt:rpc:req:", "bigqmt:order_events:", "bigqmt:trade_events:"):
             if key.startswith(prefix):
                 accounts.add(key[len(prefix):])
-    print("Valkey 键：")
+    print("VK 键：")
     for key in sorted(keys):
         print("  ", key)
     print("发现的账号：", sorted(accounts) or "（暂无）")
@@ -282,11 +282,11 @@ def cmd_watch(args):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="大 QMT Valkey 桥接命令行工具")
+    parser = argparse.ArgumentParser(description="大 QMT VK 桥接命令行工具")
     parser.add_argument("--account", default="", help="指定资金账号，覆盖默认配置")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("discover", help="在 Valkey 中查找已注册的账号")
+    sub.add_parser("discover", help="在 VK 中查找已注册的账号")
     sub.add_parser("ping", help="测试 RPC 连通性")
     sub.add_parser("asset", help="查询账号资产")
     sub.add_parser("positions", help="查询持仓")

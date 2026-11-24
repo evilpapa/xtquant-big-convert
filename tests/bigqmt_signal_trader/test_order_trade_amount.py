@@ -167,8 +167,8 @@ class FakeClient(object):
             return self.orders
         return {}
 
-    def _valkey(self):
-        raise AssertionError("valkey not expected here")
+    def _vk(self):
+        raise AssertionError("VK not expected here")
 
 
 def _trader(orders=()):

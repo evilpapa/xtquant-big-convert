@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-  在 Windows 上部署 xtquant-big-convert 的 Valkey 桥接。
+  在 Windows 上部署 xtquant-big-convert 的 VK 桥接。
 .DESCRIPTION
   适用于已安装并登录大 QMT 的 2 核 4 GB Windows 服务器。
   可重复运行，脚本会跳过已完成的步骤。
@@ -9,9 +9,9 @@
 .PARAMETER QmtPython QMT 策略使用的 Python 解释器（默认 <QmtDir>\bin.x64\python.exe）
 .PARAMETER Account  资金账号，例如 1234567890
 .PARAMETER WorkDir  部署目录（默认 C:\qmt_bridge）
-.PARAMETER ValkeyZip 包含 ValkeyService.exe 的 Cygwin 离线压缩包
-.PARAMETER ValkeyUrl Valkey Windows 压缩包的备用下载地址
-.PARAMETER ValkeyPort Valkey 服务的本机端口（默认 6379）
+.PARAMETER VkZip 包含 ValkeyService.exe 的 Cygwin 离线压缩包
+.PARAMETER VkUrl VK Windows 压缩包的备用下载地址
+.PARAMETER VkPort VK 服务的本机端口（默认 6379）
 .PARAMETER BridgePackage 桥接安装包或源码仓库的路径
 .PARAMETER Proxy    下载使用的 HTTP 代理，例如 http://127.0.0.1:7897
 .PARAMETER AllowOrders  在服务端配置中启用远程下单和撤单（默认关闭）
@@ -20,9 +20,9 @@ param(
     [Parameter(Mandatory=$true)][string]$QmtDir,
     [Parameter(Mandatory=$true)][string]$Account,
     [string]$WorkDir = "C:\qmt_bridge",
-    [string]$ValkeyZip = "",
-    [string]$ValkeyUrl = "",
-    [ValidateRange(1, 65535)][int]$ValkeyPort = 6379,
+    [string]$VkZip = "",
+    [string]$VkUrl = "",
+    [ValidateRange(1, 65535)][int]$VkPort = 6379,
     [string]$BridgePackage = "",
     [string]$Proxy = "",
     [switch]$CheckOnly,
@@ -35,13 +35,17 @@ param(
     [string]$QmtPython = ""
 )
 $ErrorActionPreference = "Stop"
-$valkeyRelease = "9.1.4"
-$archiveName = "Valkey-$valkeyRelease-Windows-x64-cygwin-with-Service"
+$vkRelease = "9.1.4"
+$archiveName = "Valkey-$vkRelease-Windows-x64-cygwin-with-Service"
 $rdir = "$WorkDir\valkey"
 $binDir = "$rdir\$archiveName"
-$valkeyService = "$binDir\ValkeyService.exe"
-$valkeyCli = "$binDir\valkey-cli.exe"
-$pwFile = "$rdir\valkey_password.txt"
+$vkService = "$binDir\ValkeyService.exe"
+$vkCli = "$binDir\valkey-cli.exe"
+$pwFile = "$rdir\vk_password.txt"
+$legacyPwFile = "$rdir\valkey_password.txt"
+if (-not (Test-Path -LiteralPath $pwFile) -and (Test-Path -LiteralPath $legacyPwFile)) {
+    $pwFile = $legacyPwFile
+}
 $conf = "$rdir\valkey.conf"
 $dataDir = "$rdir\data"
 $serviceName = "ValkeyBigQMT"
@@ -66,13 +70,13 @@ if ($CheckOnly) {
     $items = [ordered]@{
         "QMT 安装目录"            = Test-Path "$QmtDir\bin.x64\XtItClient.exe"
         "xtquant 库"        = Test-Path "$QmtDir\bin.x64\Lib\site-packages\xtquant"
-        "服务端文件"       = Test-Path "$QmtDir\python\BIGQMT_VALKEY_DRYRUN.py"
+        "服务端文件"       = Test-Path "$QmtDir\python\BIGQMT_VK_DRYRUN.py"
         "服务端配置"= Test-Path "$QmtDir\python\bigqmt_signal_trader_qmt_config.py"
         "客户端环境"         = ((Test-Path "$WorkDir\envs\bigqmt-client\Scripts\python.exe") -or (Test-Path "$WorkDir\envs\bigqmt\python.exe"))
-        "Valkey 程序"     = (Test-Path $valkeyService) -and (Test-Path $valkeyCli)
-        "Valkey 密码文件"= Test-Path $pwFile
-        "Valkey 配置"       = Test-Path $conf
-        "Valkey 服务"      = (Get-Service $serviceName -ErrorAction SilentlyContinue).Status -eq "Running"
+        "VK 程序"     = (Test-Path $vkService) -and (Test-Path $vkCli)
+        "VK 密码文件"= Test-Path $pwFile
+        "VK 配置"       = Test-Path $conf
+        "VK 服务"      = (Get-Service $serviceName -ErrorAction SilentlyContinue).Status -eq "Running"
         "客户端配置"      = Test-Path "$WorkDir\client\bigqmt_signal_trader_client_config.py"
         "qmt_cli"            = Test-Path "$WorkDir\client\qmt_cli.py"
     }
@@ -95,10 +99,10 @@ if (-not (Test-Path -LiteralPath $QmtPython -PathType Leaf)) {
 }
 Assert-PythonVersion $QmtPython "QMT 策略"
 & $QmtPython -c "from valkey import Valkey; from valkey.backoff import NoBackoff; from valkey.retry import Retry"
-if ($LASTEXITCODE -ne 0) { throw '请在 QMT 策略环境安装 Valkey 客户端：python -m pip install "valkey>=6.1,<7"' }
+if ($LASTEXITCODE -ne 0) { throw '请在 QMT 策略环境安装 VK 客户端：python -m pip install "valkey>=6.1,<7"' }
 if (-not (Get-Service $serviceName -ErrorAction SilentlyContinue) -and
-    (Get-NetTCPConnection -State Listen -LocalPort $ValkeyPort -ErrorAction SilentlyContinue)) {
-    throw "端口 $ValkeyPort 已被占用，请用 -ValkeyPort 指定空闲端口。"
+    (Get-NetTCPConnection -State Listen -LocalPort $VkPort -ErrorAction SilentlyContinue)) {
+    throw "端口 $VkPort 已被占用，请用 -VkPort 指定空闲端口。"
 }
 $pyExe = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $pyExe -and -not $Conda) { throw "PATH 中找不到 Python。请安装 Python 3.12 或更高版本，或用 -Conda 使用 Miniconda。" }
@@ -173,8 +177,8 @@ $installArgs = @("-m","pip","install","-i",$PipIndex,"${BridgePackage}[valkey]",
 if ($Proxy) { $installArgs += @("--proxy",$Proxy) }
 & $vpy @installArgs
 if ($LASTEXITCODE -ne 0) { throw "pip 安装失败，请检查 -BridgePackage 和网络或代理。" }
-& $vpy -c "import valkey; import importlib.util; assert importlib.util.find_spec('BIGQMT_VALKEY_DRYRUN')"
-if ($LASTEXITCODE -ne 0) { throw "需要支持 Valkey 的桥接包。请用 -BridgePackage 指定源码仓库或 wheel 文件。" }
+& $vpy -c "import valkey; import importlib.util; assert importlib.util.find_spec('BIGQMT_VK_DRYRUN')"
+if ($LASTEXITCODE -ne 0) { throw "需要支持 VK 的桥接包。请用 -BridgePackage 指定源码仓库或 wheel 文件。" }
 Ok "客户端环境已就绪：$vpy"
 
 # ---- 2. 安装服务端文件 ----------------------------------
@@ -185,16 +189,16 @@ if ($src -eq $dst) {
     throw ("导入到已部署的文件，源目录与 QMT 的 python 目录相同（" + $src + "）。请切换到其他目录运行此脚本，例如 deploy 目录。")
 }
 foreach ($item in @("bigqmt_signal_trader","bigqmt_signal_trader_strategy.py",
-                    "bigqmt_signal_trader_valkey_rpc_runtime.py","BIGQMT_VALKEY_DRYRUN.py")) {
+                    "bigqmt_signal_trader_vk_rpc_runtime.py","BIGQMT_VK_DRYRUN.py")) {
     Copy-Item (Join-Path $src $item) (Join-Path $dst $item) -Recurse -Force
 }
 Ok "已复制到 $dst"
 
-# ---- 3. 下载并解压 Valkey -------------------------------------------
-Step "3/7 准备 Windows 版 Valkey $valkeyRelease"
+# ---- 3. 下载并解压 VK -------------------------------------------
+Step "3/7 准备 Windows 版 VK $vkRelease"
 $zip = "$rdir\$archiveName.zip"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-function Test-ValkeyZip([string]$Path) {
+function Test-VkZip([string]$Path) {
     if (-not (Test-Path $Path)) { return $false }
     try {
         $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
@@ -206,33 +210,33 @@ function Test-ValkeyZip([string]$Path) {
         finally { $archive.Dispose() }
     } catch { return $false }
 }
-$explicitZip = [bool]$ValkeyZip
-if (-not $ValkeyZip) { $ValkeyZip = $zip }
-if (-not (Test-ValkeyZip $ValkeyZip)) {
+$explicitZip = [bool]$VkZip
+if (-not $VkZip) { $VkZip = $zip }
+if (-not (Test-VkZip $VkZip)) {
     # 保留调用方指定的压缩包。默认压缩包缺失或损坏时重新下载。
-    if ($explicitZip) { throw "压缩包无效，请提供 $archiveName.zip：$ValkeyZip" }
+    if ($explicitZip) { throw "压缩包无效，请提供 $archiveName.zip：$VkZip" }
     New-Item -ItemType Directory -Force $rdir | Out-Null
     $downloadZip = "$zip.download"
     # 兼容 Windows PowerShell 5.1，先确定下载地址，再构造参数数组。
-    $source = "https://github.com/valkey-windows/valkey-windows/releases/download/$valkeyRelease/$archiveName.zip"
-    if ($ValkeyUrl) { $source = $ValkeyUrl }
+    $source = "https://github.com/valkey-windows/valkey-windows/releases/download/$vkRelease/$archiveName.zip"
+    if ($VkUrl) { $source = $VkUrl }
     $dlArgs = @("-L","--connect-timeout","20","--retry","3","--retry-delay","2","--max-time","1800",
       "-o",$downloadZip,$source)
     if ($Proxy) { $dlArgs = @("-x",$Proxy) + $dlArgs }
     & curl.exe @dlArgs
-    if ($LASTEXITCODE -ne 0 -or -not (Test-ValkeyZip $downloadZip)) {
-        throw "Valkey 下载失败或文件不完整。可用 -ValkeyZip <路径>、-ValkeyUrl <备用地址> 或 -Proxy http://... 重试。"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-VkZip $downloadZip)) {
+        throw "VK 下载失败或文件不完整。可用 -VkZip <路径>、-VkUrl <备用地址> 或 -Proxy http://... 重试。"
     }
-    Move-Item -LiteralPath $downloadZip -Destination $ValkeyZip -Force
+    Move-Item -LiteralPath $downloadZip -Destination $VkZip -Force
 }
-if (-not (Test-Path $valkeyService) -or -not (Test-Path $valkeyCli) -or
+if (-not (Test-Path $vkService) -or -not (Test-Path $vkCli) -or
     -not (Test-Path "$binDir\valkey-server.exe")) {
-    Expand-Archive -LiteralPath $ValkeyZip -DestinationPath $rdir -Force
+    Expand-Archive -LiteralPath $VkZip -DestinationPath $rdir -Force
 }
-Ok "Valkey 程序目录：$binDir"
+Ok "VK 程序目录：$binDir"
 
-# ---- 4. 配置 Valkey 服务及密码 -----------------------------------
-Step "4/7 配置 Valkey 服务（监听 127.0.0.1，启用密码，内存上限 192 MB）"
+# ---- 4. 配置 VK 服务及密码 -----------------------------------
+Step "4/7 配置 VK 服务（监听 127.0.0.1，启用密码，内存上限 192 MB）"
 New-Item -ItemType Directory -Force $dataDir | Out-Null
 $svc = Get-Service $serviceName -ErrorAction SilentlyContinue
 if ($svc -and (-not (Test-Path $pwFile) -or -not (Test-Path $conf))) {
@@ -247,18 +251,18 @@ else {
     $pw = [BitConverter]::ToString($secretBytes).Replace("-", "").ToLowerInvariant()
     Set-Content $pwFile $pw -NoNewline -Encoding ASCII
 }
-if ($pw -notmatch '\A[0-9a-f]{48}\z') { throw "Valkey 密码文件无效：$pwFile" }
+if ($pw -notmatch '\A[0-9a-f]{48}\z') { throw "VK 密码文件无效：$pwFile" }
 if (-not $svc) {
     @"
 bind 127.0.0.1
-port $ValkeyPort
+port $VkPort
 requirepass $pw
 maxmemory 192mb
 maxmemory-policy noeviction
 "@ | Set-Content -LiteralPath $conf -Encoding ASCII
-    & $valkeyService install -c $conf --dir $dataDir --port $ValkeyPort --service-name $serviceName
-    if ($LASTEXITCODE -ne 0) { throw "Valkey 服务安装失败" }
-} elseif (-not (Select-String -LiteralPath $conf -Pattern "^\s*port\s+$ValkeyPort\s*$" -Quiet)) {
+    & $vkService install -c $conf --dir $dataDir --port $VkPort --service-name $serviceName
+    if ($LASTEXITCODE -ne 0) { throw "VK 服务安装失败" }
+} elseif (-not (Select-String -LiteralPath $conf -Pattern "^\s*port\s+$VkPort\s*$" -Quiet)) {
     throw "服务 $serviceName 已使用其他端口，请以 $conf 中的端口为准。"
 }
 $svc = Get-Service $serviceName
@@ -266,14 +270,14 @@ if ($svc.Status -ne "Running") { Start-Service $serviceName }
 $previousAuth = $env:VALKEYCLI_AUTH
 try {
     $env:VALKEYCLI_AUTH = $pw
-    $pong = & $valkeyCli -h 127.0.0.1 -p $ValkeyPort -n 5 PING
+    $pong = & $vkCli -h 127.0.0.1 -p $VkPort -n 5 PING
     if ($LASTEXITCODE -ne 0 -or $pong -ne "PONG") {
-        throw "Valkey 身份验证失败（127.0.0.1:$ValkeyPort）。"
+        throw "VK 身份验证失败（127.0.0.1:$VkPort）。"
     }
 } finally {
     $env:VALKEYCLI_AUTH = $previousAuth
 }
-Ok "Valkey 服务验证通过（127.0.0.1:$ValkeyPort）"
+Ok "VK 服务验证通过（127.0.0.1:$VkPort）"
 
 # ---- 5. 生成服务端配置 -------------------------------------------------
 Step "5/7 写入服务端配置"
@@ -286,7 +290,7 @@ BIGQMT_ACCOUNT_TYPE = "STOCK"
 
 BIGQMT_CONFIG = {
     "host": "127.0.0.1",
-    "port": $ValkeyPort,
+    "port": $VkPort,
     "db": 5,
     "username": "",
     "password": "$pw",
@@ -319,7 +323,7 @@ BIGQMT_RPC_TIMEOUT_SECONDS = 30.0
 
 BIGQMT_CONFIG = {
     "host": "127.0.0.1",
-    "port": $ValkeyPort,
+    "port": $VkPort,
     "db": 5,
     "username": "",
     "password": "$pw",
@@ -352,14 +356,14 @@ Write-Host ""
 Write-Host "================ 部署文件已就绪，请完成以下操作 ================" -ForegroundColor Yellow
 Write-Host @"
 1. 在 QMT 的「模型交易」中添加策略，加载
-   $dst\BIGQMT_VALKEY_DRYRUN.py
+   $dst\BIGQMT_VK_DRYRUN.py
    将运行模式设为「实盘」并启动策略。
    在输出面板确认 RPC 已启动（[bigqmt_rpc]）。
 2. 从 QMT 进程外验证：
    & "$vpy" "$cdir\qmt_cli.py" ping
    & "$vpy" "$cdir\qmt_cli.py" asset
-3. Valkey 密码文件： $pwFile
-4. 2 核 4 GB 服务器的内存预算：QMT 约 1.5 GB，Valkey 上限 192 MB，Python 约 400 MB。可关闭闲置的 QMT 面板。
+3. VK 密码文件： $pwFile
+4. 2 核 4 GB 服务器的内存预算：QMT 约 1.5 GB，VK 上限 192 MB，Python 约 400 MB。可关闭闲置的 QMT 面板。
 "@ -ForegroundColor Yellow
 if ($AllowOrders) {
     Write-Host "5. 远程下单和撤单已开启（-AllowOrders），可调用 buy、sell 和 cancel。" -ForegroundColor Yellow

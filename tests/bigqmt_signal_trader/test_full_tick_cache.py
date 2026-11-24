@@ -15,7 +15,7 @@ from bigqmt_signal_trader.full_tick_cache import (
 )
 
 
-class FakeValkey:
+class FakeVk:
     def __init__(self):
         self.hashes = {}
         self.kv = {}
@@ -58,12 +58,12 @@ class FakeContext:
 
 class FullTickCacheTest(unittest.TestCase):
     def test_request_then_refresh_writes_fresh_snapshot(self):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         context = FakeContext()
 
-        demand = request_full_tick_cache(valkey_client, "acct", ["600000"], demand_ttl_seconds=10)
-        refreshed = refresh_full_tick_cache(valkey_client, context, "acct", cache_ttl_seconds=10)
-        ticks = read_full_tick_cache(valkey_client, "acct", ["600000.SH"], max_age_seconds=10)
+        demand = request_full_tick_cache(vk_client, "acct", ["600000"], demand_ttl_seconds=10)
+        refreshed = refresh_full_tick_cache(vk_client, context, "acct", cache_ttl_seconds=10)
+        ticks = read_full_tick_cache(vk_client, "acct", ["600000.SH"], max_age_seconds=10)
 
         self.assertEqual(demand["codes"], ["600000.SH"])
         self.assertEqual(refreshed, 1)
@@ -71,40 +71,40 @@ class FullTickCacheTest(unittest.TestCase):
         self.assertEqual(ticks["600000.SH"]["lastPrice"], 10.0)
 
     def test_expired_demand_is_removed_without_refreshing(self):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         context = FakeContext()
         key = full_tick_demand_key("acct")
         request_id = full_tick_request_id(["600000.SH"])
-        valkey_client.hset(
+        vk_client.hset(
             key,
             request_id,
             '{"request_id":"%s","codes":["600000.SH"],"requested_at_ts":1,"expires_at_ts":1}' % request_id,
         )
 
-        refreshed = refresh_full_tick_cache(valkey_client, context, "acct", cache_ttl_seconds=10)
+        refreshed = refresh_full_tick_cache(vk_client, context, "acct", cache_ttl_seconds=10)
 
         self.assertEqual(refreshed, 0)
         self.assertEqual(context.calls, [])
-        self.assertIn((key, request_id), valkey_client.deleted)
+        self.assertIn((key, request_id), vk_client.deleted)
 
     def test_refresh_kind_symbol_skips_market_demands(self):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         context = FakeContext()
-        request_full_tick_cache(valkey_client, "acct", ["600000"], demand_ttl_seconds=10)
-        request_full_tick_cache(valkey_client, "acct", ["SH", "SZ"], demand_ttl_seconds=10)
+        request_full_tick_cache(vk_client, "acct", ["600000"], demand_ttl_seconds=10)
+        request_full_tick_cache(vk_client, "acct", ["SH", "SZ"], demand_ttl_seconds=10)
 
-        refreshed = refresh_full_tick_cache(valkey_client, context, "acct", cache_ttl_seconds=10, kind="symbol")
+        refreshed = refresh_full_tick_cache(vk_client, context, "acct", cache_ttl_seconds=10, kind="symbol")
 
         self.assertEqual(refreshed, 1)
         self.assertEqual(context.calls, [["600000.SH"]])
 
     def test_refresh_kind_market_skips_symbol_demands(self):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
         context = FakeContext()
-        request_full_tick_cache(valkey_client, "acct", ["600000"], demand_ttl_seconds=10)
-        request_full_tick_cache(valkey_client, "acct", ["SH", "SZ"], demand_ttl_seconds=10)
+        request_full_tick_cache(vk_client, "acct", ["600000"], demand_ttl_seconds=10)
+        request_full_tick_cache(vk_client, "acct", ["SH", "SZ"], demand_ttl_seconds=10)
 
-        refreshed = refresh_full_tick_cache(valkey_client, context, "acct", cache_ttl_seconds=10, kind="market")
+        refreshed = refresh_full_tick_cache(vk_client, context, "acct", cache_ttl_seconds=10, kind="market")
 
         self.assertEqual(refreshed, 1)
         self.assertEqual(context.calls, [["SH", "SZ"]])

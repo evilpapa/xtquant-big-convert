@@ -18,23 +18,23 @@
 - QMT `python` 目录导入测试通过。
 - 模拟 `init/adjust/sync_positions` 回调通过。
 - 模拟 `mode="bigqmt"` + fake `passorder` 参数测试通过。
-- Valkey Stream 信号源、Valkey 状态写回、Valkey 持仓同步已实现。
+- VK Stream 信号源、VK 状态写回、VK 持仓同步已实现。
 - 迁移前在本机 Redis `127.0.0.1:6379 db=5` 验证过 dry-run 集成。
 
 还没有完成：
 
 - 没有在 QMT 页面里通过“模型交易”做真实实盘委托验证。
-- 没有把 miniQMT 的真实买卖指令切成只写 Valkey 信号。
+- 没有把 miniQMT 的真实买卖指令切成只写 VK 信号。
 - 没有在真实账号上启用大 QMT `passorder` 实盘执行。
 
-所以今天开盘可以先验证“大 QMT 是否能持续加载和触发回调”，以及 Valkey dry-run 链路是否能消费测试信号并写回状态。如果要真的由大 QMT 替代 miniQMT 下单，必须先完成 miniQMT 只写信号、单账户灰度和实盘风控确认。
+所以今天开盘可以先验证“大 QMT 是否能持续加载和触发回调”，以及 VK dry-run 链路是否能消费测试信号并写回状态。如果要真的由大 QMT 替代 miniQMT 下单，必须先完成 miniQMT 只写信号、单账户灰度和实盘风控确认。
 
 ## 1.1 当前 QMT 页面检查结果
 
 2026-07-01 08:00 左右检查大 QMT“模型交易”页面：
 
 - 页面里当前运行/展示的策略名称是“网格策略”。
-- 没有看到 `bigqmt_signal_trader` 或 `bigqmt_signal_trader_valkey_dryrun`。
+- 没有看到 `bigqmt_signal_trader` 或 `bigqmt_signal_trader_vk_dryrun`。
 - “策略日志”页没有 `[bigqmt_signal_trader] init ok` 或 `[bigqmt_signal_trader] adjust ok`。
 
 结论：当前这个文件还没有真正挂到大 QMT 模型交易里运行。
@@ -100,8 +100,8 @@ Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_dryrun.py' `
   -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_dryrun.py' `
   -Force
 
-Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_valkey_dryrun.py' `
-  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_valkey_dryrun.py' `
+Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_vk_dryrun.py' `
+  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_vk_dryrun.py' `
   -Force
 ```
 
@@ -177,26 +177,26 @@ configure(mode="dryrun", account_id=ACCOUNT_ID or "dryrun")
 - 检查是否真的导入了 `bigqmt_signal_trader_strategy.py`。
 - 检查 QMT 输出窗或 `XtClient_Formula_YYYYMMDD.log` 是否有 traceback。
 
-## 4.3 Valkey dry-run 入口
+## 4.3 VK dry-run 入口
 
 已经新增安全观察入口：
 
 ```text
-<QMT_PYTHON_DIR>\bigqmt_signal_trader_valkey_dryrun.py
+<QMT_PYTHON_DIR>\bigqmt_signal_trader_vk_dryrun.py
 ```
 
 默认配置：
 
 ```text
 ACCOUNT_ID = bigqmt_probe
-Valkey = 127.0.0.1:6379 db=5
+VK = 127.0.0.1:6379 db=5
 Stream = bigqmt:signals:bigqmt_probe
 Status = bigqmt:signal_status:bigqmt_probe:{signal_id}
 Position = bigqmt:positions:bigqmt_probe
 OrderGateway = DryRunOrderGateway
 ```
 
-如果 QMT 的 `python` 目录存在本地私有配置文件，则 Valkey 连接会被覆盖：
+如果 QMT 的 `python` 目录存在本地私有配置文件，则 VK 连接会被覆盖：
 
 ```text
 <QMT_PYTHON_DIR>\bigqmt_signal_trader_qmt_config.py
@@ -207,7 +207,7 @@ OrderGateway = DryRunOrderGateway
 ```python
 # coding: utf-8
 BIGQMT_CONFIG = {
-    "host": "YOUR_VALKEY_HOST",
+    "host": "YOUR_VK_HOST",
     "port": 6379,
     "db": 5,
     "username": "",
@@ -215,15 +215,15 @@ BIGQMT_CONFIG = {
 }
 ```
 
-这个文件含 Valkey 密码，只放 QMT 本地目录，不提交到源码仓库，也不要贴进文档。
+这个文件含 VK 密码，只放 QMT 本地目录，不提交到源码仓库，也不要贴进文档。
 
-这个入口只用于开盘观察 Valkey 链路，不会真实下单，也不会消费真实账号流。不要把 `ACCOUNT_ID` 改成真实资金账号，除非你明确知道 dry-run 会 ack 掉该账号的 Valkey 信号。
+这个入口只用于开盘观察 VK 链路，不会真实下单，也不会消费真实账号流。不要把 `ACCOUNT_ID` 改成真实资金账号，除非你明确知道 dry-run 会 ack 掉该账号的 VK 信号。
 
 写入一条测试信号：
 
 ```powershell
 cd <REPO_ROOT>
-python -B -c "import sys,datetime,json,valkey; sys.path.insert(0,'src'); from bigqmt_signal_trader.adapters.signal_valkey import push_trade_signal; r=valkey.Valkey(host='127.0.0.1',port=6379,db=5); push_trade_signal(r, {'signal_id':'probe-001','account_id':'bigqmt_probe','action':'BUY','stock_code':'600000.SH','amount':100,'price_type':'FIX_PRICE','price':10.0,'created_at':'2026-07-01 09:31:00','expire_at':'2026-07-01 23:59:00','schema_version':1})"
+python -B -c "import sys,datetime,json,valkey; sys.path.insert(0,'src'); from bigqmt_signal_trader.adapters.signal_vk import push_trade_signal; r=valkey.Valkey(host='127.0.0.1',port=6379,db=5); push_trade_signal(r, {'signal_id':'probe-001','account_id':'bigqmt_probe','action':'BUY','stock_code':'600000.SH','amount':100,'price_type':'FIX_PRICE','price':10.0,'created_at':'2026-07-01 09:31:00','expire_at':'2026-07-01 23:59:00','schema_version':1})"
 ```
 
 运行后检查状态：
@@ -263,7 +263,7 @@ user_order_id = dryrun:bq:...
 - 日志里是否没有 `Traceback`、`ModuleNotFoundError`、`run script failed`。
 - 委托页面不应该出现真实委托，因为当前是 dry-run 且空信号源。
 
-如果要验证 Valkey dry-run 链路，则选择 `bigqmt_signal_trader_valkey_dryrun.py`，并向 `bigqmt:signals:bigqmt_probe` 写入测试信号。它只会写 Valkey 状态，不会真实委托。
+如果要验证 VK dry-run 链路，则选择 `bigqmt_signal_trader_vk_dryrun.py`，并向 `bigqmt:signals:bigqmt_probe` 写入测试信号。它只会写 VK 状态，不会真实委托。
 
 ### 5.2 真实大 QMT adapter 连通模式
 
@@ -297,7 +297,7 @@ configure(mode="bigqmt", account_id=ACCOUNT_ID or "dryrun")
 - 确认文件已部署到 `<QMT_PYTHON_DIR>`。
 - 在策略编辑器里编译成功。
 - 确认“启动本地 python”未勾选。
-- 在模型交易页面用“模拟信号”启动 `bigqmt_signal_trader_dryrun.py` 或 `bigqmt_signal_trader_valkey_dryrun.py`。
+- 在模型交易页面用“模拟信号”启动 `bigqmt_signal_trader_dryrun.py` 或 `bigqmt_signal_trader_vk_dryrun.py`。
 
 ### 9:30 到 9:35
 
@@ -305,7 +305,7 @@ configure(mode="bigqmt", account_id=ACCOUNT_ID or "dryrun")
 - 看 `XtClient_Formula_20260701.log` 是否有 traceback。
 - 看策略是否持续运行，没有自动结束。
 - 看委托页面确认没有真实委托。
-- 如果跑 Valkey dry-run，向 `bigqmt:signals:bigqmt_probe` 写一条测试信号，确认状态 key 变成 `DRY_RUN`。
+- 如果跑 VK dry-run，向 `bigqmt:signals:bigqmt_probe` 写一条测试信号，确认状态 key 变成 `DRY_RUN`。
 
 ### 9:35 后
 
@@ -348,7 +348,7 @@ passorder
 
 - 当前包不是 `qmt_jq_trade` 的目标持仓同步脚本。
 - 当前包的设计是“外部系统产出逐笔交易信号，大 QMT 只执行”。
-- Valkey db5 链路已经具备，但当前安全入口默认使用 `bigqmt_probe` 测试账号流。
+- VK db5 链路已经具备，但当前安全入口默认使用 `bigqmt_probe` 测试账号流。
 - 编辑器里点“运行”不是实盘验证。
 - 真正实盘必须走模型交易页面，并且要显式接入信号源、幂等状态和账户切换流程。
 

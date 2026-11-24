@@ -116,7 +116,7 @@ class CaptureListTest(unittest.TestCase):
             self.assertIs(captured.get(name), _stub, name)
 
     def test_probe_reports_the_formula_family(self):
-        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
         for name in ("call_formula", "subscribe_formula", "unsubscribe_formula",
                      "get_formula_result", "gen_factor_index"):

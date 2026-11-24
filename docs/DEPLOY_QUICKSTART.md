@@ -5,15 +5,15 @@
 整条链路只有 4 件东西：
 
 - **QMT 侧的服务端：BIGQMT**（一个策略文件加一个包，跑在 QMT 内置 python 进程里，绑定本地 COM 端口）
-- **QMT 侧的独立 com2valkey 代理: serial_valkey_bridge** (com 端口和 valkey 通信)
+- **QMT 侧的独立 Com2VK 代理: serial_vk_bridge** (com 端口和 VK 通信)
 - **外部的客户端：LOCAL**（pip 装的包，你本地策略系统的 python 环境，可和 QMT 分数不同的环境，没有机器要求，可使用 linux/mac 环境）
-- **中间的 Valkey**（已有实例可直接使用）
+- **中间的 VK 服务**（已有实例可直接使用）
 
-部署就是把服务端放进 QMT，通过 COM 端口对对接 valkey、让两边的连接参数一致。
+服务端放进 QMT，由独立桥接进程通过 COM 端口与 QMT 通信。桥接进程和外部客户端使用同一组 VK 连接参数。
 
-从旧版迁移时，先将两端的连接地址指向同一个 Valkey 实例。
-新配置使用 `BIGQMT_CONFIG`、`BIGQMT_VALKEY_*` 和 `transport="valkey"`。
-连接 `url` 接受 `valkey://` 或 `redis://`，两种写法都由 `valkey` 包连接 Valkey。
+从旧版迁移时，先将两端的连接地址指向同一个 VK 实例。
+新配置使用 `BIGQMT_CONFIG`、`BIGQMT_VK_*` 和 `transport="valkey"`。升级时，同步修改 `.env` 和启动环境，把 `BIGQMT_VALKEY_*`、`BIGQMT_SERIAL_VALKEY_*` 分别改成 `BIGQMT_VK_*`、`BIGQMT_SERIAL_VK_*`。串口启动参数使用 `--vk-url`、`--vk-pubsub`，PowerShell 中对应 `-VkUrl`、`-VkPubSub`。
+连接 `url` 接受 `valkey://` 或 `redis://`，两种写法都由 `valkey` 包连接 VK 服务。
 更新两端代码后，在 QMT 中重新加载下面的新入口。`bigqmt:*` 键名和 RPC 消息格式沿用原格式。
 
 ## 部署方式
@@ -21,13 +21,13 @@
 | 方式 | 放进 QMT 的是什么 | 什么时候选 |
 |---|---|---|
 | `package`（默认） | 一个包目录 + 三个顶层 `.py` + 一个入口文件，共 4 项 | 升级时可以 `reload_deployment` 热更新，不用重启策略 |
-| `single_file` | 一个 `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py`，包和配置都 base64 内嵌在里面 | QMT 目录不方便放多个文件、或想一个文件拷来拷去 |
+| `single_file` | 一个 `BIGQMT_VK_DRYRUN_ALL_IN_ONE.py`，包和配置都 base64 内嵌在里面 | QMT 目录不方便放多个文件、或想一个文件拷来拷去 |
 
 单文件模式的代价：包内嵌在文件里，升级只能整个文件替换再重启策略，`reload_deployment` 刷不动它。
 
 ## 文件汇总
 
-客户端、QMT 策略和独立串口桥接都需要 Python 3.12 或更高版本。直连 Valkey 的策略还需在实际运行的解释器中安装 `valkey`。
+客户端、QMT 策略和独立串口桥接都需要 Python 3.12 或更高版本。直连 VK 的策略还需在实际运行的解释器中安装 `valkey`。
 
 LOCAL 侧文件汇总
 
@@ -41,14 +41,14 @@ BIGQMT `package` 模式下文件汇总
 |---|---|---|
 | `bigqmt_signal_trader/`（整个包目录） | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
 | `bigqmt_signal_trader_strategy.py` | 同上 | 同上 |
-| `bigqmt_signal_trader_valkey_rpc_runtime.py` | 同上 | 同上 |
-| `BIGQMT_VALKEY_DRYRUN.py`（入口） | 同上 | 同上 |
+| `bigqmt_signal_trader_vk_rpc_runtime.py` | 同上 | 同上 |
+| `BIGQMT_VK_DRYRUN.py`（入口） | 同上 | 同上 |
 | `bigqmt_signal_trader_qmt_config.py` | 同上 | 第 2 步 `bigqmt-init` 第一个目录问题（**必须手填**，回车 = 当前目录） |
 
 BIGQMT `single` 模式下文件汇总
 | 文件 | 放哪 | 谁放 |
 |---|---|---|
-| `BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py` | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
+| `BIGQMT_VK_DRYRUN_ALL_IN_ONE.py` | QMT 的 `python` 目录 | 第 3 步**你手动拷** |
 
 `bigqmt-init` **只写两份配置**，不拷包、不装依赖、不会自己去找 QMT 装在哪。「QMT 的 `python` 目录」指 QMT 安装目录下叫 `python` 的子目录，不是 `bin.x64`。
 
@@ -58,7 +58,7 @@ BIGQMT `single` 模式下文件汇总
 pip install ".[valkey]"  # 在源码根目录执行
 ```
 
-直连 Valkey 时，也在 **QMT 策略实际使用的解释器**中运行 `python -m pip install "valkey>=6.1,<7"`，再用 `python -c "import valkey"` 验证。
+直连 VK 时，也在 **QMT 策略实际使用的解释器**中运行 `python -m pip install "valkey>=6.1,<7"`，再用 `python -c "import valkey"` 验证。
 
 ## 第 2 步：用 `bigqmt-init` 生成配置
 
@@ -80,7 +80,7 @@ python -m bigqmt_signal_trader.init_config
 |---|---|
 | 资金账号 | 服务端和客户端会写同一个，对不上是「查询全空」的头号原因 |
 | 账号类型（STOCK） | STOCK / CREDIT / FUTURE / STOCK_OPTION / HUGANGTONG / SHENGANGTONG。信用账户选 CREDIT，选错查出来是整行 0。股票户兼做港股通：生成后把 `BIGQMT_ACCOUNT_TYPE` 手工改成列表 `["STOCK", "HUGANGTONG", "SHENGANGTONG"]` |
-| Valkey 地址 / 端口 / db / 用户名 / 密码 | 选 valkey 才问。密码输入不回显，会写进配置文件 |
+| VK 地址 / 端口 / db / 用户名 / 密码 | 选 `valkey` 才问。密码输入不回显，会写进配置文件 |
 | 允许远程下单/撤单？（否） | 打开前它会警告：任何能连上这条通道的程序都可以下单。首次部署先留 `否`，验证通过再打开 |
 | 部署方式（package） | 见上表 |
 | **QMT 的 python 目录（回车则写到当前目录）** | **这里最容易出错。** 填 QMT 安装目录下的 `python`，如 `D:\gjzq_qmt\python`。直接回车会写到你当前所在的目录，服务端找不到配置 |
@@ -100,7 +100,7 @@ python -c "import bigqmt_signal_trader_strategy as m, os; print(os.path.dirname(
 
 ## 第 4 步：QMT 里运行入口
 
-QMT 策略编辑器**加载并运行 `BIGQMT_VALKEY_DRYRUN.py`**（单文件模式是 `..._ALL_IN_ONE.py`），运行模式切到**实盘**。输出面板看到这两行即成功：
+QMT 策略编辑器**加载并运行 `BIGQMT_VK_DRYRUN.py`**（单文件模式是 `..._ALL_IN_ONE.py`），运行模式切到**实盘**。输出面板看到这两行即成功：
 
 ```
 [bigqmt_shell] bigqmt_signal_trader 0.3.37 已从 D:\...\python\bigqmt_signal_trader 加载
@@ -160,15 +160,15 @@ python -c "from bigqmt_signal_trader.xtquant_compat import configure, xtdata; co
 
 ```powershell
 # 在仓库 clone 里，对每个 .py：tr -d '\r' 后比 sha256
-tr -d '\r' < src/bigqmt_signal_trader/valkey_rpc.py | sha256sum
-tr -d '\r' < D:\...\python\bigqmt_signal_trader\valkey_rpc.py | sha256sum
+tr -d '\r' < src/bigqmt_signal_trader/vk_rpc.py | sha256sum
+tr -d '\r' < D:\...\python\bigqmt_signal_trader\vk_rpc.py | sha256sum
 ```
 
 对不上的文件再和后面几个 tag 比。线上经常是「基线版本 + 几个文件手动更新到了更新的版本」这种混搭，只要每个文件都能对上某个 tag，就是干净的，可以覆盖。对不上任何 tag 的文件才是本地改动，停下来搞清楚。
 
-**3. 确认三个顶层文件有没有变。** `bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_valkey_rpc_runtime.py`、`BIGQMT_VALKEY_DRYRUN.py` 是 QMT 自己 exec 的，`reload_deployment` 刷不动它们。新版本里这三个和线上相同，就走热更新；有一个不同，就得重启策略。
+**3. 确认三个顶层文件有没有变。** `bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_vk_rpc_runtime.py`、`BIGQMT_VK_DRYRUN.py` 是 QMT 自己 exec 的，`reload_deployment` 刷不动它们。新版本里这三个和线上相同，就走热更新；有一个不同，就得重启策略。
 
-**4. 用 QMT 策略实际使用的 Python 编译一遍要变的文件。** 直连 Valkey 时还需验证该解释器能导入 `valkey`。如果用没有控制台的 `pythonw.exe`，可将编译结果写进文件：
+**4. 用 QMT 策略实际使用的 Python 编译一遍要变的文件。** 直连 VK 时还需验证该解释器能导入 `valkey`。如果用没有控制台的 `pythonw.exe`，可将编译结果写进文件：
 
 ```python
 # qmt_compile_check.py
@@ -233,6 +233,6 @@ xt_trader.reload_status()            # -> {'ok': True, 'modules_purged': 28,
 
 约 1 秒，期间约 1 秒的查询会超时（服务正在重建）。
 
-**但改这三个文件仍然要重启策略**：`bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_valkey_rpc_runtime.py`、`BIGQMT_VALKEY_DRYRUN.py`——QMT 自己 exec 它们，模块没法 reload 自己所在的模块。单文件部署整个都是这种情况。
+**但改这三个文件仍然要重启策略**：`bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_vk_rpc_runtime.py`、`BIGQMT_VK_DRYRUN.py`——QMT 自己 exec 它们，模块没法 reload 自己所在的模块。单文件部署整个都是这种情况。
 
 更细的排错（日志位置、日志保留策略、启动诊断字段）见 [使用指南](USER_GUIDE.md)「日志与排错」。

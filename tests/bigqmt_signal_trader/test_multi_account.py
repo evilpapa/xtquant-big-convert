@@ -74,8 +74,8 @@ class MultiAccountRpcServiceManagerTest(unittest.TestCase):
     def _service(self, account_id="ACCT1"):
         svc = mock.MagicMock()
         svc.account_id = account_id
-        svc.valkey = "valkey_obj"
-        svc.listen_valkey = "listen_valkey_obj"
+        svc.vk = "vk_obj"
+        svc.listen_vk = "listen_vk_obj"
         svc.drain_request_queue.return_value = 5
         svc.drain_pending.return_value = 3
         return svc
@@ -104,8 +104,8 @@ class MultiAccountRpcServiceManagerTest(unittest.TestCase):
         s1 = self._service()
         mgr = MultiAccountRpcServiceManager([s1], handlers="h")
         self.assertEqual(mgr.account_id, "ACCT1")
-        self.assertEqual(mgr.valkey, "valkey_obj")
-        self.assertEqual(mgr.listen_valkey, "listen_valkey_obj")
+        self.assertEqual(mgr.vk, "vk_obj")
+        self.assertEqual(mgr.listen_vk, "listen_vk_obj")
 
     def test_getattr_delegates_to_primary(self):
         s1 = self._service()
@@ -154,12 +154,12 @@ class BuildMultiAccountServiceTest(unittest.TestCase):
 
             primary = mock.MagicMock()
             primary.account_id = "ACCT1"
-            primary.valkey = "valkey"
-            primary.listen_valkey = "listen_valkey"
+            primary.vk = "valkey"
+            primary.listen_vk = "listen_vk"
 
             single = mock.MagicMock(return_value=primary)
 
-            # Mock _build_secondary to avoid needing real Valkey
+            # Mock _build_secondary to avoid connecting to VK.
             with mock.patch(
                 "bigqmt_signal_trader.multi_account._build_secondary"
             ) as mock_secondary:
@@ -244,7 +244,7 @@ class CancelHandlerIntegrationTest(unittest.TestCase):
     """_handle_cancel_order passes account_id to gateway.cancel()."""
 
     def test_cancel_handler_passes_account_id(self):
-        from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+        from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
         from bigqmt_signal_trader.adapters.order_dryrun import DryRunOrderGateway
 
         # Patch cancel to capture account_id

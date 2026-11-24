@@ -1,18 +1,18 @@
-"""大 QMT RPC 桥接服务的 Valkey 传输实现。
+"""大 QMT RPC 桥接服务的 VK 传输实现。
 
 这是参考实现，也是默认传输方式。它完整保留了原有
-``ValkeyPubSubRpcService`` 的通信行为：
+``VkPubSubRpcService`` 的通信行为：
 
 * 客户端 ``send_request``：用 ``RPUSH`` 将经过 Base64 混淆的请求放入对应账号的请求队列，
   再用 ``BLPOP`` 从该请求专属的响应列表取回响应，必要时改用 ``GET response_key``。
-  若调用方给 ``call_valkey_rpc`` 传入 ``transport="pubsub"``，
+  若调用方给 ``call_vk_rpc`` 传入 ``transport="pubsub"``，
   仍可使用 ``pubsub`` 传输方式。
 * 服务端接收：运行两个后台循环，一个通过 ``pubsub.subscribe`` 订阅消息，另一个通过
   ``brpop`` 读取队列。两个循环都会将收到的数据交给已注册的 ``on_request`` 回调。
 * 服务端 ``send_response``：将响应分别写入 ``reply_key``（``SETEX``）和
   ``reply_list``（``RPUSH`` + ``EXPIRE``），并发布到 ``reply_channel``（``PUBLISH``）。
 
-模块级辅助函数 :func:`call_valkey_rpc` 保留原有签名，并将实际处理交给此传输实现，
+模块级辅助函数 :func:`call_vk_rpc` 保留原有签名，并将实际处理交给此传输实现，
 因此现有调用方和 ``bench_latency.py`` 无需修改。
 """
 
@@ -25,7 +25,7 @@ import uuid
 #
 # socket.getaddrinfo(host) 使用 idna 编码主机名。编解码器按需加载，路径为
 # codecs.lookup → encodings.search_function → import encodings.idna →
-# stringprep → unicodedata（位于 DLLs/ 的 C 扩展）。在大 QMT 中，首次 Valkey
+# stringprep → unicodedata（位于 DLLs/ 的 C 扩展）。在大 QMT 中，首次 VK
 # 连接发生在 init 后的第一轮 tick，由 adjust 线程（C++ 定时器回调）发起。
 # 沙箱中的导入器可能无法在该线程加载扩展模块（#135 记录了 importlib.reload
 # 遇到的同类问题）。search_function 会吞掉 ImportError，随后 codecs.lookup
@@ -46,8 +46,8 @@ try:
 except (ImportError, LookupError):
     pass
 
-from ..adapters.valkey_common import decode_text
-from ..valkey_rpc import (
+from ..adapters.vk_common import decode_text
+from ..vk_rpc import (
     decode_rpc_request_payload,
     encode_rpc_request_payload,
 )
@@ -81,7 +81,7 @@ def _loads(raw_payload):
     return payload
 
 
-def _is_valkey_timeout(exc):
+def _is_vk_timeout(exc):
     name = exc.__class__.__name__.lower()
     module = getattr(exc.__class__, "__module__", "")
     text = str(exc).lower()
@@ -93,7 +93,7 @@ def _slim_pipeline_error(exc, keep_chars=500):
     """截去流水线错误消息中内嵌的响应数据。
 
     批量命令失败时，valkey-py 会把完整的命令参数写进错误消息，这里的参数就是
-    响应 JSON。因此，当 Valkey 因内存不足拒绝写入较大的 K 线响应时，str(exc)
+    响应 JSON。因此，当 VK 因内存不足拒绝写入较大的 K 线响应时，str(exc)
     可能长达数 MB（复现时，5 MB 的响应产生了约 5 MB 的错误消息；生产环境中，
     几条这样的日志就累积成了 542 MB 的日志文件，拖慢桥接服务直至无法提供服务）。
     保留异常类型和消息开头，足以看到 "OOM command not allowed"；其余内容用
@@ -110,12 +110,12 @@ def _slim_pipeline_error(exc, keep_chars=500):
         return RuntimeError(slimmed)
 
 
-class ValkeyTransport(RpcTransport):
-    """基于 Valkey 的传输实现，负责 rpush、blpop、brpop、publish 和 setex 操作。"""
+class VkTransport(RpcTransport):
+    """基于 VK 的传输实现，负责 rpush、blpop、brpop、publish 和 setex 操作。"""
 
     name = "valkey"
     # adjust 线程的 LPOP 超时后，暂停轮询；若连续超时，暂停时间逐次翻倍，
-    # 直至达到上限。首次收到 LPOP 响应后重置。Valkey 主机不可用时，每次探测
+    # 直至达到上限。首次收到 LPOP 响应后重置。VK 主机不可用时，每次探测
     # 都会等满 socket_connect_timeout（1.5 秒）。如果不暂停，每轮 tick 都会
     # 等待一次（2026-09-17 实盘中，1.5 秒一轮的情况持续了 3.5 小时）。
     DRAIN_TIMEOUT_BACKOFF_SECONDS = 5.0
@@ -123,9 +123,9 @@ class ValkeyTransport(RpcTransport):
 
     def __init__(
         self,
-        valkey_client,
+        vk_client,
         account_id="",
-        response_valkey_client=None,
+        response_vk_client=None,
         request_channel_template=REQUEST_CHANNEL_TEMPLATE,
         request_queue_template=REQUEST_QUEUE_TEMPLATE,
         response_channel_template=RESPONSE_CHANNEL_TEMPLATE,
@@ -136,9 +136,9 @@ class ValkeyTransport(RpcTransport):
         debug_log_limit=0,
         print_prefix="[bigqmt_rpc]",
     ):
-        super(ValkeyTransport, self).__init__(account_id=account_id, print_prefix=print_prefix)
-        self.listen_valkey = valkey_client
-        self.valkey = response_valkey_client or valkey_client
+        super(VkTransport, self).__init__(account_id=account_id, print_prefix=print_prefix)
+        self.listen_vk = vk_client
+        self.vk = response_vk_client or vk_client
         self.request_channel_template = request_channel_template
         self.request_queue_template = request_queue_template
         self.response_channel_template = response_channel_template
@@ -171,21 +171,21 @@ class ValkeyTransport(RpcTransport):
         return self.request_queue_template.format(account_id=self.account_id)
 
     def _response_clients(self):
-        clients = [self.valkey]
-        if self.listen_valkey is not self.valkey:
-            clients.append(self.listen_valkey)
+        clients = [self.vk]
+        if self.listen_vk is not self.vk:
+            clients.append(self.listen_vk)
         return clients
 
     # 客户端
     def send_request(self, request, timeout_seconds, transport="queue"):
         """发送 ``request``，阻塞等待响应字典。
 
-        ``transport`` 选择 Valkey 的传输方式：``"queue"``（默认，RPUSH + BLPOP）
+        ``transport`` 选择 VK 的传输方式：``"queue"``（默认，RPUSH + BLPOP）
         或 ``"pubsub"``（PUBLISH + subscribe）。保留此参数以兼容原有
-        ``call_valkey_rpc`` 的签名。
+        ``call_vk_rpc`` 的签名。
         """
-        return _call_valkey_rpc(
-            self.listen_valkey,
+        return _call_vk_rpc(
+            self.listen_vk,
             self.account_id,
             request,
             timeout_seconds=float(timeout_seconds),
@@ -200,7 +200,7 @@ class ValkeyTransport(RpcTransport):
     # 服务端
     def start_receiving(self, on_request, background_threads=True):
         """启用后台线程时，启动发布订阅监听和队列接收循环。"""
-        super(ValkeyTransport, self).start_receiving(on_request)
+        super(VkTransport, self).start_receiving(on_request)
         if not background_threads:
             print(
                 "%s 已启动 queue=%s background_threads=False"
@@ -215,10 +215,10 @@ class ValkeyTransport(RpcTransport):
         ):
             return
         self._thread = threading.Thread(
-            target=self._listen_loop, name="bigqmt-valkey-rpc", daemon=True
+            target=self._listen_loop, name="bigqmt-vk-rpc", daemon=True
         )
         self._queue_thread = threading.Thread(
-            target=self._queue_loop, name="bigqmt-valkey-rpc-queue", daemon=True
+            target=self._queue_loop, name="bigqmt-vk-rpc-queue", daemon=True
         )
         self._thread.start()
         self._queue_thread.start()
@@ -230,7 +230,7 @@ class ValkeyTransport(RpcTransport):
     def _listen_loop(self):
         while self._running:
             try:
-                pubsub = self.listen_valkey.pubsub(ignore_subscribe_messages=True)
+                pubsub = self.listen_vk.pubsub(ignore_subscribe_messages=True)
                 self._pubsub = pubsub
                 pubsub.subscribe(self.request_channel)
                 if self.debug_log_limit > 0:
@@ -247,7 +247,7 @@ class ValkeyTransport(RpcTransport):
             except Exception:
                 if not self._running:
                     # 若此线程正在 get_message 中等待，stop() 关闭 pubsub 时
-                    # 会断开套接字，导致 valkey ConnectionError 封装 WinError 10038。
+                    # 会断开套接字，导致 VK 客户端的 ConnectionError 封装 WinError 10038。
                     # 这是正常关闭流程。打印完整异常堆栈会让每次重启看起来都像故障，
                     # 使人习惯性忽略日志，反而容易漏掉真正的故障（#189）。
                     break
@@ -271,7 +271,7 @@ class ValkeyTransport(RpcTransport):
                         "%s 轮询队列 key=%s" % (self.print_prefix, self.request_queue)
                     )
                 while self._running:
-                    item = self.listen_valkey.brpop(self.request_queue, timeout=1)
+                    item = self.listen_vk.brpop(self.request_queue, timeout=1)
                     if not self._running:
                         break
                     if not item:
@@ -328,15 +328,15 @@ class ValkeyTransport(RpcTransport):
                                  ttl_seconds, payload):
         """通过一个客户端，用一次往返发送完整响应（#343）。
 
-        后台监听线程每执行一条 Valkey 命令，都会在套接字 I/O 期间释放 GIL，
+        后台监听线程每执行一条 VK 命令，都会在套接字 I/O 期间释放 GIL，
         随后再与 QMT 主线程争抢 GIL，每次约耗费一轮 adjust 的时间（#104）。
         逐条执行的路径包含 SETEX、RPUSH、EXPIRE 和 PUBLISH；原先响应客户端和
         监听客户端各执行一遍，因此每条响应要往返八次、重新获取 GIL 八次。
-        实盘终端（0.3.50、valkey、rpc_background_threads=True、100nMilliSecond）
+        实盘终端（0.3.50、VK、rpc_background_threads=True、100nMilliSecond）
         的日志为 ``ping breakdown handle=0.0ms ... publish=500-700ms``：
         请求处理几乎不耗时，延迟主要来自发送响应时的往返。
 
-        第二个客户端连接的是同一个 Valkey，不是另一个接收方，因此这里只把它
+        第二个客户端也连接同一个 VK 实例，因此这里只把它
         用作备用，第一个客户端抛出异常时才尝试使用它。若所有客户端都不支持
         流水线（例如旧版测试替身），则返回 False，沿用逐条执行命令的路径。
         """
@@ -448,7 +448,7 @@ class ValkeyTransport(RpcTransport):
         """后台 BRPOP 循环未运行时，改用非阻塞 LPOP 轮询队列。
 
         当 ``rpc_background_threads=True`` 时，后台线程通过 ``_queue_loop``
-        处理这个 Valkey 列表。此时在 adjust 线程执行 LPOP 会把
+        处理这个 VK 列表。此时在 adjust 线程执行 LPOP 会把
         ``get_market_data_ex`` 等读取型 RPC 抢到 QMT 主线程处理，打乱原本
         100 毫秒一轮的节奏（实测轮询耗时 0.6–1.8 秒）。后台线程仍在运行时
         跳过 LPOP，退出后才用 LPOP 接管。
@@ -469,11 +469,11 @@ class ValkeyTransport(RpcTransport):
         processed = 0
         for _ in range(int(max_items)):
             try:
-                item = self.listen_valkey.lpop(self.request_queue)
+                item = self.listen_vk.lpop(self.request_queue)
             except Exception as exc:
-                if _is_valkey_timeout(exc):
+                if _is_vk_timeout(exc):
                     # 这次 LPOP 让 adjust 线程一直等到套接字超时。暂停轮询，
-                    # 避免下一轮 tick 再等一次。2026-09-17，Valkey 主机故障
+                    # 避免下一轮 tick 再等一次。2026-09-17，VK 主机故障
                     # 持续 3.5 小时，策略的运行间隔从 100 毫秒拉长至 1.5 秒；
                     # 共 1212 个统计窗口记录了 "adjust cadence: ticks=7 avg=1.509s"，
                     # 策略自身的 tick_app 也随之变慢。
@@ -501,8 +501,8 @@ class ValkeyTransport(RpcTransport):
 
         连续超时时，依次暂停 5、10、20、30、30……秒；首次收到 LPOP 响应后
         重置退避。暂停期间，drain_request_queue 立即返回 0，让 adjust 保持原有
-        节奏，策略自身的任务得以按时执行。请求留在 Valkey 列表中，由首次成功的
-        探测取出；若 Valkey 不可用，客户端的请求会失败。
+        节奏，策略自身的任务得以按时执行。请求留在 VK 列表中，由首次成功的
+        探测取出；若 VK 不可用，客户端的请求会失败。
         """
         self._drain_timeouts = getattr(self, "_drain_timeouts", 0) + 1
         previous = getattr(self, "_drain_backoff_seconds", 0.0)
@@ -519,7 +519,7 @@ class ValkeyTransport(RpcTransport):
         )
 
     def stop(self):
-        super(ValkeyTransport, self).stop()
+        super(VkTransport, self).stop()
         pubsub = self._pubsub
         if pubsub is not None:
             try:
@@ -537,8 +537,8 @@ class ValkeyTransport(RpcTransport):
         self._pubsub = None
 
 
-def _call_valkey_rpc(
-    valkey_client,
+def _call_vk_rpc(
+    vk_client,
     account_id,
     request,
     timeout_seconds=3.0,
@@ -572,28 +572,28 @@ def _call_valkey_rpc(
     payload = encode_rpc_request_payload(request)
 
     if str(transport or "queue").lower() in ("queue", "list", "blpop"):
-        valkey_client.rpush(request_queue, payload)
-        valkey_client.expire(request_queue, max(60, int(ttl_seconds)))
+        vk_client.rpush(request_queue, payload)
+        vk_client.expire(request_queue, max(60, int(ttl_seconds)))
         wait_timeout = max(1, int(float(timeout_seconds) + 0.999))
-        item = valkey_client.blpop(response_list, timeout=wait_timeout)
+        item = vk_client.blpop(response_list, timeout=wait_timeout)
         if item:
             raw_response = (
                 item[1] if isinstance(item, (list, tuple)) and len(item) >= 2 else item
             )
             try:
-                valkey_client.delete(response_list)
+                vk_client.delete(response_list)
             except Exception:
                 pass
             return json.loads(decode_text(raw_response))
-        raw_response = valkey_client.get(response_key)
+        raw_response = vk_client.get(response_key)
         if raw_response:
             return json.loads(decode_text(raw_response))
-        raise TransportTimeout("valkey rpc timeout: %s" % request.get("method"))
+        raise TransportTimeout("VK rpc timeout: %s" % request.get("method"))
 
-    pubsub = valkey_client.pubsub(ignore_subscribe_messages=True)
+    pubsub = vk_client.pubsub(ignore_subscribe_messages=True)
     try:
         pubsub.subscribe(response_channel)
-        valkey_client.publish(request_channel, payload)
+        vk_client.publish(request_channel, payload)
         deadline = time.time() + float(timeout_seconds)
         while True:
             remaining = deadline - time.time()
@@ -605,10 +605,10 @@ def _call_valkey_rpc(
             response = json.loads(decode_text(message.get("data")))
             if response.get("request_id") == request_id:
                 return response
-        raw_response = valkey_client.get(response_key)
+        raw_response = vk_client.get(response_key)
         if raw_response:
             return json.loads(decode_text(raw_response))
-        raise TransportTimeout("valkey rpc timeout: %s" % request.get("method"))
+        raise TransportTimeout("VK rpc timeout: %s" % request.get("method"))
     finally:
         try:
             pubsub.close()

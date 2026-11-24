@@ -354,7 +354,7 @@ class FallbackNamesAreTheOnesThisTerminalAnswersTest(unittest.TestCase):
 
 class ReachableOverRpcTest(unittest.TestCase):
     def test_the_new_methods_are_whitelisted(self):
-        from bigqmt_signal_trader.valkey_rpc import MARKET_DATA_METHODS, READ_METHODS
+        from bigqmt_signal_trader.vk_rpc import MARKET_DATA_METHODS, READ_METHODS
 
         for name in ("create_sector", "create_sector_folder", "add_stock_to_sector",
                      "remove_stock_from_sector", "reset_sector_stock_list",

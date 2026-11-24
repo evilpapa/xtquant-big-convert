@@ -27,12 +27,12 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from bigqmt_signal_trader.valkey_rpc import (  # noqa: E402
+from bigqmt_signal_trader.vk_rpc import (  # noqa: E402
     LISTENER_DEFERRED_METHODS,
     ORDER_METHODS,
 )
 
-RPC_SOURCE = os.path.join(ROOT, "src", "bigqmt_signal_trader", "valkey_rpc.py")
+RPC_SOURCE = os.path.join(ROOT, "src", "bigqmt_signal_trader", "vk_rpc.py")
 
 # 「碰了 QMT 交易上下文」的判据：调了这些取数路径中的任何一个。
 TRADE_CONTEXT_CALLS = {

@@ -2,22 +2,22 @@
 """Client exec-event channel selection must mirror the server's sink choice
 (issue #144).
 
-The server publishes order/trade events to Valkey FIRST whenever it can build
-a Valkey client -- even when the RPC transport is zmq -- and only falls to the
-quote push channel after repeated Valkey publish failures (strategy
+The server publishes order/trade events to VK FIRST whenever it can build
+a VK client -- even when the RPC transport is zmq -- and only falls to the
+quote push channel after repeated VK publish failures (strategy
 _exec_event_sink, issue #145). The client listener used to choose by
 transport instead: zmq -> push channel only. So a zmq deployment with a
-working Valkey had every event published to Valkey while the client listened
+working VK had every event published to VK while the client listened
 on the push channel -- on_stock_order/on_stock_trade never fired.
 
 Reproduced live 2026-09-02 on Guojin 2.1.19.0 (zmq transport + reachable
-Valkey): the day's order events sat in the Valkey stream
+VK): the day's order events sat in the VK stream
 bigqmt:order_events:<account> while a zmq-transport XtQuantTrader callback
 received nothing.
 
-The listener now re-selects per reconnect round: reachable Valkey -> the
-per-account Valkey channels; otherwise the push channel (zmq) or a retry
-(valkey transport with Valkey down).
+The listener now re-selects per reconnect round: reachable VK -> the
+per-account VK channels; otherwise the push channel (zmq) or a retry
+(VK transport with VK down).
 """
 
 import json
@@ -57,7 +57,7 @@ class _Recorder(XtQuantTraderCallback):
 
 
 class _FakePubSub(object):
-    """Valkey pub/sub stand-in: replays queued messages, then stops the loop."""
+    """VK pub/sub stand-in: replays queued messages, then stops the loop."""
 
     def __init__(self, messages, stop):
         self.subscribed = []
@@ -78,7 +78,7 @@ class _FakePubSub(object):
         self.closed = True
 
 
-class _FakeValkeyClient(object):
+class _FakeVkClient(object):
     def __init__(self, messages=(), ping_ok=True, stop=None):
         self._messages = list(messages)
         self._ping_ok = ping_ok
@@ -89,7 +89,7 @@ class _FakeValkeyClient(object):
     def ping(self):
         self.pings += 1
         if not self._ping_ok:
-            raise RuntimeError("valkey unreachable")
+            raise RuntimeError("VK unreachable")
         return True
 
     def pubsub(self, ignore_subscribe_messages=True):
@@ -112,12 +112,12 @@ class _FakePushChannel(object):
         self.stopped = True
 
 
-def _trader(transport, valkey_client):
+def _trader(transport, vk_client):
     trader = BigQmtXtTrader(account_id="acct")
     trader.client = types.SimpleNamespace(
         transport_name=transport,
         account_id="acct",
-        _valkey=lambda: valkey_client,
+        _vk=lambda: vk_client,
     )
     recorder = _Recorder()
     trader.register_callback(recorder)
@@ -158,32 +158,32 @@ class _patched_channel_builder(object):
 class ChannelSelectionTest(unittest.TestCase):
 
 
-    def test_valkey_transport_with_working_valkey_still_uses_valkey(self):
+    def test_vk_transport_with_working_vk_still_uses_vk(self):
         trader, recorder = _trader("valkey", None)
-        valkey_client = _FakeValkeyClient(
+        vk_client = _FakeVkClient(
             messages=[json.dumps(ORDER_EVENT).encode("utf-8")],
             stop=lambda: setattr(trader, "_event_running", False),
         )
-        trader.client._valkey = lambda: valkey_client
+        trader.client._vk = lambda: vk_client
 
         trader._event_running = True
         with _patched_channel_builder(raiser=lambda: self.fail(
-                "valkey transport must not build a push channel")):
+                "VK transport must not build a push channel")):
             trader._event_loop()
 
-        self.assertEqual(len(valkey_client.pubsubs), 1)
+        self.assertEqual(len(vk_client.pubsubs), 1)
         self.assertEqual(recorder.names(), ["order"])
 
-    def test_valkey_transport_with_valkey_down_keeps_retrying_valkey(self):
+    def test_vk_transport_with_vk_down_keeps_retrying_vk(self):
         trader, _ = _trader("valkey", None)
-        # stop= lets the PRE-fix code (no ping, subscribes a dead valkey and
+        # stop= lets the PRE-fix code (no ping, subscribes a dead VK and
         # loops on empty polls) exit instead of hanging the reverse check.
-        valkey_client = _FakeValkeyClient(
+        vk_client = _FakeVkClient(
             ping_ok=False, stop=lambda: setattr(trader, "_event_running", False))
-        trader.client._valkey = lambda: valkey_client
+        trader.client._vk = lambda: vk_client
 
         def stop_after_first_retry():
-            if valkey_client.pings >= 1:
+            if vk_client.pings >= 1:
                 trader._event_running = False
 
         push = _FakePushChannel(stop=stop_after_first_retry)
@@ -198,8 +198,8 @@ class ChannelSelectionTest(unittest.TestCase):
             with _patched_channel_builder(push):
                 trader._event_loop()
 
-        self.assertGreaterEqual(valkey_client.pings, 1)
-        self.assertIsNone(push.topics, "valkey transport must not fall to the "
+        self.assertGreaterEqual(vk_client.pings, 1)
+        self.assertIsNone(push.topics, "VK transport must not fall to the "
                                       "push channel -- nothing would publish there")
 
 
@@ -208,7 +208,7 @@ class PushChannelBuilderResolutionTest(unittest.TestCase):
     """#366: BigQmtXtTrader never had `_build_quote_push_channel` -- it lives
     on BigQmtXtData. The exec-event listener calling it as `self.<method>`
     raised AttributeError into a silent retry loop, so a zmq deployment
-    without Valkey got ZERO exec callbacks (single-file zmq deploys hit this
+    without VK got ZERO exec callbacks (single-file zmq deploys hit this
     from day one). The builder is module-level now; this test drives the
     listener with no instance monkeypatching -- the thing the old tests did
     everywhere, which is exactly how the bug stayed invisible since #76."""

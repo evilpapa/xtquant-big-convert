@@ -35,7 +35,7 @@ except ImportError:
 _LOCAL_ROOTS = (
     "bigqmt_signal_trader",
     "bigqmt_signal_trader_strategy",
-    "bigqmt_signal_trader_valkey_rpc_runtime",
+    "bigqmt_signal_trader_vk_rpc_runtime",
     "bigqmt_signal_trader_qmt_config",
 )
 _ORIGINAL_IMPORT        = _builtins.__import__
@@ -260,14 +260,14 @@ def _fallback_account_id():
 
 
 try:
-    _local_import("bigqmt_signal_trader.adapters.valkey_common", globals(), fromlist=("*",))
-    _local_import("bigqmt_signal_trader.valkey_rpc", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.adapters.vk_common", globals(), fromlist=("*",))
+    _local_import("bigqmt_signal_trader.vk_rpc", globals(), fromlist=("*",))
     _strategy = _local_import("bigqmt_signal_trader_strategy", globals(), fromlist=("*",))
     _strategy.reset_app()
 except Exception as bridge_preload_error:
     print("[bigqmt_shell] 桥接预加载失败：%s" % bridge_preload_error)
 
-_runtime = _local_import("bigqmt_signal_trader_valkey_rpc_runtime", globals(), fromlist=("*",))
+_runtime = _local_import("bigqmt_signal_trader_vk_rpc_runtime", globals(), fromlist=("*",))
 
 
 def _load_local_config():
@@ -276,7 +276,7 @@ def _load_local_config():
 
 try:
     _config = _load_local_config()
-    BIGQMT_CONFIG = _runtime.local_valkey_config(_config)
+    BIGQMT_CONFIG = _runtime.local_vk_config(_config)
     forced_transport = globals().get("BIGQMT_FORCE_TRANSPORT")
     if forced_transport:
         BIGQMT_CONFIG = dict(BIGQMT_CONFIG or {})
@@ -285,7 +285,7 @@ try:
         (BIGQMT_CONFIG or {}).get("transport", "valkey"),
         sorted((BIGQMT_CONFIG or {}).keys()),
     ))
-    _runtime.configure_runtime_valkey(BIGQMT_CONFIG)
+    _runtime.configure_runtime_vk(BIGQMT_CONFIG)
 except Exception as rpc_config_error:
     print("[bigqmt_shell] 本地 RPC 配置加载失败：%s" % rpc_config_error)
 

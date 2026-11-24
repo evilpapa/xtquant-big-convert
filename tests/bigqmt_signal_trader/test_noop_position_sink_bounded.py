@@ -1,7 +1,7 @@
 # coding: utf-8
 """#441: the noop position sink must not grow without bound.
 
-app.tick() publishes a snapshot on every adjust tick (~10/s). Non-valkey
+app.tick() publishes a snapshot on every adjust tick (~10/s). Non-VK
 transports fall back to NoopPositionSyncSink, and a plain append kept every
 snapshot forever -- measured as ~1MB/s of private memory on a reporter's
 terminal until the pagefile filled the C drive. The fix keeps only the

@@ -1,17 +1,17 @@
 # coding: utf-8
-"""An unreachable valkey must not swallow order/trade callbacks (#145).
+"""An unreachable VK must not swallow order/trade callbacks (#145).
 
 Reported from a zmq deployment: every callback logged a full traceback ending
 in `valkey.exceptions.TimeoutError: Timeout connecting to server`, and no
-callbacks arrived. The reporter's own guess -- "好像是用了 valkey 模式回调的?" --
+callbacks arrived. The reporter's own guess -- "好像是用了 VK 模式回调的?" --
 was right, and the reason is a conflation:
 
-    valkey_client = _exec_event_valkey(config)
-    if valkey_client is not None:
-        return valkey_client          # preferred whenever "available"
+    vk_client = _exec_event_vk(config)
+    if vk_client is not None:
+        return vk_client          # preferred whenever "available"
 
 "Available" was only ever "configured". valkey-py builds its client lazily and
-does not dial until the first command, so a stale valkey block in the config
+does not dial until the first command, so a stale VK block in the config
 yields a perfectly healthy-looking client that times out on every publish --
 while the zmq push channel, already running for whole-quote data and working
 fine, is never even consulted.
@@ -19,7 +19,7 @@ fine, is never even consulted.
 Three failures at once: the callback is lost, the working channel stands idle,
 and the log fills with one traceback per event.
 
-So: publish falls back to the push channel when the sink fails, valkey is
+So: publish falls back to the push channel when the sink fails, VK is
 demoted after repeated failures rather than retried forever, and the traceback
 is throttled -- full detail the first few times (issue #76 needed it), a
 one-liner after that.
@@ -61,42 +61,42 @@ class _StrategyState(unittest.TestCase):
     def setUp(self):
         self._service = strategy._quote_subscription_service
         self._state = dict(strategy._exec_sink_state)
-        self._valkey = strategy._exec_event_valkey
+        self._vk = strategy._exec_event_vk
         strategy._exec_sink_state.update(
-            {"valkey_failures": 0, "reports": 0, "demoted": False})
+            {"vk_failures": 0, "reports": 0, "demoted": False})
 
     def tearDown(self):
         strategy._quote_subscription_service = self._service
         strategy._exec_sink_state.clear()
         strategy._exec_sink_state.update(self._state)
-        strategy._exec_event_valkey = self._valkey
+        strategy._exec_event_vk = self._vk
 
     def _with_channel(self, channel):
         strategy._quote_subscription_service = (object(), channel) if channel else None
 
-    def _with_valkey(self, client):
-        strategy._exec_event_valkey = lambda config: client
+    def _with_vk(self, client):
+        strategy._exec_event_vk = lambda config: client
 
 
 class SinkChoiceTest(_StrategyState):
-    def test_valkey_wins_while_it_works(self):
-        valkey, channel = Sink("valkey"), Sink("channel")
-        self._with_valkey(valkey)
+    def test_vk_wins_while_it_works(self):
+        vk, channel = Sink("valkey"), Sink("channel")
+        self._with_vk(vk)
         self._with_channel(channel)
 
-        self.assertIs(strategy._exec_event_sink({}), valkey)
+        self.assertIs(strategy._exec_event_sink({}), vk)
 
 
-    def test_a_demoted_valkey_hands_over_to_the_channel(self):
-        valkey, channel = Sink("valkey"), Sink("channel")
-        self._with_valkey(valkey)
+    def test_a_demoted_vk_hands_over_to_the_channel(self):
+        vk, channel = Sink("valkey"), Sink("channel")
+        self._with_vk(vk)
         self._with_channel(channel)
         strategy._exec_sink_state["demoted"] = True
 
         self.assertIs(strategy._exec_event_sink({}), channel)
 
     def test_neither_available_is_none_not_a_crash(self):
-        self._with_valkey(None)
+        self._with_vk(None)
         self._with_channel(None)
 
         self.assertIsNone(strategy._exec_event_sink({}))
@@ -119,19 +119,19 @@ class FallbackTest(_StrategyState):
     def test_a_failing_sink_falls_back_to_the_push_channel(self):
         """Without this the callback is simply lost -- the client never learns
         the order happened."""
-        valkey, channel = Sink("valkey", fail=True), Sink("channel")
+        vk, channel = Sink("valkey", fail=True), Sink("channel")
         self._with_channel(channel)
 
-        ok = strategy._publish_one(self.events, valkey, "acct", {"e": 1}, "order", {})
+        ok = strategy._publish_one(self.events, vk, "acct", {"e": 1}, "order", {})
 
         self.assertTrue(ok)
         self.assertEqual(len(channel.published), 1)
 
     def test_no_channel_to_fall_back_to_reports_failure(self):
-        valkey = Sink("valkey", fail=True)
+        vk = Sink("valkey", fail=True)
         self._with_channel(None)
 
-        ok = strategy._publish_one(self.events, valkey, "acct", {"e": 1}, "order", {})
+        ok = strategy._publish_one(self.events, vk, "acct", {"e": 1}, "order", {})
 
         self.assertFalse(ok)
 
@@ -145,13 +145,13 @@ class FallbackTest(_StrategyState):
         self.assertEqual(channel.published, [])
 
     def test_success_clears_the_failure_streak(self):
-        """A valkey that recovers must not stay one failure away from demotion."""
+        """A VK that recovers must not stay one failure away from demotion."""
         sink = Sink("valkey")
-        strategy._exec_sink_state["valkey_failures"] = 2
+        strategy._exec_sink_state["vk_failures"] = 2
 
         strategy._publish_one(self.events, sink, "acct", {"e": 1}, "order", {})
 
-        self.assertEqual(strategy._exec_sink_state["valkey_failures"], 0)
+        self.assertEqual(strategy._exec_sink_state["vk_failures"], 0)
 
 
 class DemotionTest(_StrategyState):
@@ -159,37 +159,37 @@ class DemotionTest(_StrategyState):
         _StrategyState.setUp(self)
         self.events = FakeExecEvents()
 
-    def test_repeated_failures_demote_valkey(self):
-        valkey, channel = Sink("valkey", fail=True), Sink("channel")
+    def test_repeated_failures_demote_vk(self):
+        vk, channel = Sink("valkey", fail=True), Sink("channel")
         self._with_channel(channel)
 
-        for _ in range(strategy._EXEC_VALKEY_FAILURE_LIMIT):
-            strategy._publish_one(self.events, valkey, "acct", {"e": 1}, "order", {})
+        for _ in range(strategy._EXEC_VK_FAILURE_LIMIT):
+            strategy._publish_one(self.events, vk, "acct", {"e": 1}, "order", {})
 
         self.assertTrue(strategy._exec_sink_state["demoted"])
 
     def test_one_failure_is_not_enough(self):
-        """A blip should not permanently give up valkey and its replay streams."""
-        valkey = Sink("valkey", fail=True)
+        """A blip should not permanently give up VK and its replay streams."""
+        vk = Sink("valkey", fail=True)
         self._with_channel(Sink("channel"))
 
-        strategy._publish_one(self.events, valkey, "acct", {"e": 1}, "order", {})
+        strategy._publish_one(self.events, vk, "acct", {"e": 1}, "order", {})
 
         self.assertFalse(strategy._exec_sink_state["demoted"])
 
     def test_it_does_not_demote_with_nowhere_to_go(self):
         """Demoting to nothing would turn a noisy failure into a silent one."""
-        valkey = Sink("valkey", fail=True)
+        vk = Sink("valkey", fail=True)
         self._with_channel(None)
 
-        for _ in range(strategy._EXEC_VALKEY_FAILURE_LIMIT + 2):
-            strategy._publish_one(self.events, valkey, "acct", {"e": 1}, "order", {})
+        for _ in range(strategy._EXEC_VK_FAILURE_LIMIT + 2):
+            strategy._publish_one(self.events, vk, "acct", {"e": 1}, "order", {})
 
         self.assertFalse(strategy._exec_sink_state["demoted"])
 
     def test_the_limit_is_a_few_events_not_one_and_not_hundreds(self):
-        self.assertGreaterEqual(strategy._EXEC_VALKEY_FAILURE_LIMIT, 2)
-        self.assertLessEqual(strategy._EXEC_VALKEY_FAILURE_LIMIT, 10)
+        self.assertGreaterEqual(strategy._EXEC_VK_FAILURE_LIMIT, 2)
+        self.assertLessEqual(strategy._EXEC_VK_FAILURE_LIMIT, 10)
 
 
 class ThrottleTest(_StrategyState):

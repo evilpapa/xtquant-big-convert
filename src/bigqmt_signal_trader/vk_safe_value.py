@@ -1,7 +1,7 @@
 # coding: utf-8
 """The identity codec shared by persisted identities and Lua remark replies.
 
-QMT's bundled Valkey checks the whole response for stock/operation digit
+QMT's bundled VK checks the whole response for stock/operation digit
 patterns (#393). Encoding must happen before the response reaches Python.
 Keep this module dependency-free: exec_events already imports order_remarks.
 """

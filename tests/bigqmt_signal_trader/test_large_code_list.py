@@ -56,8 +56,8 @@ class FakeClient(object):
             raise TimeoutError("zmq rpc timeout: get_full_tick")
         return dict(self._direct or {})
 
-    def _valkey(self):
-        raise AssertionError("valkey not expected here")
+    def _vk(self):
+        raise AssertionError("VK not expected here")
 
 
 def _xtdata(client):

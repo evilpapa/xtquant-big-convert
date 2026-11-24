@@ -35,9 +35,9 @@
 
 1. 实现 `BigQmtMarketDataProvider` 和 `BigQmtPositionProvider`。
 2. 实现 `BigQmtOrderGateway(passorder/cancel/get_trade_detail_data)`。
-3. 实现 Valkey Stream / MySQL outbox 信号源。
-4. 实现 Valkey / MySQL 状态写回。
-5. 实现 Valkey / MySQL 持仓同步 sink。
+3. 实现 VK Stream / MySQL outbox 信号源。
+4. 实现 VK / MySQL 状态写回。
+5. 实现 VK / MySQL 持仓同步 sink。
 6. dry-run 跑通后，再按账户灰度切换真实下单。
 
 ## 测试

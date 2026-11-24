@@ -6,7 +6,7 @@ names raise :class:`ValueError`.
 """
 
 from .base import RpcTransport
-from .valkey_transport import ValkeyTransport
+from .vk_transport import VkTransport
 
 
 KNOWN_TRANSPORTS = ("valkey", "serial", "shm")
@@ -16,7 +16,7 @@ def transport_supports_drain(name):
     """这个传输自己实现了 drain_request_queue 吗（不构造实例）。
 
     调用方要判断「能不能走 adjust 轮询」，而**构造实例是有副作用的** ——
-    建 valkey 连接、起线程。用它做探测污染过测试环境一次，所以这里只导入
+    建 VK 连接、起线程。用它做探测污染过测试环境一次，所以这里只导入
     模块、比对类属性，不 build。
 
     工厂是「有哪些传输」的唯一来源，这个判断也该在这里，而不是让调用方
@@ -27,7 +27,7 @@ def transport_supports_drain(name):
     name = str(name or "").lower()
     try:
         if name in ("valkey", "", "default"):
-            from .valkey_transport import ValkeyTransport as cls
+            from .vk_transport import VkTransport as cls
         elif name == "serial":
             from .serial_transport import SerialTransport as cls
         else:
@@ -48,15 +48,15 @@ def build_transport(
     """Construct a transport by name.
 
     ``config`` is the ``rpc`` config dict.
-    Valkey reads the channel and queue keys
-    (``request_channel_template`` etc.) plus ``valkey_client``/
-    ``response_valkey_client`` that the caller may inject.
+    VK reads the channel and queue keys
+    (``request_channel_template`` etc.) plus ``vk_client``/
+    ``response_vk_client`` that the caller may inject.
     """
     config = config or {}
     name = str(name or "").lower()
 
     if name in ("valkey", "", "default"):
-        return _build_valkey(config, account_id, print_prefix)
+        return _build_vk(config, account_id, print_prefix)
     if name == "serial":
         from .serial_transport import SerialTransport
 
@@ -69,20 +69,20 @@ def build_transport(
     )
 
 
-def _build_valkey(config, account_id, print_prefix):
-    valkey_client = config.get("valkey_client")
-    if valkey_client is None:
-        from ..adapters.valkey_common import build_valkey_client
+def _build_vk(config, account_id, print_prefix):
+    vk_client = config.get("vk_client")
+    if vk_client is None:
+        from ..adapters.vk_common import build_vk_client
 
-        valkey_config = dict(config.get("valkey") or {})
-        valkey_client = build_valkey_client(valkey_config)
-    response_valkey_client = config.get("response_valkey_client")
-    if response_valkey_client is None:
-        response_valkey_client = valkey_client
-    return ValkeyTransport(
-        valkey_client,
+        vk_config = dict(config.get("valkey") or {})
+        vk_client = build_vk_client(vk_config)
+    response_vk_client = config.get("response_vk_client")
+    if response_vk_client is None:
+        response_vk_client = vk_client
+    return VkTransport(
+        vk_client,
         account_id=account_id,
-        response_valkey_client=response_valkey_client,
+        response_vk_client=response_vk_client,
         request_channel_template=config.get(
             "request_channel_template", "bigqmt:rpc:req:{account_id}"
         ),

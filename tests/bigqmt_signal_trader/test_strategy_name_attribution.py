@@ -39,7 +39,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 from bigqmt_signal_trader.adapters.order_bigqmt import _first_nonzero
 from bigqmt_signal_trader.exec_events import order_identity_key, order_identity_map
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
 
 ACCOUNT = "8886800503"
@@ -50,7 +50,7 @@ class Row(object):
         self.__dict__.update(kwargs)
 
 
-class FakeValkey(object):
+class FakeVk(object):
     def __init__(self, values=None, fail=False):
         self.values = dict(values or {})
         self.fail = fail
@@ -106,76 +106,76 @@ class CommissionTest(unittest.TestCase):
 class IdentityMapTest(unittest.TestCase):
     def setUp(self):
         self.key = order_identity_key(ACCOUNT, "bq:abc:sig-1")
-        self.valkey = FakeValkey({self.key: _identity("alpha", "bq:abc:sig-1")})
+        self.vk = FakeVk({self.key: _identity("alpha", "bq:abc:sig-1")})
 
     def test_it_finds_a_remembered_order(self):
-        found = order_identity_map(self.valkey, ACCOUNT, ["bq:abc:sig-1"])
+        found = order_identity_map(self.vk, ACCOUNT, ["bq:abc:sig-1"])
 
         self.assertEqual(found["bq:abc:sig-1"]["strategy_name"], "alpha")
 
     def test_one_round_trip_for_the_whole_result_set(self):
         """This runs on the main strategy thread; N gets would be charged to
         every other request behind it."""
-        order_identity_map(self.valkey, ACCOUNT,
+        order_identity_map(self.vk, ACCOUNT,
                            ["bq:abc:sig-1", "bq:def:sig-2", "bq:ghi:sig-3"])
 
-        self.assertEqual(len(self.valkey.mgets), 1)
-        self.assertEqual(self.valkey.gets, [])
+        self.assertEqual(len(self.vk.mgets), 1)
+        self.assertEqual(self.vk.gets, [])
 
     def test_duplicates_are_asked_for_once(self):
-        order_identity_map(self.valkey, ACCOUNT, ["bq:abc:sig-1"] * 4)
+        order_identity_map(self.vk, ACCOUNT, ["bq:abc:sig-1"] * 4)
 
-        self.assertEqual(self.valkey.mgets, [[self.key]])
+        self.assertEqual(self.vk.mgets, [[self.key]])
 
     def test_blank_ids_are_dropped(self):
         """Hand-placed orders have no remark at all."""
-        order_identity_map(self.valkey, ACCOUNT, ["", None, "   ", "bq:abc:sig-1"])
+        order_identity_map(self.vk, ACCOUNT, ["", None, "   ", "bq:abc:sig-1"])
 
-        self.assertEqual(self.valkey.mgets, [[self.key]])
+        self.assertEqual(self.vk.mgets, [[self.key]])
 
-    def test_nothing_to_look_up_touches_valkey_not_at_all(self):
-        order_identity_map(self.valkey, ACCOUNT, ["", None])
+    def test_nothing_to_look_up_touches_vk_not_at_all(self):
+        order_identity_map(self.vk, ACCOUNT, ["", None])
 
-        self.assertEqual(self.valkey.mgets, [])
+        self.assertEqual(self.vk.mgets, [])
 
     def test_it_is_bounded(self):
-        order_identity_map(self.valkey, ACCOUNT,
+        order_identity_map(self.vk, ACCOUNT,
                            ["id-%d" % index for index in range(1000)], limit=10)
 
-        self.assertEqual(len(self.valkey.mgets[0]), 10)
+        self.assertEqual(len(self.vk.mgets[0]), 10)
 
     def test_a_client_without_mget_still_works(self):
-        class OldValkey(FakeValkey):
+        class OldVk(FakeVk):
             mget = None
 
-        valkey = OldValkey({self.key: _identity("alpha", "bq:abc:sig-1")})
+        vk = OldVk({self.key: _identity("alpha", "bq:abc:sig-1")})
 
-        found = order_identity_map(valkey, ACCOUNT, ["bq:abc:sig-1"])
+        found = order_identity_map(vk, ACCOUNT, ["bq:abc:sig-1"])
 
         self.assertEqual(found["bq:abc:sig-1"]["strategy_name"], "alpha")
 
     def test_a_failing_mget_falls_back_to_gets(self):
-        valkey = FakeValkey({self.key: _identity("alpha", "bq:abc:sig-1")}, fail=True)
+        vk = FakeVk({self.key: _identity("alpha", "bq:abc:sig-1")}, fail=True)
 
-        found = order_identity_map(valkey, ACCOUNT, ["bq:abc:sig-1"])
+        found = order_identity_map(vk, ACCOUNT, ["bq:abc:sig-1"])
 
         self.assertEqual(found["bq:abc:sig-1"]["strategy_name"], "alpha")
-        self.assertEqual(valkey.gets, [self.key])
+        self.assertEqual(vk.gets, [self.key])
 
-    def test_no_valkey_is_an_empty_answer_not_a_crash(self):
+    def test_no_vk_is_an_empty_answer_not_a_crash(self):
         self.assertEqual(order_identity_map(None, ACCOUNT, ["bq:abc:sig-1"]), {})
 
     def test_unparsable_json_is_skipped(self):
-        valkey = FakeValkey({self.key: b"not json"})
+        vk = FakeVk({self.key: b"not json"})
 
-        self.assertEqual(order_identity_map(valkey, ACCOUNT, ["bq:abc:sig-1"]), {})
+        self.assertEqual(order_identity_map(vk, ACCOUNT, ["bq:abc:sig-1"]), {})
 
     def test_bytes_and_str_both_decode(self):
         payload = _identity("alpha", "bq:abc:sig-1")
         for stored in (payload, payload.encode("utf-8")):
-            valkey = FakeValkey({self.key: stored})
+            vk = FakeVk({self.key: stored})
 
-            found = order_identity_map(valkey, ACCOUNT, ["bq:abc:sig-1"])
+            found = order_identity_map(vk, ACCOUNT, ["bq:abc:sig-1"])
 
             self.assertEqual(found["bq:abc:sig-1"]["strategy_name"], "alpha")
 
@@ -183,11 +183,11 @@ class IdentityMapTest(unittest.TestCase):
 class IdentityClientWiringTest(unittest.TestCase):
     """The identity store must not depend on which transport is configured.
 
-    Only a valkey TRANSPORT builds the download-job clients. This deployment
+    Only a VK TRANSPORT builds the download-job clients. This deployment
     runs zmq, so that attribute is None -- which silently meant orders were
     never remembered at submit time either, and attribution could never work
     no matter how the query side was written. Verified against the live
-    terminal: the RPC transport is zmq and valkey is reachable and configured.
+    terminal: the RPC transport is zmq and VK is reachable and configured.
     """
 
     def _handlers(self, **attributes):
@@ -197,61 +197,61 @@ class IdentityClientWiringTest(unittest.TestCase):
         return handlers
 
     def test_the_dedicated_client_is_used(self):
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
 
-        handlers = self._handlers(order_identity_valkey_client=valkey_client,
-                                  download_job_valkey_client=None)
+        handlers = self._handlers(order_identity_vk_client=vk_client,
+                                  download_job_vk_client=None)
 
-        self.assertIs(handlers._identity_valkey(), valkey_client)
+        self.assertIs(handlers._identity_vk(), vk_client)
 
     def test_it_falls_back_to_the_download_job_client(self):
         """Deployments that predate the dedicated attribute."""
-        valkey_client = FakeValkey()
+        vk_client = FakeVk()
 
-        handlers = self._handlers(download_job_valkey_client=valkey_client)
+        handlers = self._handlers(download_job_vk_client=vk_client)
 
-        self.assertIs(handlers._identity_valkey(), valkey_client)
+        self.assertIs(handlers._identity_vk(), vk_client)
 
     def test_the_dedicated_one_wins(self):
-        dedicated, download = FakeValkey(), FakeValkey()
+        dedicated, download = FakeVk(), FakeVk()
 
-        handlers = self._handlers(order_identity_valkey_client=dedicated,
-                                  download_job_valkey_client=download)
+        handlers = self._handlers(order_identity_vk_client=dedicated,
+                                  download_job_vk_client=download)
 
-        self.assertIs(handlers._identity_valkey(), dedicated)
+        self.assertIs(handlers._identity_vk(), dedicated)
 
     def test_neither_is_none_not_an_error(self):
         handlers = self._handlers()
 
-        self.assertIsNone(handlers._identity_valkey())
+        self.assertIsNone(handlers._identity_vk())
 
 
-    def test_no_valkey_config_means_no_client(self):
+    def test_no_vk_config_means_no_client(self):
         import bigqmt_signal_trader_strategy as strategy
 
-        strategy._exec_event_valkey_client = None
+        strategy._exec_event_vk_client = None
         try:
-            self.assertIsNone(strategy._exec_event_valkey({}))
-            self.assertIsNone(strategy._exec_event_valkey({"valkey": {}}))
+            self.assertIsNone(strategy._exec_event_vk({}))
+            self.assertIsNone(strategy._exec_event_vk({"valkey": {}}))
         finally:
-            strategy._exec_event_valkey_client = None
+            strategy._exec_event_vk_client = None
 
 
 class AttributionTest(unittest.TestCase):
-    def _handlers(self, valkey_client):
+    def _handlers(self, vk_client):
         handlers = BigQmtRpcHandlers.__new__(BigQmtRpcHandlers)
-        handlers.order_identity_valkey_client = valkey_client
-        handlers.download_job_valkey_client = None
+        handlers.order_identity_vk_client = vk_client
+        handlers.download_job_vk_client = None
         return handlers
 
     def setUp(self):
         self.key = order_identity_key(ACCOUNT, "bq:abc:sig-1")
-        self.valkey = FakeValkey({self.key: _identity("alpha", "bq:abc:sig-1")})
+        self.vk = FakeVk({self.key: _identity("alpha", "bq:abc:sig-1")})
 
     def test_a_bridge_order_gets_its_name_back(self):
         rows = [Row(user_order_id="bq:abc:sig-1", strategy_name="")]
 
-        named = self._handlers(self.valkey)._attribute_to_strategies(ACCOUNT, rows)
+        named = self._handlers(self.vk)._attribute_to_strategies(ACCOUNT, rows)
 
         self.assertEqual(named[0].strategy_name, "alpha")
 
@@ -260,7 +260,7 @@ class AttributionTest(unittest.TestCase):
         one would be worse than the empty string."""
         rows = [Row(user_order_id="", strategy_name="")]
 
-        named = self._handlers(self.valkey)._attribute_to_strategies(ACCOUNT, rows)
+        named = self._handlers(self.vk)._attribute_to_strategies(ACCOUNT, rows)
 
         self.assertEqual(named[0].strategy_name, "")
 
@@ -271,7 +271,7 @@ class AttributionTest(unittest.TestCase):
         authoritative one and must WIN over the row's value."""
         rows = [Row(user_order_id="bq:abc:sig-1", strategy_name="大QMT桥接器")]
 
-        named = self._handlers(self.valkey)._attribute_to_strategies(ACCOUNT, rows)
+        named = self._handlers(self.vk)._attribute_to_strategies(ACCOUNT, rows)
 
         self.assertEqual(named[0].strategy_name, "alpha")
 
@@ -280,21 +280,21 @@ class AttributionTest(unittest.TestCase):
         whatever the row says -- overriding only on a hit."""
         rows = [Row(user_order_id="someone-elses", strategy_name="beta")]
 
-        named = self._handlers(self.valkey)._attribute_to_strategies(ACCOUNT, rows)
+        named = self._handlers(self.vk)._attribute_to_strategies(ACCOUNT, rows)
 
         self.assertEqual(named[0].strategy_name, "beta")
 
-    def test_rows_without_remarks_mean_no_valkey_traffic(self):
+    def test_rows_without_remarks_mean_no_vk_traffic(self):
         """Only remarked rows can have an identity; blank ones never ask."""
         rows = [Row(user_order_id="", strategy_name="beta")]
 
-        self._handlers(self.valkey)._attribute_to_strategies(ACCOUNT, rows)
+        self._handlers(self.vk)._attribute_to_strategies(ACCOUNT, rows)
 
-        self.assertEqual(self.valkey.mgets, [])
-        self.assertEqual(self.valkey.gets, [])
+        self.assertEqual(self.vk.mgets, [])
+        self.assertEqual(self.vk.gets, [])
 
 
-    def test_an_exploding_valkey_does_not_lose_the_rows(self):
+    def test_an_exploding_vk_does_not_lose_the_rows(self):
         """Attribution is a nicety; the query result is not."""
         class Exploding(object):
             def mget(self, keys):
@@ -311,11 +311,11 @@ class AttributionTest(unittest.TestCase):
         self.assertEqual(named[0].strategy_name, "")
 
     def test_an_empty_result_set_is_fine(self):
-        self.assertEqual(self._handlers(self.valkey)._attribute_to_strategies(
+        self.assertEqual(self._handlers(self.vk)._attribute_to_strategies(
             ACCOUNT, []), [])
 
     def test_none_is_fine(self):
-        self.assertEqual(self._handlers(self.valkey)._attribute_to_strategies(
+        self.assertEqual(self._handlers(self.vk)._attribute_to_strategies(
             ACCOUNT, None), [])
 
     def test_a_mixed_result_set_names_only_what_it_can(self):
@@ -323,7 +323,7 @@ class AttributionTest(unittest.TestCase):
                 Row(user_order_id="", strategy_name=""),
                 Row(user_order_id="bq:zzz:sig-9", strategy_name="")]
 
-        named = self._handlers(self.valkey)._attribute_to_strategies(ACCOUNT, rows)
+        named = self._handlers(self.vk)._attribute_to_strategies(ACCOUNT, rows)
 
         self.assertEqual([row.strategy_name for row in named], ["alpha", "", ""])
 

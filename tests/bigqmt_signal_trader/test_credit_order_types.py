@@ -31,7 +31,7 @@ from xtquant import xtconstant
 from bigqmt_signal_trader.adapters.order_bigqmt import (
     BigQmtOrderGateway, credit_action_of, credit_optype_of)
 from bigqmt_signal_trader.models import OrderRequest
-from bigqmt_signal_trader.valkey_rpc import BigQmtRpcHandlers
+from bigqmt_signal_trader.vk_rpc import BigQmtRpcHandlers
 
 
 class _Recorder(object):
