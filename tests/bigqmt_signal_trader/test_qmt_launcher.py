@@ -9,6 +9,9 @@ terminal. Process enumeration is stubbed so the tests never touch real ones.
 import os
 import sys
 import unittest
+from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -173,12 +176,71 @@ class ReadinessTest(unittest.TestCase):
             qmt_launcher.port_is_listening = orig
 
 
+@pytest.mark.parametrize("action", ["open", "restart"])
+def test_login_credentials_fall_back_to_dotenv(tmp_path, monkeypatch, action):
+    (tmp_path / ".env").write_text(
+        "BIGQMT_LOGIN_USER=file-user\nBIGQMT_LOGIN_PASSWORD='literal${PASSWORD}'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BIGQMT_LOGIN_USER", "process-user")
+    monkeypatch.delenv("BIGQMT_LOGIN_PASSWORD", raising=False)
+    received = {}
+
+    def launch(install_dir, **kwargs):
+        received.update(kwargs["credentials"])
+
+    monkeypatch.setattr(qmt_launcher, f"{action}_qmt", launch)
+    assert qmt_launcher.main([action, "--dir", "test-qmt", "--mode", "login"]) == 0
+    assert received == {"user": "process-user", "password": "literal${PASSWORD}"}
+
+
+def test_login_uses_versioned_qt_window_owned_by_spawned_terminal(monkeypatch):
+    import ctypes
+
+    inspected = []
+
+    def inspect_style(handle, flag):
+        inspected.append(handle)
+        return 0x960b0000
+
+    def enum_windows(callback, results):
+        for handle in (30, 40):
+            callback(handle, results)
+
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(
+        user32=SimpleNamespace(SetProcessDPIAware=lambda: None)), raising=False)
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(GWL_STYLE=-16))
+    monkeypatch.setitem(sys.modules, "win32gui", SimpleNamespace(
+        IsWindowVisible=lambda handle: True,
+        GetWindowText=lambda handle: "Test QMT",
+        GetClassName=lambda handle: "Qt5152QWindowIcon",
+        EnumWindows=enum_windows,
+        GetWindowLong=inspect_style,
+    ))
+    monkeypatch.setitem(sys.modules, "win32process", SimpleNamespace(
+        GetWindowThreadProcessId=lambda handle: (1, handle * 10)))
+    monkeypatch.setattr(qmt_launcher.os.path, "isdir", lambda path: True)
+    monkeypatch.setattr(qmt_launcher.os.path, "isfile", lambda path: True)
+    monkeypatch.setattr(qmt_launcher, "_spawn", lambda *args, **kwargs: SimpleNamespace(pid=400))
+
+    qmt_launcher.open_qmt("D:/qmt", mode="login", wait_ready=False,
+                          credentials={"user": "test", "password": "test"})
+
+    assert inspected == [40]
+
+
 class OpenQmtTest(unittest.TestCase):
     def _stub_spawn(self):
         calls = []
         orig_spawn = qmt_launcher._spawn
         orig_ready = qmt_launcher.wait_until_ready
-        qmt_launcher._spawn = lambda cmd, cwd=None, shell=False: calls.append((cmd, cwd, shell))
+
+        def spawn(cmd, cwd=None, shell=False):
+            calls.append((cmd, cwd, shell))
+            return SimpleNamespace(pid=100)
+
+        qmt_launcher._spawn = spawn
         qmt_launcher.wait_until_ready = lambda *a, **k: 1.0
         return calls, orig_spawn, orig_ready
 
@@ -257,6 +319,18 @@ class LoginWindowDetectionTest(unittest.TestCase):
                 timeout_seconds=0.0, poll_interval=0.0,
             )
             self.assertIsNone(result)
+
+
+def test_elevation_required_error_is_reported_without_traceback(monkeypatch, capsys):
+    def boom(*_args, **_kwargs):
+        exc = OSError(740, "请求的操作需要提升")
+        exc.winerror = 740
+        raise exc
+
+    monkeypatch.setattr(qmt_launcher, "open_qmt", boom)
+
+    assert qmt_launcher.main(["open", "--dir", "test-qmt", "--no-wait"]) == 3
+    assert "管理员权限" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

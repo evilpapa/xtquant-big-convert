@@ -5,8 +5,8 @@
     python -m bigqmt_signal_trader.init_config
 
 可生成 QMT 端配置、客户端配置或内嵌配置的单文件策略（#56）。
-配置文件会保存 Valkey 密码。QMT 登录密码由启动器从
-BIGQMT_LOGIN_PASSWORD 环境变量读取。
+配置文件会保存 Valkey 密码。QMT 登录密码默认由启动器从
+BIGQMT_LOGIN_PASSWORD 环境变量读取；环境变量为空时启动器会读启动目录的 .env。
 """
 
 import getpass
@@ -429,9 +429,10 @@ def _report(write, answers, written):
     if answers["allow_order_methods"]:
         write("\n注意：远程下单/撤单已打开。任何能连上这条通道的程序都可以下单。\n")
 
-    write("\nqmt_launcher 的自动登录密码不写进配置文件——"
-          "它从环境变量 BIGQMT_LOGIN_PASSWORD 读取，\n"
-          "这样密码不会出现在 argv 或磁盘文件里。需要时先设置该环境变量。\n")
+    write("\nqmt_launcher 的自动登录密码不写进生成的配置文件——"
+          "它优先读环境变量 BIGQMT_LOGIN_PASSWORD，\n"
+          "环境变量为空时读启动目录的 .env；两种方式都不会让密码出现在 argv 里。\n"
+          "需要时先设置环境变量，或把 BIGQMT_LOGIN_USER / BIGQMT_LOGIN_PASSWORD 写进 .env。\n")
 
 
 def main(argv=None):

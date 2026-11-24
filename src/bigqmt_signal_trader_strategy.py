@@ -1036,7 +1036,7 @@ def _record_adjust_source(source):
     stats[source] = stats.get(source, 0) + 1
     if now - stats["window_start"] >= 10.0:
         print(
-            "[adjust_source] handlebar=%d timer=%d，统计窗口 %.0fs"
+            "[adjust_source] handlebar=%d timer=%d，over %.0fs"
             % (stats["handlebar"], stats["timer"], now - stats["window_start"])
         )
         stats.update({"handlebar": 0, "timer": 0, "window_start": now})
@@ -1087,7 +1087,7 @@ def _record_adjust_tick():
     if now - stats["window_start"] >= 10.0 and stats["count"] > 0:
         avg = stats["sum"] / stats["count"]
         print(
-            "[bigqmt_signal_trader] adjust 节拍：ticks=%d avg=%.3fs min=%.3fs max=%.3fs，统计窗口 %.0fs"
+            "[bigqmt_signal_trader] adjust 节拍：ticks=%d avg=%.3fs min=%.3fs max=%.3fs，over %.0fs"
             % (stats["count"], avg, stats["min"], stats["max"], now - stats["window_start"])
         )
         if sum(_tick_app_hist) > 0:

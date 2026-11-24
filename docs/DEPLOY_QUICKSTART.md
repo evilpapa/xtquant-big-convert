@@ -2,17 +2,18 @@
 
 > 面向第一次部署和升级已有部署的最短路径。传输层和多账号说明见 [使用指南](USER_GUIDE.md)；排错见「日志与排错」。
 
-整条链路只有三件东西：
+整条链路只有 4 件东西：
 
-- **QMT 侧的服务端：BIGQMT**（一个策略文件加一个包，跑在 QMT 内置 python 进程里）
+- **QMT 侧的服务端：BIGQMT**（一个策略文件加一个包，跑在 QMT 内置 python 进程里，绑定本地 COM 端口）
+- **QMT 侧的独立 com2valkey 代理: serial_valkey_bridge** (com 端口和 valkey 通信)
 - **外部的客户端：LOCAL**（pip 装的包，你本地策略系统的 python 环境，可和 QMT 分数不同的环境，没有机器要求，可使用 linux/mac 环境）
 - **中间的 Valkey**（已有实例可直接使用）
 
-部署就是把服务端放进 QMT、让两边的连接参数一致。
+部署就是把服务端放进 QMT，通过 COM 端口对对接 valkey、让两边的连接参数一致。
 
-从旧版迁移时，先将两端的连接地址指向同一个 Valkey 实例。新配置使用
-`BIGQMT_CONFIG`、`BIGQMT_VALKEY_*` 和 `transport="valkey"`。连接 `url` 接受
-`valkey://` 或 `redis://`，两种写法都由 `valkey` 包连接 Valkey。
+从旧版迁移时，先将两端的连接地址指向同一个 Valkey 实例。
+新配置使用 `BIGQMT_CONFIG`、`BIGQMT_VALKEY_*` 和 `transport="valkey"`。
+连接 `url` 接受 `valkey://` 或 `redis://`，两种写法都由 `valkey` 包连接 Valkey。
 更新两端代码后，在 QMT 中重新加载下面的新入口。`bigqmt:*` 键名和 RPC 消息格式沿用原格式。
 
 ## 部署方式

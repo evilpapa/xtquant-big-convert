@@ -32,6 +32,7 @@ Windows only. ``psutil`` is used when importable, otherwise we shell out to
 """
 
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -348,9 +349,9 @@ def open_qmt(install_dir, mode="auto", bat_path=None, exe_name=None,
         exe = os.path.join(bin_dir, str(exe_name or "XtItClient.exe"))
         if not os.path.isfile(exe):
             raise QmtLauncherError("%s not found in %s" % (os.path.basename(exe), bin_dir))
-        _spawn([exe], cwd=bin_dir)
+        process = _spawn([exe], cwd=bin_dir)
         if mode == "login":
-            _login_via_window(credentials or {}, window_title_prefix)
+            _login_via_window(credentials or {}, window_title_prefix, process_id=process.pid)
     else:
         raise QmtLauncherError("unknown mode %r (bat/linkmini/exe/login/auto)" % mode)
 
@@ -403,7 +404,8 @@ def _wait_for_main_window(
         time.sleep(max(float(poll_interval), 0.0))
 
 
-def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seconds=90.0):
+def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seconds=90.0,
+                      *, process_id):
     """Type credentials into the QMT login dialog.
 
     Matches the window by title PREFIX. The reference implementation pinned the
@@ -431,6 +433,7 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
     try:
         import win32con
         import win32gui
+        import win32process
     except ImportError:
         raise QmtLauncherError(
             "mode='login' needs pywin32 (pip install pywin32)"
@@ -452,11 +455,11 @@ def _login_via_window(credentials, window_title_prefix=None, appear_timeout_seco
     def _collect(hwnd, acc):
         if not win32gui.IsWindowVisible(hwnd):
             return
+        if win32process.GetWindowThreadProcessId(hwnd)[1] != process_id:
+            return
         title = win32gui.GetWindowText(hwnd) or ""
         cls = win32gui.GetClassName(hwnd)
-        # Qt5QWindowIcon 限定 + 标题包含前缀（不是 startswith——模拟端标题是
-        # 「国金QMT交易端模拟 2.1.19.200」，前缀 "QMT" 在中间；issue #128）。
-        if cls == "Qt5QWindowIcon" and prefix in title:
+        if re.fullmatch(r"Qt[0-9]+QWindowIcon", cls) and prefix in title:
             acc.append(hwnd)
 
     def _find():
@@ -694,10 +697,16 @@ def main(argv=None):
         return 0
 
     credentials = None
-    if args.mode == "login":
-        # 从环境变量读取凭据，避免密码出现在进程列表可见的命令行参数中。
-        credentials = {"user": os.environ.get("BIGQMT_LOGIN_USER", ""),
-                       "password": os.environ.get("BIGQMT_LOGIN_PASSWORD", "")}
+    if args.mode == "login" and args.action in ("open", "restart"):
+        from .local_env import read_local_env
+
+        user = os.environ.get("BIGQMT_LOGIN_USER")
+        password = os.environ.get("BIGQMT_LOGIN_PASSWORD")
+        if not user or not password:
+            local_env = read_local_env()
+            user = user or local_env.get("BIGQMT_LOGIN_USER", "")
+            password = password or local_env.get("BIGQMT_LOGIN_PASSWORD", "")
+        credentials = {"user": user, "password": password}
 
     try:
         if args.action == "close":
@@ -715,6 +724,14 @@ def main(argv=None):
     except QmtLauncherError as exc:
         print("错误：%s" % exc, file=sys.stderr)
         return 2
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 740:
+            print(
+                "错误：QMT 可执行文件要求管理员权限（WinError 740）。"
+                "请以管理员身份运行本命令／控制台。",
+                file=sys.stderr)
+            return 3
+        raise
     return 0
 
 

@@ -214,6 +214,43 @@ def test_bridge_waits_for_qmt_and_refuses_stale_or_legacy_orders(duplex):
     assert qmt.in_waiting == 0
 
 
+def test_bridge_logs_each_received_rpc_request(duplex, caplog):
+    qmt, windows = duplex
+    valkey = MemoryValkey()
+    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    wire = serial_transport.SerialFrames(qmt)
+    wire.begin({"type": "hello", "account_id": ACCOUNT, "session": "logging"})
+    while wire.writing:
+        wire.write_step()
+    valkey.rpush(REQUEST_QUEUE, request("logged-ping", "ping", params={"probe": "x"}))
+    valkey.rpush(REQUEST_QUEUE, request("logged-stale", "order_stock", sent_at=time.time() - 10))
+
+    with caplog.at_level(logging.INFO, logger=serial_valkey_bridge._log.name):
+        pump_until(bridge.step,
+                   lambda: "logged-ping" in caplog.text and "logged-stale" in caplog.text)
+
+    assert "method=ping params={'probe': 'x'}" in caplog.text
+    assert "logged-stale" in caplog.text and "method=order_stock" in caplog.text
+
+
+def test_bridge_logs_invalid_payload_preview_without_flooding(duplex, caplog):
+    qmt, windows = duplex
+    valkey = MemoryValkey()
+    bridge = SerialValkeyBridge(valkey, windows, ACCOUNT)
+    wire = serial_transport.SerialFrames(qmt)
+    wire.begin({"type": "hello", "account_id": ACCOUNT, "session": "invalid"})
+    while wire.writing:
+        wire.write_step()
+    valkey.rpush(REQUEST_QUEUE, "not-json-" + "z" * 1000)
+
+    with caplog.at_level(logging.WARNING, logger=serial_valkey_bridge._log.name):
+        pump_until(bridge.step, lambda: "已丢弃格式无效" in caplog.text)
+
+    assert "not-json-" in caplog.text
+    assert "...(truncated)" in caplog.text
+    assert "z" * 500 not in caplog.text
+
+
 def test_serial_session_change_never_replays_an_unanswered_order(duplex):
     qmt, windows = duplex
     valkey = MemoryValkey()
@@ -511,7 +548,9 @@ def test_bridge_log_helpers_hide_credentials_and_follow_causes():
     assert "ValueError: inner" in text
 
 
-def test_bridge_warns_and_stops_without_an_account(monkeypatch, caplog):
+def test_bridge_warns_and_stops_without_an_account(tmp_path, monkeypatch, caplog):
+    # 空目录避免读到仓库本地的 .env，否则该用例依赖开发机的账号配置。
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BIGQMT_ACCOUNT_ID", "  ")
     monkeypatch.setitem(sys.modules, "valkey", None)
 

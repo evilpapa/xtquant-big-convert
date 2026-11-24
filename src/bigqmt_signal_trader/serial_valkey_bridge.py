@@ -26,6 +26,18 @@ from .transports.serial_transport import (
 _log = logging.getLogger(__name__)
 _REQUEST_ID = re.compile(r"[a-zA-Z0-9_.:-]{1,128}\Z")
 _MAX_INFLIGHT = 16
+_MAX_LOG_CHARS = 400
+
+
+def _preview(value):
+    """返回用于日志的简短表示，避免超长参数刷屏。"""
+    try:
+        text = repr(value)
+    except Exception:
+        return "<unprintable>"
+    if len(text) > _MAX_LOG_CHARS:
+        return text[:_MAX_LOG_CHARS] + "...(truncated)"
+    return text
 
 
 @dataclass
@@ -134,19 +146,22 @@ class SerialValkeyBridge:
             if not isinstance(request_id, str) or not _REQUEST_ID.fullmatch(request_id):
                 raise ValueError("invalid request_id")
         except (ValueError, TypeError, RecursionError) as exc:
-            _log.warning("已丢弃格式无效的 Valkey RPC 请求（%s）", type(exc).__name__)
+            _log.warning("已丢弃格式无效的 Valkey RPC 请求（%s）：%s", type(exc).__name__, _preview(raw))
             return
+        method = str(request.get("method") or "").strip()
+        params = request.get("params")
+        if params is None:
+            params = {}
+        _log.info("收到 RPC 请求 %s：method=%s params=%s",
+                  request_id, method or "<missing>", _preview(params))
         if request_id in self._inflight:
+            _log.info("请求 %s 仍在等待串口应答，忽略重复投递", request_id)
             return
         try:
             ttl = max(1, min(600, int(request.get("ttl_seconds") or 60)))
         except (TypeError, ValueError, OverflowError):
             ttl = 60
         route = self._reply_route(request_id, ttl)
-        method = str(request.get("method") or "").strip()
-        params = request.get("params")
-        if params is None:
-            params = {}
         canonical = METHOD_ALIASES.get(method, method)
         if (str(request.get("account_id") or "") != self.account_id
                 or not isinstance(params, dict) or not self._account_matches(params)):

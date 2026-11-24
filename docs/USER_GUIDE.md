@@ -32,7 +32,8 @@ python -m bigqmt_signal_trader.init_config
 默认的 `package` 部署方式**只写配置，不拷包**。pip 装的没有 `src/`，按快速开始第 3 步找到包的位置再拷 4 项。单文件模式则已经生成到位。
 
 > **密码分两类。** Valkey 密码是服务凭据，写进配置文件，输入时不回显。
-> **QMT 登录密码不落盘**——`qmt_launcher` 从环境变量 `BIGQMT_LOGIN_PASSWORD` 读，这样它不会出现在 `argv` 或磁盘文件里。
+> **QMT 登录密码**默认从环境变量 `BIGQMT_LOGIN_PASSWORD` 读，不会出现在 `argv` 里；
+> 环境变量为空时 `qmt_launcher` 会读启动目录的 `.env`（显式选择落盘；`.env` 已在 `.gitignore` 里）。
 >
 > 生成的文件带账号和凭据，**不要提交到版本库**。
 
@@ -655,7 +656,7 @@ python -m bigqmt_signal_trader.qmt_launcher restart --dir "D:\QMT交易端"
 > `login` 会替你输密码，但受锁屏限制。
 
 密码从环境变量 `BIGQMT_LOGIN_USER` / `BIGQMT_LOGIN_PASSWORD` 读，不走命令行参数——argv
-对同机任何进程可见。
+对同机任何进程可见。环境变量为空时读启动目录的 `.env`。
 
 #### Python API
 

@@ -43,3 +43,4 @@ bigqmt_signal_trader_client_config.py
 /src/BIGQMT_VALKEY_DRYRUN_ALL_IN_ONE.py
 /.env
 xtquant/
+/.vscode/settings.json

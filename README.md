@@ -1,4 +1,4 @@
-# xtquant_big_convert
+# xtquant_big_convert[valkey, serial]
 
 大 QMT 运行环境里的 RPC 桥接包：把大 QMT 内置 Python（行情查询、交易、持仓）封装成可远程调用的服务，并兼容一组 MiniQMT（xtquant）方法名，使外部程序无需 XtQuantServer 权限即可驱动大 QMT。
 
@@ -20,7 +20,7 @@
 
 ## 安装
 
-在源码目录安装外部客户端和 Valkey 依赖：
+项目不提供 pypi 包，请在源码目录安装外部客户端和 Valkey 依赖：
 
 ```bash
 pip install ".[valkey]"
@@ -30,11 +30,18 @@ pip install ".[valkey]"
 
 外部客户端、CLI 和串口桥接会读取启动目录中的 `.env`。可参照 [`.env.example`](.env.example) 设置 `BIGQMT_ACCOUNT_ID` 和 Valkey 连接参数。显式传入的参数优先，其次是 `.env`，再按各入口原有顺序读取其他配置。QMT 策略沿用部署配置和进程环境，`bigqmt-init` 可在 QMT 外读取 `.env` 的账号和 Valkey 分项值，作为生成部署配置的默认值。
 
-## 文档在哪里
+新增 windows 客户端，用于控制 com 端口接入 valkey 以及 QMT 终端的启停。
+
+![](/data1/xtquant-big-convert/docs/images/serial_bridge.png)
+
+## 文档导读
 
 - [使用指南](docs/USER_GUIDE.md)：功能、配置与排错
-- [部署快速开始](docs/DEPLOY_QUICKSTART.md)；[RPC API 参考](docs/RPC_API_REFERENCE.md)；[传输层](docs/RPC_TRANSPORTS.md)
-- [策略转换工具](docs/MiniQMT_2_BigQMT-Skill/README.md)；[延迟报告](docs/LATENCY_REPORT.md)
+- [部署快速开始](docs/DEPLOY_QUICKSTART.md)；
+- [RPC API 参考](docs/RPC_API_REFERENCE.md)；
+- [传输层](docs/RPC_TRANSPORTS.md)
+- [策略转换工具](docs/MiniQMT_2_BigQMT-Skill/README.md)；
+- [延迟报告](docs/LATENCY_REPORT.md)
 - 实现细节和行为契约见 `src/` 与 `tests/`。
 
 ## License
