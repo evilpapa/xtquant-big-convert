@@ -3,6 +3,7 @@
 import json
 import logging
 import queue
+import sys
 import threading
 import time
 import uuid
@@ -39,7 +40,7 @@ class SerialFrames:
         self._discard = False
         self._lines = deque()
         self._tx = memoryview(b"")
-        self._first_write = True
+        self._needs_delimiter = True
         self._bad_frames = 0
 
     def _bad_frame(self, reason):
@@ -99,10 +100,14 @@ class SerialFrames:
         if len(payload) + 9 > self.max_frame_bytes:
             raise ValueError("serial frame exceeds max_frame_bytes")
         line = ("%08x\t" % crc32(payload)).encode("ascii") + payload + b"\n"
-        if self._first_write:
+        if self._needs_delimiter:
             line = b"\n" + line
-            self._first_write = False
+            self._needs_delimiter = False
         self._tx = memoryview(line)
+
+    def abort_write(self):
+        self._tx = memoryview(b"")
+        self._needs_delimiter = True
 
     def write_step(self):
         if not self.writing:
@@ -156,6 +161,7 @@ class SerialTransport(RpcTransport):
 
     def _io_loop(self, wire):
         try:
+            write_timeout = getattr(sys.modules.get("serial"), "SerialTimeoutException", ())
             next_hello = 0.0
             while not self._stopped.is_set():
                 capacity = self._incoming.maxsize - self._incoming.qsize()
@@ -175,7 +181,12 @@ class SerialTransport(RpcTransport):
                         frame = self._next_outbound()
                     if frame is not None:
                         self._begin_frame(wire, frame)
-                sent = wire.write_step()
+                try:
+                    sent = wire.write_step()
+                except write_timeout:
+                    wire.abort_write()
+                    self._note_drop("写超时，已中止当前帧的发送，继续收发")
+                    sent = False
                 if not frames and not sent:
                     self._stopped.wait(0.002)
         except Exception:

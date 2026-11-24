@@ -280,6 +280,7 @@ def test_qmt_serial_recovers_after_a_partial_write_timeout(duplex, monkeypatch, 
     bridge = SerialVkBridge(vk, windows, ACCOUNT)
     transport = serial_transport.SerialTransport(account_id=ACCOUNT)
     handled = []
+    io_attempts = []
     timed_out = threading.Event()
     original_write = qmt.write
 
@@ -308,22 +309,33 @@ def test_qmt_serial_recovers_after_a_partial_write_timeout(duplex, monkeypatch, 
         bridge.step()
         transport.drain_request_queue()
 
-    transport.start_receiving(respond)
-    try:
-        vk.rpush(REQUEST_QUEUE, request("lost-response", "get_market_data_ex"))
-        pump_until(pump, timed_out.is_set)
-        session = bridge._session
-        bridge._last_hello -= 4
-        vk.rpush(REQUEST_QUEUE, request("next-ping"))
-        pump_until(pump, lambda: vk.get(REPLY_PREFIX + "next-ping") is not None)
-        assert bridge._session == session
-        assert json.loads(vk.get(REPLY_PREFIX + "next-ping"))["data"] == {"pong": True}
-        assert vk.get(REPLY_PREFIX + "lost-response") is None
-        assert handled == ["lost-response", "next-ping"]
-        assert not qmt.closed
-        assert "写超时" in caplog.text
-    finally:
-        transport.stop()
+    def forbidden_io(*args, **kwargs):
+        io_attempts.append(args)
+        raise OSError("unexpected external I/O during serial recovery")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(builtins, "open", forbidden_io)
+        guard.setattr(io, "open", forbidden_io)
+        guard.setattr(os, "open", forbidden_io)
+        guard.setattr(socket, "socket", forbidden_io)
+        transport.start_receiving(respond)
+        try:
+            vk.rpush(REQUEST_QUEUE, request("lost-response", "get_market_data_ex"))
+            pump_until(pump, timed_out.is_set)
+            session = bridge._session
+            bridge._last_hello -= 4
+            vk.rpush(REQUEST_QUEUE, request("next-ping"))
+            pump_until(pump, lambda: vk.get(REPLY_PREFIX + "next-ping") is not None)
+            assert not qmt.closed
+        finally:
+            transport.stop()
+
+    assert bridge._session == session
+    assert json.loads(vk.get(REPLY_PREFIX + "next-ping"))["data"] == {"pong": True}
+    assert vk.get(REPLY_PREFIX + "lost-response") is None
+    assert handled == ["lost-response", "next-ping"]
+    assert "写超时" in caplog.text
+    assert not io_attempts
 
 
 def test_quote_backpressure_does_not_raise_into_qmt_or_displace_order_events():
