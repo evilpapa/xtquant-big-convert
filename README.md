@@ -32,7 +32,7 @@ pip install ".[valkey]"
 
 新增 windows 客户端，用于控制 com 端口接入 VK 以及 QMT 终端的启停。
 
-![demo](/data1/xtquant-big-convert/docs/images/serial_bridge.png)
+![demo](docs/images/serial_bridge.png)
 
 ## 文档导读
 

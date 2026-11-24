@@ -55,7 +55,13 @@ def build(kind):
 
 class BuildsSucceedTest(unittest.TestCase):
     def test_vk_build_compiles(self):
-        path, _source = build("valkey")
+        path, source = build("valkey")
+        encoding_line, generated_at, _ = source.split("\n", 2)
+        self.assertEqual(encoding_line, "#coding:gbk")
+        self.assertRegex(
+            generated_at,
+            r"^# Generated at: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$",
+        )
         with open(path, "rb") as stream:
             compile(stream.read(), path, "exec")
 

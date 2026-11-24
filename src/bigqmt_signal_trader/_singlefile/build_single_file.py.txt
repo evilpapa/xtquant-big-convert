@@ -5,6 +5,7 @@
 """
 import base64
 import os
+from datetime import datetime
 
 # 源码仓库在 tools/ 提供构建器，安装包在 bigqmt_signal_trader/_singlefile/
 # 附带发行版构建器，供 bigqmt-init 生成单文件策略。
@@ -104,6 +105,8 @@ def main():
 
     # 模板中的中文字符串以 Unicode 转义写入，兼容 QMT 的 GBK 文件头。
     template = TEMPLATE.encode("ascii", "backslashreplace").decode("ascii")
+    generated_at = datetime.now().astimezone().isoformat(sep=" ", timespec="seconds")
+    template = template.replace("__GENERATED_AT__", generated_at, 1)
     template = template.replace("__EMBEDDED_SOURCES_BLOCK__", embedded)
 
     total = sum(len(v) for v in sources.values()) + sum(len(v) for v in extra.values())
@@ -115,6 +118,7 @@ def main():
 
 
 TEMPLATE = '''#coding:gbk
+# Generated at: __GENERATED_AT__
 """大 QMT 单文件桥接策略。
 
 项目模块内嵌并从内存加载。部署前设置 BIGQMT_ACCOUNT_ID 环境变量，
