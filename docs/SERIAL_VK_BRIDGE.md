@@ -103,6 +103,8 @@ exe 只是前端，桥接和 `qmt_launcher` 仍由外部 Python 执行：优先�
 
 脚本会把窗口代码页、PowerShell 的解码编码和桥接进程的 stdio 统一为 UTF-8，并在每次调用外部程序后重新对齐代码页（pyenv 的 `.bat` shim 内部会执行 `chcp`，否则中文日志会乱码）。`-LogFile` 按 UTF-8 写入。直接运行入口而不经过脚本时，若日志中文乱码，可先 `chcp 65001` 并设置 `PYTHONIOENCODING=utf-8`。
 
+QMT 策略默认关闭 `adjust 节拍`、`[adjust_source]` 和 `[tick_app_hist]` 的周期输出。在策略的 `BIGQMT_CONFIG` 中设 `"adjust_log_enabled": True` 开启，设 `"adjust_log_interval_seconds": 60` 可每隔约 60 秒打印一次。间隔默认 10 秒，须为正数。保存配置后重启策略。
+
 默认使用 `bigqmt:rpc:queue:{account_id}` 及原有响应键、列表和频道；使用 VK pub/sub 发请求的客户端需给桥接加 `--vk-pubsub`。同一账号只能运行一个队列消费者，避免让直连 VK 的 QMT 策略与串口桥接同时消费。
 
 串口每帧是 `8 位十六进制 CRC32` + `TAB` + `UTF-8 JSON` + `LF`。线程负责分帧和部分写入，QMT 的 `adjust` 从内存队列取请求；委托与成交回报由桥接发布到现有 VK 频道，行情全推也使用原频道。行情推送拥塞时会丢弃超出队列容量的更新，委托与成交回报使用独立队列。默认单帧上限 8 MiB，大行情按批查询，或者同时调整 QMT 的 `serial.max_frame_bytes` 与桥接的 `--max-frame-bytes`。延迟还取决于 QMT 调度间隔和串口传输量，请在目标终端实测。

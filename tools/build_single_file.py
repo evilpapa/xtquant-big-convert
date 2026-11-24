@@ -156,6 +156,8 @@ BIGQMT_CONFIG = {
     "rpc_background_threads": False,
     "schedule_adjust": True,
     "schedule_adjust_interval": "100nMilliSecond",
+    "adjust_log_enabled": False,
+    "adjust_log_interval_seconds": 10.0,
     "full_tick_cache_enabled": False,
     "full_tick_demand_ttl_seconds": 10,
     "full_tick_cache_ttl_seconds": 10,

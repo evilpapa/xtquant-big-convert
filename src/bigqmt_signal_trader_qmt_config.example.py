@@ -57,6 +57,8 @@ BIGQMT_CONFIG = {
     "rpc_background_threads":   False,
     "schedule_adjust":          True,
     "schedule_adjust_interval": "100nMilliSecond",
+    "adjust_log_enabled": False,
+    "adjust_log_interval_seconds": 10.0,
 
     # 单次 adjust 处理 RPC 队列的时间上限（#303）。默认一个调度周期且至少 0.5 秒。
     # 超出预算的请求留到下一轮，设为 0 取消上限。

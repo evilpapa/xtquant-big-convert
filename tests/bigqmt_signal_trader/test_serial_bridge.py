@@ -11,6 +11,7 @@ import time
 import types
 from collections import defaultdict, deque
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -362,6 +363,56 @@ def test_runtime_forwards_the_serial_port_without_a_vk_connection(monkeypatch):
     assert config["rpc"]["serial"] == {"port": "COM20", "baudrate": 115200}
     assert config["valkey"] == {}
     assert config["schedule_adjust"] is True
+
+
+@pytest.mark.parametrize(("settings", "interval"), [
+    ({}, None),
+    ({"adjust_log_enabled": False, "adjust_log_interval_seconds": 2.5}, None),
+    ({"adjust_log_enabled": True, "adjust_log_interval_seconds": 2.5}, 2.5),
+    ({"adjust_log_enabled": True}, 10.0),
+    ({"adjust_log_enabled": True, "adjust_log_interval_seconds": "nan"}, 10.0),
+])
+def test_qmt_adjust_cadence_log_settings(settings, interval, monkeypatch, capsys):
+    import bigqmt_signal_trader_vk_rpc_runtime as runtime
+
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(strategy, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, perf_counter=lambda: clock.now))
+    monkeypatch.setattr(strategy, "_config", {})
+    monkeypatch.setattr(strategy, "_account_id", "")
+    monkeypatch.setattr(strategy, "_rpc_service", None)
+    monkeypatch.setattr(strategy, "_adjust_logged", False)
+    monkeypatch.setattr(strategy, "_reload_request", {"pending": False})
+    monkeypatch.setattr(strategy, "_held_presysid_orders", {})
+    monkeypatch.setattr(strategy, "_adjust_tick_stats", dict(strategy._ADJUST_TICK_STATS_DEFAULT))
+    monkeypatch.setattr(strategy, "_tick_app_hist", [0] * len(strategy._tick_app_hist))
+    monkeypatch.setattr(strategy, "_tick_app_max_ms", [0.0])
+    monkeypatch.setattr(strategy, "tick_app", lambda *_: "tick")
+    with patch.dict(vars(runtime)):
+        runtime.configure_runtime_vk(dict(settings, transport="serial"))
+
+    names = ("adjust 节拍", "[adjust_source]", "[tick_app_hist]")
+    context = SimpleNamespace()
+    assert strategy.adjust(context) == "tick"
+    clock.now = (interval or 60.0) - 0.25
+    assert strategy.handlebar(context) == "tick"
+    output = capsys.readouterr().out
+    assert all(name not in output for name in names)
+
+    clock.now = interval or 60.0
+    assert strategy.adjust(context) == "tick"
+    output = capsys.readouterr().out
+    if interval is None:
+        assert all(name not in output for name in names)
+        assert sum(strategy._tick_app_hist) == 0
+    else:
+        assert all(output.count(name) == 1 for name in names)
+        assert "handlebar=1 timer=2" in output
+        assert "over %.3gs" % interval in output
+        clock.now += 0.25
+        strategy.adjust(context)
+        output = capsys.readouterr().out
+        assert all(name not in output for name in names)
 
 
 @pytest.mark.parametrize("allow_order_methods", [False, True])

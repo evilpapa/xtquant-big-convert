@@ -266,6 +266,8 @@ SCHEDULE_ADJUST_ENABLED                   = bool(BIGQMT_CONFIG.get("schedule_adj
 if not RPC_BACKGROUND_THREADS:
     SCHEDULE_ADJUST_ENABLED = True
 SCHEDULE_ADJUST_INTERVAL                  = str(BIGQMT_CONFIG.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
+ADJUST_LOG_ENABLED                        = BIGQMT_CONFIG.get("adjust_log_enabled")
+ADJUST_LOG_INTERVAL_SECONDS               = BIGQMT_CONFIG.get("adjust_log_interval_seconds")
 RPC_DRAIN_BUDGET_SECONDS                  = BIGQMT_CONFIG.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
 RPC_ORDER_SETTLE_TIMEOUT_SECONDS          = BIGQMT_CONFIG.get("order_settle_timeout_seconds", RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
 RPC_HEAVY_OFFLOAD                         = bool(BIGQMT_CONFIG.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))
@@ -348,6 +350,8 @@ def _apply_config(account_id):
         enable_rpc=True,
         schedule_adjust=SCHEDULE_ADJUST_ENABLED or RPC_TRANSPORT == "serial",
         schedule_adjust_interval=SCHEDULE_ADJUST_INTERVAL,
+        adjust_log_enabled=ADJUST_LOG_ENABLED,
+        adjust_log_interval_seconds=ADJUST_LOG_INTERVAL_SECONDS,
         valkey=_vk_block(),
         rpc=rpc_block,
         quote_push=QUOTE_PUSH_CONFIG,
@@ -384,6 +388,7 @@ def configure_runtime_account(account_id):
 def configure_runtime_vk(vk_config):
     global VK_ENABLED, VK_HOST, VK_PORT, VK_DB, VK_USERNAME, VK_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, VK_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
     global RPC_SERIAL_CONFIG, VK_URL, VK_PROTOCOL
+    global ADJUST_LOG_ENABLED, ADJUST_LOG_INTERVAL_SECONDS
     vk_config = vk_config or {}
     RPC_SERIAL_CONFIG                         = dict(vk_config.get("serial") or {})
     RPC_BACKGROUND_THREADS_EXPLICIT           = "rpc_background_threads" in vk_config
@@ -412,6 +417,8 @@ def configure_runtime_vk(vk_config):
     if not RPC_BACKGROUND_THREADS:
         SCHEDULE_ADJUST_ENABLED = True
     SCHEDULE_ADJUST_INTERVAL                  = str(vk_config.get("schedule_adjust_interval", SCHEDULE_ADJUST_INTERVAL))
+    ADJUST_LOG_ENABLED                        = vk_config.get("adjust_log_enabled")
+    ADJUST_LOG_INTERVAL_SECONDS               = vk_config.get("adjust_log_interval_seconds")
     RPC_DRAIN_BUDGET_SECONDS                  = vk_config.get("drain_budget_seconds", RPC_DRAIN_BUDGET_SECONDS)
     RPC_ORDER_SETTLE_TIMEOUT_SECONDS          = vk_config.get("order_settle_timeout_seconds", RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
     RPC_HEAVY_OFFLOAD                         = bool(vk_config.get("rpc_heavy_offload", RPC_HEAVY_OFFLOAD))

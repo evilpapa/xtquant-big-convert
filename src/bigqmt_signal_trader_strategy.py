@@ -133,7 +133,12 @@ _last_full_tick_refresh_at        =   0.0
 _last_full_tick_market_refresh_at =   0.0
 
 # 记录 adjust 的实际周期，用于识别 run_time 被限制到 K 线周期等调度问题。
-_adjust_tick_stats = {"last_ts": 0.0, "count": 0, "window_start": 0.0, "sum": 0.0, "min": 0.0, "max": 0.0}
+_DEFAULT_ADJUST_LOG_INTERVAL_SECONDS = 10.0
+_ADJUST_TICK_STATS_DEFAULT = {
+    "last_ts": None, "window_start": None, "count": 0, "sum": 0.0,
+    "min": 0.0, "max": 0.0, "handlebar": 0, "timer": 0,
+}
+_adjust_tick_stats = dict(_ADJUST_TICK_STATS_DEFAULT)
 
 
 def set_app_factory(factory):
@@ -389,7 +394,9 @@ def reset_app():
     _scheduled_adjust = False
     _last_full_tick_refresh_at = 0.0
     _last_full_tick_market_refresh_at = 0.0
-    _adjust_tick_stats.update({"last_ts": 0.0, "count": 0, "window_start": 0.0, "sum": 0.0, "min": 0.0, "max": 0.0})
+    _adjust_tick_stats.update(_ADJUST_TICK_STATS_DEFAULT)
+    _tick_app_hist[:] = [0] * len(_tick_app_hist)
+    _tick_app_max_ms[0] = 0.0
     if _rpc_service is not None:
         try:
             _rpc_service.stop()
@@ -1002,10 +1009,7 @@ def _schedule_adjust_if_needed(context_info, config):
     try:
         context_info.run_time("adjust", interval, start_time)
         _scheduled_adjust = True
-        print(
-            "[bigqmt_signal_trader] 已安排 adjust interval=%s"
-            "（实际节拍请查看“adjust 节拍”日志）" % interval
-        )
+        print("[bigqmt_signal_trader] 已安排 adjust interval=%s" % interval)
     except Exception as exc:
         print(
             "[bigqmt_signal_trader] 警告：安排 adjust 调度失败（%s）；"
@@ -1020,26 +1024,21 @@ def _schedule_adjust_if_needed(context_info, config):
 # timer and nothing else. Splitting the counters shows whether handlebar fires
 # at all once the historical replay ends, and the tick_app histogram shows what
 # it would cost to let it drive the strategy body rather than just the drain.
-_adjust_source_stats = {"handlebar": 0, "timer": 0, "window_start": 0.0}
 # Bucket upper bounds in ms; the last bucket is everything above.
 _TICK_APP_BUCKETS = (1, 5, 20, 50, 100, 250, 500, 1000, 2000)
 _tick_app_hist = [0] * (len(_TICK_APP_BUCKETS) + 1)
 _tick_app_max_ms = [0.0]
 
 
-def _record_adjust_source(source):
-    """Count adjust() calls per trigger source, logged on the cadence window."""
-    stats = _adjust_source_stats
-    now = time.time()
-    if stats["window_start"] <= 0:
-        stats["window_start"] = now
-    stats[source] = stats.get(source, 0) + 1
-    if now - stats["window_start"] >= 10.0:
-        print(
-            "[adjust_source] handlebar=%d timer=%d，over %.0fs"
-            % (stats["handlebar"], stats["timer"], now - stats["window_start"])
-        )
-        stats.update({"handlebar": 0, "timer": 0, "window_start": now})
+def _adjust_log_interval(config):
+    if not _config_bool(config.get("adjust_log_enabled")):
+        return None
+    value = config.get("adjust_log_interval_seconds") or _DEFAULT_ADJUST_LOG_INTERVAL_SECONDS
+    try:
+        interval = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return _DEFAULT_ADJUST_LOG_INTERVAL_SECONDS
+    return interval if 0 < interval < float("inf") else _DEFAULT_ADJUST_LOG_INTERVAL_SECONDS
 
 
 def _record_tick_app_ms(ms):
@@ -1070,13 +1069,15 @@ def _format_tick_app_hist():
     return " ".join(labels)
 
 
-def _record_adjust_tick():
-    """Track and periodically log the real interval between adjust triggers."""
+def _record_adjust_tick(source, interval):
+    """Track actual adjust intervals and trigger counts in the same window."""
     stats = _adjust_tick_stats
-    now = time.time()
+    now = time.monotonic()
     last = stats["last_ts"]
     stats["last_ts"] = now
-    if last <= 0:
+    if source in ("handlebar", "timer"):
+        stats[source] += 1
+    if last is None:
         stats["window_start"] = now
         return
     delta = now - last
@@ -1084,16 +1085,19 @@ def _record_adjust_tick():
     stats["sum"] += delta
     stats["min"] = delta if stats["min"] <= 0 else min(stats["min"], delta)
     stats["max"] = max(stats["max"], delta)
-    if now - stats["window_start"] >= 10.0 and stats["count"] > 0:
+    elapsed = now - stats["window_start"]
+    if elapsed >= interval:
         avg = stats["sum"] / stats["count"]
         print(
-            "[bigqmt_signal_trader] adjust 节拍：ticks=%d avg=%.3fs min=%.3fs max=%.3fs，over %.0fs"
-            % (stats["count"], avg, stats["min"], stats["max"], now - stats["window_start"])
+            "[bigqmt_signal_trader] adjust 节拍：ticks=%d avg=%.3fs min=%.3fs max=%.3fs，over %.3gs"
+            % (stats["count"], avg, stats["min"], stats["max"], elapsed)
         )
         if sum(_tick_app_hist) > 0:
             print("[tick_app_hist] %s max=%.0fms"
                   % (_format_tick_app_hist(), _tick_app_max_ms[0]))
-        stats.update({"count": 0, "sum": 0.0, "min": 0.0, "max": 0.0, "window_start": now})
+        print("[adjust_source] handlebar=%d timer=%d，over %.3gs"
+              % (stats["handlebar"], stats["timer"], elapsed))
+        stats.update(_ADJUST_TICK_STATS_DEFAULT, last_ts=now, window_start=now)
 
 
 def _gil_probe_loop():
@@ -1476,9 +1480,10 @@ def _adjust_phase(name, fn, *args):
 
 def adjust(ContextInfo, _source="timer"):
     global _adjust_logged
-    _record_adjust_tick()
-    _record_adjust_source(_source)
     config = _build_config()
+    log_interval = _adjust_log_interval(config)
+    if log_interval is not None:
+        _record_adjust_tick(_source, log_interval)
     _adjust_phase("drain", _drain_rpc_service, config)
     _adjust_phase("exec_hold", _flush_held_presysid_orders, config)
     # AFTER the drain, and not on the tick that scheduled it. The drain is what
@@ -1499,13 +1504,12 @@ def adjust(ContextInfo, _source="timer"):
     if not _adjust_logged:
         print("[bigqmt_signal_trader] adjust 完成")
         _adjust_logged = True
-    _tick_app_t0 = time.perf_counter()
+    tick_app_started = time.perf_counter() if log_interval is not None else None
     try:
         return _adjust_phase("tick_app", tick_app, ContextInfo, datetime.datetime.now())
     finally:
-        # Every call, not just the >50ms ones _adjust_phase prints: deciding
-        # whether ticks may drive this needs the whole distribution.
-        _record_tick_app_ms((time.perf_counter() - _tick_app_t0) * 1000.0)
+        if tick_app_started is not None:
+            _record_tick_app_ms((time.perf_counter() - tick_app_started) * 1000.0)
 
 
 def handlebar(ContextInfo):
