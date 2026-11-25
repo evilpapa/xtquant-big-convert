@@ -2315,8 +2315,8 @@ class BigQmtXtData:
             # 先取出降级答案标记：规范化会拷贝、切片并删列，而 pandas 只在
             # 尽力而为的程度上传递 ``attrs``——某个标记在这个 pandas 版本上活
             # 下来、下个版本就没了，比没有更糟（#237）。
-            markers = dict((code, _partial_marker(frame))
-                           for code, frame in data.items())
+            markers = {code: _partial_marker(frame)
+                       for code, frame in data.items()}
             data = _normalize_market_data_result(
                 data, field_list=params.get("field_list"), period=params.get("period"))
             if isinstance(data, dict) and any(markers.values()):

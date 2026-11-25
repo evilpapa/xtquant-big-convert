@@ -9,6 +9,7 @@ import time
 import uuid
 from binascii import crc32
 from collections import deque
+from contextlib import suppress
 
 from .base import RpcTransport, TransportError
 
@@ -207,10 +208,8 @@ class SerialTransport(RpcTransport):
 
     def _next_outbound(self):
         for buffer in (self._replies, self._exec_events, self._quote_events):
-            try:
+            with suppress(queue.Empty):
                 return buffer.get_nowait()
-            except queue.Empty:
-                pass
         return None
 
     def _begin_frame(self, wire, frame):
@@ -277,10 +276,8 @@ class SerialTransport(RpcTransport):
 
     def publish(self, topic, data):
         buffer = self._exec_events if topic.startswith("exec:") else self._quote_events
-        try:
+        with suppress(TransportError):
             self._enqueue(buffer, {"type": "event", "topic": topic, "data": data})
-        except TransportError:
-            pass
 
     def stop(self):
         super(SerialTransport, self).stop()

@@ -317,10 +317,10 @@ def _frame_axis_rows(frame):
         try:
             columns = [name for name in frame.columns]
             labels = list(frame.index)
-            series = dict((name, list(frame[name])) for name in columns)
+            series = {name: list(frame[name]) for name in columns}
             return [
-                (labels[i], dict((str(name), series[name][i]) for name in columns))
-                for i in range(len(labels))
+                (label, {str(name): series[name][i] for name in columns})
+                for i, label in enumerate(labels)
             ]
         except Exception:
             return []
@@ -986,10 +986,10 @@ class BigQmtMarketDataProvider:
 
         if not original_by_upper:
             return data
-        return dict(
-            (original_by_upper.get(str(key).upper(), key), value)
+        return {
+            original_by_upper.get(str(key).upper(), key): value
             for key, value in data.items()
-        )
+        }
 
     # Issue #310: on Jianghai big-QMT 2.1.19.0, ContextInfo.get_full_tick
     # answers only codes that hold a live quote subscription. An unsubscribed

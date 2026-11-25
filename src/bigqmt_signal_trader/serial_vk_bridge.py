@@ -54,7 +54,7 @@ def _preview(value):
     return text
 
 
-@dataclass
+@dataclass(slots=True)
 class _InFlight:
     method: str
     deadline: float

@@ -92,8 +92,7 @@ class SerialBridgeFeatures:
 
     def _submit(self, method, params, request_id):
         job_id = uuid.uuid5(uuid.NAMESPACE_OID, request_id).hex[:16]
-        existing = read_download_status(self.vk, self.account_id, job_id)
-        if existing is not None:
+        if (existing := read_download_status(self.vk, self.account_id, job_id)) is not None:
             return existing
         codes = (params.get("stock_code") or params.get("code")
                  if method == "submit_download_history_data"

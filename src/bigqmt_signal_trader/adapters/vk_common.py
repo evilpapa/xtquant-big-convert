@@ -53,8 +53,7 @@ def build_vk_client(config=None, *, environ=None):
         socket_timeout=_float_or_none(config.get("socket_timeout", 1.5), 1.5),
     )
     kwargs.update(vk_connection_options(protocol))
-    url = config.get("url") or environ.get("BIGQMT_VK_URL")
-    if url:
+    if url := (config.get("url") or environ.get("BIGQMT_VK_URL")):
         return client_class.from_url(normalize_vk_url(url), **kwargs)
 
     db = config.get("db")

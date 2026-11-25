@@ -95,7 +95,9 @@ def embed_block(sources, extra):
 def main():
     top_dir, package_dir = resolve_source_dirs()
     local_env = runpy.run_path(os.path.join(package_dir, "local_env.py"))
-    allow_order_methods = local_env["rpc_order_methods_enabled"](local_env["read_local_env"]())
+    values = local_env["read_local_env"]()
+    allow_order_methods = local_env["rpc_order_methods_enabled"](values)
+    serial_port = values.get("BIGQMT_QMT_SERIAL_PORT", "").strip() or "COM10"
     sources = collect_package(package_dir, top_dir)
     extra = {}
     for name in ("bigqmt_signal_trader_strategy.py",
@@ -112,6 +114,7 @@ def main():
     template = template.replace("__GENERATED_AT__", generated_at, 1)
     template = template.replace("__RPC_ALLOW_ORDER_METHODS__", repr(allow_order_methods), 1)
     template = template.replace("__EMBEDDED_SOURCES_BLOCK__", embedded)
+    template = template.replace("__QMT_SERIAL_PORT__", ascii(serial_port), 1)
 
     total = sum(len(v) for v in sources.values()) + sum(len(v) for v in extra.values())
     with open(OUT_PATH, "w", encoding="utf-8", newline="\n") as f:
@@ -148,7 +151,7 @@ BIGQMT_ACCOUNT_TYPE = "STOCK"
 
 BIGQMT_CONFIG = {
     "transport": "serial",
-    "serial": {"port": "COM10", "baudrate": 921600},
+    "serial": {"port": __QMT_SERIAL_PORT__, "baudrate": 921600},
     # "transport": "valkey",
     # "host": "127.0.0.1",
     # "port": 6379,

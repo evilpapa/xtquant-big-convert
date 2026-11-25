@@ -156,8 +156,7 @@ def account_type_for(account_id, default_type="STOCK", requested=None):
     types = account_types_for(account_id, default_type)
     if requested is None:
         requested = get_request_account_type()
-    wanted = normalize_account_types(requested)
-    if wanted:
+    if wanted := normalize_account_types(requested):
         if wanted[0] in types:
             return wanted[0]
         _note_refused(account_id, wanted[0], types)

@@ -25,6 +25,9 @@
 - 延续客户端支持的参数和返回结构。示例配置使用占位值，真实账号、凭据和连接地址只放在本地配置或进程环境中，日志不得打印凭据。
 - 单文件策略产物由 `tools/build_single_file.py` 生成。修改构建器时同步更新随安装包分发的 `build_single_file.py.txt`，保留发布模板的默认配置。
 
+## python 编程技巧
+@CODE_SKILLS.md
+
 ## 验证
 
 使用 `pyproject.toml` 声明的 Python 版本运行相关测试。修改串口链路时用 `tests/bigqmt_signal_trader/test_serial_bridge.py` 验证请求与回报。涉及 QMT 运行限制时，要验证日志、配置和回退路径未尝试文件或 Socket I/O，即使现有逻辑会捕获这些操作的异常。交易相关测试使用替身或模拟环境。

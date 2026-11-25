@@ -2031,8 +2031,8 @@ class BigQmtRpcHandlers:
         except Exception:
             return {}
         if isinstance(data, dict):
-            return dict((str(key), _normalize_mapping_value(value))
-                        for key, value in data.items())
+            return {str(key): _normalize_mapping_value(value)
+                    for key, value in data.items()}
         # 有些券商连这里也回行；做规范化而不是丢掉。
         return _normalize_detail_rows(data)
 
@@ -3436,7 +3436,7 @@ def _normalize_mapping_value(value):
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, dict):
-        return dict((str(k), _normalize_mapping_value(v)) for k, v in value.items())
+        return {str(k): _normalize_mapping_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalize_mapping_value(v) for v in value]
     rows = _normalize_detail_rows([value])

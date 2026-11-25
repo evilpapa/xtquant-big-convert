@@ -9,6 +9,7 @@
 BIGQMT_LOGIN_PASSWORD 环境变量读取；环境变量为空时启动器会读启动目录的 .env。
 """
 
+from contextlib import suppress
 import getpass
 import os
 import subprocess
@@ -324,10 +325,8 @@ def _write(path, text, encoding="utf-8"):
     with open(path, "w", encoding=encoding, newline="\n") as handle:
         handle.write(text)
     # 在支持 chmod 的平台上仅给所有者读写权限。Windows 的 NTFS 权限另行设置。
-    try:
+    with suppress(OSError):
         os.chmod(path, 0o600)
-    except OSError:
-        pass
 
 
 def _materialize_packaged_builder(script):

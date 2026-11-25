@@ -6,6 +6,7 @@ Callbacks continue to use the handlers' in-memory journal, never disk I/O.
 """
 
 import collections
+from contextlib import suppress
 import hashlib
 import json
 import math
@@ -164,10 +165,8 @@ class OrderIdentityJournal(object):
             # evidence that another process did not append a fresh row since.
             _, fully_expired = self._read(path, cutoff)
             if fully_expired:
-                try:
+                with suppress(FileNotFoundError):
                     os.remove(path)
-                except FileNotFoundError:
-                    pass
         except OSError as exc:
             self._failed("remove expired segment", exc)
         finally:

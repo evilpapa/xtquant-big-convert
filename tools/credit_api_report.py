@@ -209,9 +209,9 @@ def summarize_rows(rows, full, keys_are_data=False):
         out["fields"] = []
         return out
     out["fields"] = fields
-    out["values"] = dict(
-        (k, first.get(k) if k in ALWAYS_RAW_FIELDS else describe_value(first.get(k), full))
-        for k in fields)
+    out["values"] = {
+        k: first.get(k) if k in ALWAYS_RAW_FIELDS else describe_value(first.get(k), full)
+        for k in fields}
     populated = [k for k in fields
                  if isinstance(first.get(k), (int, float))
                  and not isinstance(first.get(k), bool)
@@ -244,7 +244,7 @@ def normalize_result(result):
         return [], {}
     if isinstance(result, dict):
         if "rows" in result and isinstance(result["rows"], list):
-            extra = dict((k, v) for k, v in result.items() if k != "rows")
+            extra = {k: v for k, v in result.items() if k != "rows"}
             return result["rows"], extra
         # 空 dict 是「没数据」，不是「一行空数据」。当成一行的话，下面的
         # hollow 判据（字段全空）会对它成立 —— 实跑第一次就把已经 defer 的

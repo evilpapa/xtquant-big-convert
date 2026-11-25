@@ -156,8 +156,7 @@ def _log_file_name():
 
     按账号命名时，重启后可继续轮转同一文件。BIGQMT_LOG_NAME 可指定文件名。
     """
-    explicit = str(os.environ.get("BIGQMT_LOG_NAME") or "").strip()
-    if explicit:
+    if explicit := str(os.environ.get("BIGQMT_LOG_NAME") or "").strip():
         return explicit
     account = str(os.environ.get("BIGQMT_ACCOUNT_ID") or "").strip()
     tag = "".join(ch for ch in account if ch.isalnum()) or ("pid%d" % os.getpid())

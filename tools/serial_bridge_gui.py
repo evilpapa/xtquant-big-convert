@@ -16,6 +16,7 @@
 """
 
 import argparse
+from contextlib import suppress
 import os
 import queue
 import subprocess
@@ -392,10 +393,8 @@ class SerialControllerApp(object):
         self.root.title("Big QMT 串口桥接控制台")
         self.root.geometry("1120x760")
         self.root.minsize(880, 580)
-        try:
+        with suppress(tk.TclError):
             ttk.Style().theme_use("vista")
-        except tk.TclError:
-            pass
 
         main = ttk.Frame(self.root, padding=10)
         main.grid(row=0, column=0, sticky="nsew")
@@ -796,10 +795,8 @@ class SerialControllerApp(object):
             return False
         proc = self._begin_close()
         if proc is not None and proc.poll() is None:
-            try:
+            with suppress(OSError):
                 proc.terminate()
-            except OSError:
-                pass
         self.root.destroy()
         return True
 
@@ -1035,10 +1032,8 @@ class SerialControllerApp(object):
                         self.session_ready = True
                         self._post("state")
         finally:
-            try:
+            with suppress(OSError):
                 proc.stdout.close()
-            except OSError:
-                pass
             code = proc.wait()
             with self.lock:
                 if proc is self.bridge_proc:
@@ -1099,10 +1094,8 @@ class SerialControllerApp(object):
             proc.terminate()
             proc.wait(8)
         except (OSError, subprocess.TimeoutExpired):
-            try:
+            with suppress(OSError):
                 proc.kill()
-            except OSError:
-                pass
         with self.lock:
             self.session_ready = False
         self._post("state")

@@ -121,8 +121,7 @@ class ContextInfoQuoteSource(QuoteSourceAdapter):
                 ))
 
             def on_option_push(data):
-                batch = latest_quote_batch(data)
-                if batch:
+                if batch := latest_quote_batch(data):
                     on_push(batch)
 
             for code in option_codes:

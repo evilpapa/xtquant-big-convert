@@ -719,7 +719,9 @@ python tools/build_single_file.py
 
 构建器读取命令启动目录中的 `.env`，并将 `BIGQMT_RPC_ALLOW_ORDER_METHODS` 写为生成文件顶部的 `BIGQMT_CONFIG["rpc_allow_order_methods"]`。默认关闭。需要启用远程下单和撤单时，在 `.env` 中设置 `BIGQMT_RPC_ALLOW_ORDER_METHODS=1` 后重新构建。`true`、`yes`、`on` 也表示开启，匹配时忽略大小写。`bigqmt-init` 用该值作为下单和撤单问题的默认选项，交互回答优先。
 
-按部署需要编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_CONFIG`，再把单文件拷进 QMT 的 python 目录加载。策略启动时从进程环境读取 `BIGQMT_ACCOUNT_ID`，未设置或只有空白时会提示。QMT 运行时直接使用单文件内的 RPC 开关。
+串口模式下，在同一个 `.env` 中设置 `BIGQMT_QMT_SERIAL_PORT=COM10`，重新构建后端口会写入 `BIGQMT_CONFIG["serial"]["port"]`。缺省或留空时使用 `COM10`。`BIGQMT_SERIAL_PORT` 给独立桥接程序用，例如同一虚拟串口对的另一端 `COM11`。
+
+按部署需要编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_CONFIG`，再把单文件拷进 QMT 的 python 目录加载。策略启动时从进程环境读取 `BIGQMT_ACCOUNT_ID`，未设置或只有空白时会提示。QMT 运行时直接使用单文件内的串口配置和 RPC 开关。
 
 产物约 900KB / 700KB，已加入 `.gitignore`——**用时重新生成，不要提交**。改动包内代码后需重新运行生成器。
 

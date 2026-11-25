@@ -9,6 +9,7 @@ QMT 日志解码与 tail。模块不依赖 tkinter，便于单元测试。
 """
 
 import ast
+from contextlib import suppress
 import datetime as _dt
 import os
 import re
@@ -197,8 +198,7 @@ def _strip_value(value):
         end = value.rfind("'")
         if end > 0:
             return value[1:end]
-    match = _INLINE_COMMENT.search(value)
-    if match:
+    if match := _INLINE_COMMENT.search(value):
         value = value[:match.start()].rstrip()
     return value
 
@@ -432,8 +432,7 @@ def vk_url_from_config(path):
     config = read_qmt_config_dict(path)
     if not config:
         return ""
-    url = str(config.get("url") or "").strip()
-    if url:
+    if url := str(config.get("url") or "").strip():
         return url
     host = str(config.get("host") or "").strip()
     if not host:
@@ -902,10 +901,8 @@ def terminate_bridge_processes(processes, timeout=8.0):
         except psutil.Error:
             continue
     for proc in targets:
-        try:
+        with suppress(psutil.Error):
             proc.terminate()
-        except psutil.Error:
-            pass
 
     def alive():
         result = []
@@ -923,10 +920,8 @@ def terminate_bridge_processes(processes, timeout=8.0):
             return pids
         time.sleep(0.2)
     for proc in alive():
-        try:
+        with suppress(psutil.Error):
             proc.kill()
-        except psutil.Error:
-            pass
     return pids
 
 
@@ -1109,10 +1104,8 @@ class LogTailer(object):
 
     def close(self):
         if self._handle is not None:
-            try:
+            with suppress(OSError):
                 self._handle.close()
-            except OSError:
-                pass
         self._handle = None
 
 

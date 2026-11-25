@@ -142,15 +142,19 @@ class ConfigBlockTest(unittest.TestCase):
             self.assertEqual(missing, [], "%s build missing %s" % (kind, missing))
 
 
-@pytest.mark.parametrize(("setting", "expected"), [
-    ('" TrUe " # explicit opt-in', True),
-    ("0", False),
-    ("invalid", False),
+@pytest.mark.parametrize(("order_setting", "port_setting", "allow_orders", "port"), [
+    ('" TrUe " # explicit opt-in', 'BIGQMT_QMT_SERIAL_PORT=" COM12 "\n', True, "COM12"),
+    ("0", "BIGQMT_QMT_SERIAL_PORT=\n", False, "COM10"),
+    ("invalid", "", False, "COM10"),
 ])
-def test_builder_bakes_only_the_order_switch_from_local_env(tmp_path, setting, expected):
+def test_builder_bakes_strategy_settings_from_local_env(
+    tmp_path, order_setting, port_setting, allow_orders, port,
+):
     dotenv = tmp_path / ".env"
     dotenv.write_text(
-        f"BIGQMT_RPC_ALLOW_ORDER_METHODS={setting}\n"
+        f"BIGQMT_RPC_ALLOW_ORDER_METHODS={order_setting}\n"
+        f"{port_setting}"
+        "BIGQMT_SERIAL_PORT=COM11\n"
         "BIGQMT_VK_PASSWORD=fixture-secret-not-for-strategy\n",
         encoding="utf-8-sig",
     )
@@ -163,9 +167,11 @@ def test_builder_bakes_only_the_order_switch_from_local_env(tmp_path, setting, e
         capture_output=True,
     )
     source = artifact.read_text(encoding="ascii")
-    assert f'"rpc_allow_order_methods": {expected},' in source
+    assert f'"rpc_allow_order_methods": {allow_orders},' in source
+    assert f'"serial": {{"port": {port!r}, "baudrate": 921600}},' in source
     assert "fixture-secret-not-for-strategy" not in source
     assert "__RPC_ALLOW_ORDER_METHODS__" not in source
+    assert "__QMT_SERIAL_PORT__" not in source
 
 
 class EmbeddedContentTest(unittest.TestCase):

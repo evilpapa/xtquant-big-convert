@@ -47,8 +47,7 @@ def _time_axis(df):
                 return "__index__", True
     except Exception:
         pass
-    name = _time_col(df)
-    if name:
+    if name := _time_col(df):
         return name, False
     return None, False
 
