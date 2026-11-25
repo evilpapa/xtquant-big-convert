@@ -17,6 +17,10 @@ DEFAULT_BAUDRATE = 921600
 DEFAULT_MAX_FRAME_BYTES = 8 * 1024 * 1024
 _WRITE_CHUNK = 4096
 _READ_CHUNK = 64 * 1024
+# 连续写超时到这里就明确报“对端失联”一次（有积压约 3 秒，只有心跳时约 30 秒），
+# 避免日志里只剩每 100 条一次的丢帧计数，看不出桥接已经停了。
+_STALL_WRITE_TIMEOUTS = 30
+_STALL_REPORT_EVERY = 300
 _log = logging.getLogger(__name__)
 
 
@@ -138,6 +142,7 @@ class SerialTransport(RpcTransport):
         self._io_thread = None
         self._failed = False
         self._drops = 0
+        self._write_timeouts = 0
 
     def send_request(self, request, timeout_seconds):
         raise TransportError("serial is server-side only; use a VK client via the bridge")
@@ -166,6 +171,8 @@ class SerialTransport(RpcTransport):
             while not self._stopped.is_set():
                 capacity = self._incoming.maxsize - self._incoming.qsize()
                 frames = wire.read_frames(min(capacity, 16))
+                if frames:
+                    self._link_alive()
                 for frame in frames:
                     request = frame.get("request")
                     if (frame.get("type") == "request" and frame.get("session") == self._session
@@ -185,8 +192,11 @@ class SerialTransport(RpcTransport):
                     sent = wire.write_step()
                 except write_timeout:
                     wire.abort_write()
+                    self._write_timeout()
                     self._note_drop("写超时，已中止当前帧的发送，继续收发")
                     sent = False
+                if sent:
+                    self._link_alive()
                 if not frames and not sent:
                     self._stopped.wait(0.002)
         except Exception:
@@ -235,6 +245,19 @@ class SerialTransport(RpcTransport):
         self._drops += 1
         if self._drops <= 3 or self._drops % 100 == 0:
             _log.warning("串口 %s：%s（累计丢弃 %d 条消息）", self.port, reason, self._drops)
+
+    def _write_timeout(self):
+        self._write_timeouts += 1
+        if (self._write_timeouts == _STALL_WRITE_TIMEOUTS
+                or (self._write_timeouts > _STALL_WRITE_TIMEOUTS
+                    and self._write_timeouts % _STALL_REPORT_EVERY == 0)):
+            _log.warning(
+                "串口 %s 连续写超时 %d 次且未收到对端数据：桥接进程可能已停止或未读取串口，"
+                "请检查桥接日志并重启桥接；已转发的请求不会重放，重启前先查委托和成交",
+                self.port, self._write_timeouts)
+
+    def _link_alive(self):
+        self._write_timeouts = 0
 
     def _enqueue(self, buffer, frame):
         if self._failed or not self._running:

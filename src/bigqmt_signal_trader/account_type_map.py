@@ -62,10 +62,7 @@ def normalize_account_types(value):
     """
     if value is None:
         return []
-    if isinstance(value, (list, tuple, set, frozenset)):
-        items = list(value)
-    else:
-        items = [value]
+    items = list(value) if isinstance(value, (list, tuple, set, frozenset)) else [value]
     out = []
     for item in items:
         text = str("" if item is None else item).strip()

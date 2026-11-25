@@ -22,6 +22,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, "tools")
@@ -138,6 +140,32 @@ class ConfigBlockTest(unittest.TestCase):
             _path, source = build(kind)
             missing = [key for key in keys if '"%s":' % key not in source]
             self.assertEqual(missing, [], "%s build missing %s" % (kind, missing))
+
+
+@pytest.mark.parametrize(("setting", "expected"), [
+    ('" TrUe " # explicit opt-in', True),
+    ("0", False),
+    ("invalid", False),
+])
+def test_builder_bakes_only_the_order_switch_from_local_env(tmp_path, setting, expected):
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        f"BIGQMT_RPC_ALLOW_ORDER_METHODS={setting}\n"
+        "BIGQMT_VK_PASSWORD=fixture-secret-not-for-strategy\n",
+        encoding="utf-8-sig",
+    )
+    artifact = tmp_path / "strategy.py"
+    subprocess.run(
+        [sys.executable, os.path.join(TOOLS, "build_single_file.py")],
+        cwd=tmp_path,
+        env=dict(os.environ, BIGQMT_BUILD_OUT=str(artifact)),
+        check=True,
+        capture_output=True,
+    )
+    source = artifact.read_text(encoding="ascii")
+    assert f'"rpc_allow_order_methods": {expected},' in source
+    assert "fixture-secret-not-for-strategy" not in source
+    assert "__RPC_ALLOW_ORDER_METHODS__" not in source
 
 
 class EmbeddedContentTest(unittest.TestCase):

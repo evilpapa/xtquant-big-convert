@@ -9,7 +9,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from .adapters.vk_common import normalize_vk_url
 from .exec_events import EXEC_TOPICS, publish_exec_event
@@ -27,6 +27,20 @@ _log = logging.getLogger(__name__)
 _REQUEST_ID = re.compile(r"[a-zA-Z0-9_.:-]{1,128}\Z")
 _MAX_INFLIGHT = 16
 _MAX_LOG_CHARS = 400
+
+# 桥接常驻：VK 短暂超时或连接闪断不应终止进程。串口继续收发，
+# 暂停从 VK 取请求并退避重试；应答发布失败时丢弃该条（客户端会超时），
+# 与桥接退出时的语义一致，但不影响后续请求和串口会话。
+DEFAULT_VK_TIMEOUT = 5.0
+_VK_RETRY_INITIAL = 1.0
+_VK_RETRY_MAX = 10.0
+_VK_LINK_LOG_INTERVAL = 30.0
+
+
+def _is_vk_error(exc):
+    """VK/Redis 客户端层面的异常（超时、断连、协议错误）。"""
+    module = (type(exc).__module__ or "").split(".", 1)[0]
+    return module in ("valkey", "redis")
 
 
 def _preview(value):
@@ -77,11 +91,13 @@ def _describe(exc):
 
 
 class SerialVkBridge:
-    def __init__(self, vk_client, port, account_id, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
+    def __init__(self, vk_client, port, account_id, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES,
+                 vk_endpoint="VK"):
         self.vk = vk_client
         self.account_id = str(account_id or "").strip()
         if not self.account_id or len(self.account_id) > 128:
             raise ValueError("a valid account_id is required")
+        self.vk_endpoint = vk_endpoint or "VK"
         self.wire = SerialFrames(port, max_frame_bytes)
         self.replies = VkTransport(vk_client, account_id=self.account_id)
         self.quotes = VkQuotePushChannel(vk_client, account_id=self.account_id)
@@ -90,11 +106,66 @@ class SerialVkBridge:
         self._uncertain_writes = OrderedDict()
         self._session = None
         self._last_hello = None
+        self._vk_cooldown_until = 0.0
+        self._vk_retry_delay = 0.0
+        self._vk_down_since = None
+        self._vk_last_log = 0.0
+        self._vk_dropped = 0
+
+    # ---- VK 短暂故障的退避与恢复 -------------------------------------------
+    def _vk_ready(self, now):
+        return now >= self._vk_cooldown_until
+
+    def _vk_failed(self, exc, now):
+        described = _describe(exc)
+        if self._vk_down_since is None:
+            self._vk_down_since = now
+            self._vk_retry_delay = _VK_RETRY_INITIAL
+            self._vk_last_log = now
+            _log.warning(
+                "VK %s 暂时不可用（%s）；桥接保持运行，串口继续收发，%.1f 秒后重试",
+                self.vk_endpoint, described, self._vk_retry_delay)
+        else:
+            self._vk_retry_delay = min(_VK_RETRY_MAX,
+                                       max(_VK_RETRY_INITIAL, self._vk_retry_delay * 2))
+            if now - self._vk_last_log >= _VK_LINK_LOG_INTERVAL:
+                self._vk_last_log = now
+                _log.warning(
+                    "VK %s 仍不可用（%s）；已暂停转发 RPC 请求，串口继续收发",
+                    self.vk_endpoint, described)
+        self._vk_cooldown_until = now + self._vk_retry_delay
+
+    def _vk_recovered(self):
+        if self._vk_down_since is not None:
+            _log.info("VK %s 已恢复，继续转发 RPC 请求", self.vk_endpoint)
+        self._vk_down_since = None
+        self._vk_retry_delay = 0.0
+        self._vk_cooldown_until = 0.0
+
+    def _dispatch(self, action, now, what):
+        """发布一条 VK 消息；遇到 VK 故障时退避并丢弃这一条，不中断串口循环。"""
+        if self._vk_ready(now):
+            try:
+                action()
+                self._vk_recovered()
+                return True
+            except Exception as exc:
+                if not _is_vk_error(exc):
+                    raise
+                self._vk_failed(exc, now)
+        self._vk_dropped += 1
+        if self._vk_dropped <= 3 or self._vk_dropped % 100 == 0:
+            _log.warning(
+                "VK 不可用，放弃发布%s（累计 %d 条；相关客户端会超时，"
+                "按需查询委托和成交）", what, self._vk_dropped)
+        return False
 
     def _forget_request(self, request_id, record, now):
         self._inflight.pop(request_id, None)
         if record.background:
-            record.reply({"ok": False, "error": f"No serial response for {record.method}; outcome unknown"})
+            self._dispatch(lambda: record.reply({"ok": False, "error": (
+                f"No serial response for {record.method}; outcome unknown")}),
+                now, "下载任务应答")
         if METHOD_ALIASES.get(record.method, record.method) in ORDER_METHODS:
             self._uncertain_writes[request_id] = now + 600
             if len(self._uncertain_writes) > 512:
@@ -239,19 +310,22 @@ class SerialVkBridge:
             record = self._inflight.get(request_id) if isinstance(request_id, str) else None
             if record is None or response.get("method") != record.method:
                 return
-            record.reply(response)
+            self._dispatch(lambda: record.reply(response), time.monotonic(), "串口应答")
             self._inflight.pop(request_id, None)
         elif frame.get("type") == "event":
             topic, data = frame.get("topic"), frame.get("data")
             if not isinstance(topic, str) or not isinstance(data, dict):
                 return
+            now = time.monotonic()
             if topic.startswith("exec:"):
                 event_type = data.get("event_type")
                 if (isinstance(event_type, str) and EXEC_TOPICS.get(event_type) == topic
                         and str(data.get("account_id") or "") == self.account_id):
-                    publish_exec_event(self.vk, self.account_id, data)
+                    self._dispatch(
+                        lambda: publish_exec_event(self.vk, self.account_id, data),
+                        now, "委托成交事件")
             else:
-                self.quotes.publish(topic, data)
+                self._dispatch(lambda: self.quotes.publish(topic, data), now, "行情推送")
 
     def step(self, pubsub=None):
         frames = self.wire.read_frames(16)
@@ -261,21 +335,29 @@ class SerialVkBridge:
         for request_id, record in list(self._inflight.items()):
             if record.deadline <= now:
                 self._forget_request(request_id, record, now)
-        self.features.poll_waiters(now)
         raw = None
         background = False
-        if (self._last_hello is not None and now - self._last_hello < 3
-                and not self.wire.writing and len(self._inflight) < _MAX_INFLIGHT):
-            if pubsub is not None:
-                message = pubsub.get_message(timeout=0)
-                if message and message.get("type") == "message":
-                    raw = message.get("data")
-            if raw is None:
-                raw = self.vk.lpop(self.replies.request_queue)
-            if raw is not None:
-                self._forward_request(raw)
-            elif not self._inflight:
-                background = self.features.step(now, self._send_background)
+        if self._vk_ready(now):
+            self._dispatch(lambda: self.features.poll_waiters(now), now, "下载任务状态")
+            try:
+                if (self._last_hello is not None and now - self._last_hello < 3
+                        and not self.wire.writing and len(self._inflight) < _MAX_INFLIGHT):
+                    if pubsub is not None:
+                        message = pubsub.get_message(timeout=0)
+                        if message and message.get("type") == "message":
+                            raw = message.get("data")
+                    if raw is None:
+                        raw = self.vk.lpop(self.replies.request_queue)
+                    if raw is not None:
+                        self._forward_request(raw)
+                    elif not self._inflight:
+                        background = self.features.step(now, self._send_background)
+                self._vk_recovered()
+            except Exception as exc:
+                if not _is_vk_error(exc):
+                    raise
+                self._vk_failed(exc, now)
+                raw = None
         sent = self.wire.write_step()
         return bool(frames or raw is not None or sent or background)
 
@@ -286,7 +368,15 @@ class SerialVkBridge:
                 pubsub = self.vk.pubsub(ignore_subscribe_messages=True)
                 pubsub.subscribe(self.replies.request_channel)
             while True:
-                if not self.step(pubsub):
+                try:
+                    worked = self.step(pubsub)
+                except Exception as exc:
+                    # 兜底：_forward_request 等路径上的 VK 故障也不退出进程。
+                    if not _is_vk_error(exc):
+                        raise
+                    self._vk_failed(exc, time.monotonic())
+                    worked = True
+                if not worked:
                     time.sleep(0.002)
         finally:
             if pubsub is not None:
@@ -300,8 +390,13 @@ def main(argv=None):
     parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
     parser.add_argument("--max-frame-bytes", type=int, default=DEFAULT_MAX_FRAME_BYTES)
     parser.add_argument("--vk-url")
+    parser.add_argument("--vk-timeout", type=float,
+                        help="VK 单条命令的 socket 超时（秒），默认 %s" % DEFAULT_VK_TIMEOUT)
     parser.add_argument("--vk-pubsub", action="store_true")
     args = parser.parse_args(argv)
+    vk_timeout = DEFAULT_VK_TIMEOUT if args.vk_timeout is None else args.vk_timeout
+    if not 0 < vk_timeout <= 60:
+        parser.error("--vk-timeout 必须在 0 到 60 秒之间")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     local_settings = local_serial_settings()
     args.account_id = ((args.account_id or "").strip() or local_settings["account_id"]
@@ -323,6 +418,12 @@ def main(argv=None):
     endpoint = _vk_endpoint(args.vk_url)
     try:
         url = normalize_vk_url(args.vk_url)
+        if args.vk_timeout is not None:
+            parts = urlsplit(url)
+            params = parse_qsl(parts.query, keep_blank_values=True)
+            remaining = [(key, value) for key, value in params if key != "socket_timeout"]
+            if len(remaining) != len(params):
+                url = parts._replace(query=urlencode(remaining)).geturl()
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -331,7 +432,8 @@ def main(argv=None):
         return _describe(exc).replace(args.vk_url, endpoint).replace(url, endpoint)
 
     try:
-        client = Valkey.from_url(url, socket_timeout=2, socket_connect_timeout=2,
+        client = Valkey.from_url(url, socket_timeout=vk_timeout,
+                                socket_connect_timeout=min(2.0, vk_timeout),
                                 retry=Retry(NoBackoff(), 0))
         try:
             client.ping()
@@ -349,16 +451,19 @@ def main(argv=None):
                 "并确认 QMT 或其他桥接进程未占用该端口。",
                 args.port, args.baudrate, describe(exc))
             return 1
-        bridge = SerialVkBridge(client, port, args.account_id, args.max_frame_bytes)
-        _log.info("VK 串口桥接已启动，串口 %s，波特率 %s，VK %s，账号 %s",
-                  args.port, args.baudrate, endpoint, args.account_id)
+        bridge = SerialVkBridge(client, port, args.account_id, args.max_frame_bytes,
+                                vk_endpoint=endpoint)
+        _log.info("VK 串口桥接已启动，串口 %s，波特率 %s，VK %s，账号 %s，"
+                  "VK 超时 %s 秒（断线自动重试，不退出）",
+                  args.port, args.baudrate, endpoint, args.account_id, vk_timeout)
         bridge.run(vk_pubsub=args.vk_pubsub)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
         module = type(exc).__module__ or ""
         if module.startswith("valkey"):
-            hint = ("运行期间 VK %s 连接中断。连接恢复后，先重启桥接，再重启 QMT 策略。" % endpoint)
+            hint = (" 运行期间 VK %s 出现无法自动恢复的错误。请检查网络/VK 服务后重启桥接；"
+                    "串口会话会随之重建，无需重启 QMT 策略。" % endpoint)
         elif module.startswith("serial"):
             hint = ("运行期间串口 %s 连接中断。请关闭桥接和 QMT，检查 com0com 端口对后重启两端。" % args.port)
         else:

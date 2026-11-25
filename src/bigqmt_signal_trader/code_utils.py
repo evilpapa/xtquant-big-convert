@@ -96,10 +96,7 @@ def normalize_stock_code(code):
             return text
     if _DIGIT_CODE_RE.match(text):
         # 沪市转债 110/111/113/118/132 是 "1" 开头，不加这一条会被判到深市
-        if text.startswith(_BOND_SH_PREFIXES) or text.startswith(("5", "6")):
-            market = "SH"
-        else:
-            market = "SZ"
+        market = "SH" if text.startswith(_BOND_SH_PREFIXES) or text.startswith(("5", "6")) else "SZ"
         return f"{text}.{market}"
     raise ValueError(f"invalid stock code: {code}")
 

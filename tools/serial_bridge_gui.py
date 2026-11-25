@@ -32,6 +32,7 @@ import serial_controller_core as core
 LOG_LINE_LIMIT = 4000
 BRIDGE_READY_MARK = "串口桥接已启动"
 SESSION_READY_MARK = "QMT 串口会话已就绪"
+BRIDGE_CHECK_INTERVAL_MS = 20_000
 
 
 def classify_line(line):
@@ -141,6 +142,7 @@ class SettingsDialog(tk.Toplevel):
         self.vk_db = tk.StringVar(value=str(cfg.vk_db))
         self.vk_user = tk.StringVar(value=cfg.vk_username)
         self.vk_password = tk.StringVar(value=cfg.vk_password)
+        self.vk_timeout = tk.StringVar(value=str(cfg.vk_timeout))
 
         row = 0
         serial = ttk.LabelFrame(frame, text="串口", padding=8)
@@ -187,8 +189,9 @@ class SettingsDialog(tk.Toplevel):
         self._label_entry(vk_frame, 2, "DB", self.vk_db)
         self._label_entry(vk_frame, 3, "用户名（可空）", self.vk_user)
         self._label_entry(vk_frame, 4, "密码（可空）", self.vk_password, show="*")
+        self._label_entry(vk_frame, 5, "桥接命令超时（秒）", self.vk_timeout)
         ttk.Label(vk_frame, text="地址可填主机名或完整 valkey:// URL；用户名 / 密码留空表示无认证。",
-                  foreground="#777777").grid(row=5, column=0, columnspan=3,
+                  foreground="#777777").grid(row=6, column=0, columnspan=3,
                                              sticky="w", pady=(4, 0))
 
         self.preview_var = tk.StringVar()
@@ -266,6 +269,7 @@ class SettingsDialog(tk.Toplevel):
             login_password = self.login_password.get()
             if qmt_mode == "login" and not login_password:
                 raise ValueError("login 模式需要 QMT 登录密码")
+            vk_timeout = core.parse_vk_timeout(self.vk_timeout.get())
             url, host, vk_port, db, username, password = self._vk_fields()
         except (ValueError, TypeError) as exc:
             messagebox.showerror("设置无效", str(exc), parent=self)
@@ -283,6 +287,7 @@ class SettingsDialog(tk.Toplevel):
             "BIGQMT_SERIAL_BAUDRATE": str(baudrate),
             "BIGQMT_SERIAL_MAX_FRAME_BYTES": str(max_frame),
             "BIGQMT_SERIAL_VK_PUBSUB": "1" if self.pubsub.get() else "0",
+            "BIGQMT_SERIAL_VK_TIMEOUT": str(vk_timeout),
             "BIGQMT_VK_HOST": host,
             "BIGQMT_VK_PORT": str(vk_port),
             "BIGQMT_VK_DB": str(db),
@@ -321,6 +326,7 @@ class SettingsDialog(tk.Toplevel):
             "vk_db": db,
             "vk_username": username,
             "vk_password": password,
+            "vk_timeout": vk_timeout,
         }
         self.destroy()
         self.app.apply_settings(settings)
@@ -345,6 +351,7 @@ class SerialControllerApp(object):
         self.bridge_state = "stopped"
         self.bridge_ready = threading.Event()
         self.bridge_exited = threading.Event()
+        self._bridge_watchdog_active = False
         self.session_ready = False
         self.qmt_running = False
         self.qmt_pids = []
@@ -373,6 +380,7 @@ class SerialControllerApp(object):
         self._refresh_state()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(120, self._drain_events)
+        self.root.after(BRIDGE_CHECK_INTERVAL_MS, self._check_bridge_process)
 
         threading.Thread(target=self._monitor_qmt_loop, daemon=True).start()
         threading.Thread(target=self._qmt_log_loop, daemon=True).start()
@@ -617,7 +625,7 @@ class SerialControllerApp(object):
                     "qmt_mode", "qmt_exe", "port", "baudrate",
                     "max_frame_bytes", "pubsub", "vk_url", "vk_host",
                     "vk_port", "vk_db", "vk_username",
-                    "vk_password"):
+                    "vk_password", "vk_timeout"):
             setattr(config, key, settings[key])
         config.qmt_root = core.normalize_qmt_root(settings["qmt_dir"])
         config.env_file = settings["env_file"]
@@ -634,6 +642,7 @@ class SerialControllerApp(object):
             "BIGQMT_SERIAL_BAUDRATE": str(config.baudrate),
             "BIGQMT_SERIAL_MAX_FRAME_BYTES": str(config.max_frame_bytes),
             "BIGQMT_SERIAL_VK_PUBSUB": "1" if config.pubsub else "0",
+            "BIGQMT_SERIAL_VK_TIMEOUT": str(config.vk_timeout),
             "BIGQMT_VK_HOST": config.vk_host,
             "BIGQMT_VK_PORT": str(config.vk_port),
             "BIGQMT_VK_DB": str(config.vk_db),
@@ -694,7 +703,7 @@ class SerialControllerApp(object):
                 self.auto_restart_qmt.set(False)
                 self._auto_restart_enabled = False
             elif kind == "bridge_exit":
-                self._on_bridge_exit(payload)
+                self._on_bridge_exit(*payload)
         if not self.closing:
             self.root.after(100, self._drain_events)
 
@@ -741,7 +750,8 @@ class SerialControllerApp(object):
             state = "normal"
         self.start_button.configure(
             state="disabled" if (state == "disabled" or not self._can_start()) else "normal")
-        stop_needed = (running or self.qmt_running or bool(self.external_bridges)
+        stop_needed = (self._bridge_watchdog_active or running
+                       or self.qmt_running or bool(self.external_bridges)
                        or self.qmt_aux_count > 0)
         self.stop_button.configure(
             state="disabled" if (self.busy or not stop_needed) else "normal")
@@ -784,9 +794,7 @@ class SerialControllerApp(object):
                       ",".join(str(item["pid"]) for item in existing_bridges)]
         if not core.relaunch_as_admin(extra):
             return False
-        self.closing = True
-        self._closing_event.set()
-        proc = self.bridge_proc
+        proc = self._begin_close()
         if proc is not None and proc.poll() is None:
             try:
                 proc.terminate()
@@ -852,6 +860,7 @@ class SerialControllerApp(object):
         }
         self._auto_restart_enabled = bool(self.auto_restart_qmt.get())
         with self.lock:
+            self._bridge_watchdog_active = False
             self._watchdog_active = False
             self._watchdog_suspended = False
             self._qmt_restart_attempts = 0
@@ -870,6 +879,7 @@ class SerialControllerApp(object):
         if self.busy:
             return
         close_qmt = bool(self.stop_qmt_on_stop.get())
+        self._bridge_watchdog_active = False
         self.bridge_state = "stopping"
         self._set_busy(True)
         self.hint_var.set("正在停止…")
@@ -880,6 +890,7 @@ class SerialControllerApp(object):
         if self.busy:
             return
         close_qmt = bool(self.stop_qmt_on_stop.get())
+        self._bridge_watchdog_active = False
         self.bridge_state = "stopping"
         self._set_busy(True)
         self.hint_var.set("正在重启…")
@@ -887,9 +898,11 @@ class SerialControllerApp(object):
                          daemon=True).start()
 
     # ------------------------------------------------------------- workers
-    def _start_worker(self):
+    def _start_worker(self, bridge_only=False):
         try:
-            existing = self._start_options.get("existing_bridges") or []
+            if bridge_only and core.find_bridge_processes(self.config.port):
+                raise core.ConfigError("检测到其他桥接进程正在使用 %s" % self.config.port)
+            existing = [] if bridge_only else self._start_options["existing_bridges"]
             if existing:
                 pids = [item["pid"] for item in existing]
                 self._post("bridge", "[控制台] 停止占用 %s 的旧桥接进程：%s"
@@ -903,16 +916,19 @@ class SerialControllerApp(object):
 
             command = core.bridge_command(python_command, self.config)
             self._post("bridge", "[控制台] 启动桥接：%s" % self._display_command(command), "dim")
-            proc = subprocess.Popen(
-                command, cwd=self.config.env_dir, env=core.child_env(self.config),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                creationflags=core.CREATE_NO_WINDOW | core.CREATE_NEW_PROCESS_GROUP)
+            env = core.child_env(self.config)
             with self.lock:
+                if self.closing:
+                    return
+                proc = subprocess.Popen(
+                    command, cwd=self.config.env_dir, env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    creationflags=core.CREATE_NO_WINDOW | core.CREATE_NEW_PROCESS_GROUP)
                 self.bridge_proc = proc
-            self.bridge_ready.clear()
-            self.bridge_exited.clear()
-            self.last_bridge_error = ""
-            self.session_ready = False
+                self.bridge_ready.clear()
+                self.bridge_exited.clear()
+                self.last_bridge_error = ""
+                self.session_ready = False
             self._post("state")
             threading.Thread(target=self._pump_bridge, args=(proc,), daemon=True).start()
 
@@ -922,7 +938,7 @@ class SerialControllerApp(object):
                     break
                 if self.bridge_exited.is_set():
                     break
-            if not self.bridge_ready.is_set():
+            if not self.bridge_ready.is_set() or proc.poll() is not None:
                 self._terminate_bridge(proc)
                 code = proc.poll()
                 detail = self.last_bridge_error
@@ -934,15 +950,28 @@ class SerialControllerApp(object):
                             "端口可在「设置…」里修改。旧桥接如果是以管理员权限运行的，"
                             "本程序也需要以管理员权限运行才能停止它。" % self.config.port)
                 raise core.ConfigError(message)
-            self.bridge_state = "running"
-            self._post("state")
-            self._handle_qmt_after_bridge(proc)
             with self.lock:
-                self._watchdog_active = True
-                self._qmt_missing_since = None
-                self._qmt_alive_since = None
+                if self.closing:
+                    return
+                self._bridge_watchdog_active = True
+                self.bridge_state = "running"
+            self._post("state")
+            if bridge_only:
+                self._post("bridge", "[监控] 桥接已自动重启（PID %s）。" % proc.pid, "ok")
+            else:
+                self._handle_qmt_after_bridge(proc)
+                with self.lock:
+                    if not self.closing:
+                        self._watchdog_active = True
+                        self._qmt_missing_since = None
+                        self._qmt_alive_since = None
             self._post("hint", "桥接已运行。等待 QMT 策略连接串口…")
         except Exception as exc:
+            if bridge_only:
+                self._set_bridge_stopped()
+                self._post("bridge", "[监控] 自动启动桥接失败：%s" % exc, "error")
+                self._post("hint", "桥接自动重启失败，下一次检查时重试。")
+                return
             self._post("bridge", "[控制台] %s" % exc, "error")
             self._post("message", ("error", "启动失败", str(exc)))
             if self.bridge_proc is not None and self.bridge_proc.poll() is None:
@@ -968,8 +997,8 @@ class SerialControllerApp(object):
             else:
                 self._post(
                     "bridge",
-                    "[控制台] QMT 已在运行，未重启。桥接重启后旧策略的串口会话不会自动恢复；"
-                    "需要重载策略请勾选「启动时重启已运行的 QMT」后点「重启」。",
+                    "[控制台] QMT 已在运行。若串口会话未恢复，可重载 QMT 策略，"
+                    "或勾选「启动时重启已运行的 QMT」后点「重启」。",
                     "warn")
                 return
 
@@ -995,26 +1024,29 @@ class SerialControllerApp(object):
                 if not line:
                     continue
                 self._post("bridge", line)
-                if any(marker in line for marker in ("无法打开串口", "无法连接 VK", "无法连接 Valkey")):
-                    self.last_bridge_error = line
-                if BRIDGE_READY_MARK in line:
-                    self.bridge_ready.set()
-                if SESSION_READY_MARK in line:
-                    with self.lock:
+                with self.lock:
+                    if proc is not self.bridge_proc:
+                        continue
+                    if any(marker in line for marker in ("无法打开串口", "无法连接 VK", "无法连接 Valkey")):
+                        self.last_bridge_error = line
+                    if BRIDGE_READY_MARK in line:
+                        self.bridge_ready.set()
+                    if SESSION_READY_MARK in line:
                         self.session_ready = True
-                    self._post("state")
+                        self._post("state")
         finally:
             try:
                 proc.stdout.close()
             except OSError:
                 pass
             code = proc.wait()
-            self.bridge_exited.set()
             with self.lock:
-                self.session_ready = False
+                if proc is self.bridge_proc:
+                    self.bridge_exited.set()
+                    self.session_ready = False
             self._post("bridge", "[控制台] 桥接进程已退出，exit=%s" % code,
                        "ok" if code == 0 else "error")
-            self._post("bridge_exit", code)
+            self._post("bridge_exit", (proc, code))
 
     def _stop_worker(self, close_qmt):
         try:
@@ -1119,6 +1151,23 @@ class SerialControllerApp(object):
         return code, output
 
     # ------------------------------------------------------------ monitoring
+    def _check_bridge_process(self):
+        if self.closing:
+            return
+        self.root.after(BRIDGE_CHECK_INTERVAL_MS, self._check_bridge_process)
+        with self.lock:
+            if not self._bridge_watchdog_active or self.busy:
+                return
+            proc = self.bridge_proc
+            if proc is not None and proc.poll() is None:
+                return
+            self.session_ready = False
+            self.bridge_state = "starting"
+            self._set_busy(True)
+        self.hint_var.set("桥接已退出，正在自动重启…")
+        self._post("bridge", "[监控] 检测到桥接进程已退出，正在自动重启…", "warn")
+        threading.Thread(target=self._start_worker, kwargs={"bridge_only": True}, daemon=True).start()
+
     def _monitor_qmt_loop(self):
         hinted_external = False
         while not self._closing_event.is_set():
@@ -1172,17 +1221,25 @@ class SerialControllerApp(object):
             self._closing_event.wait(0.4)
         tailer.close()
 
-    def _on_bridge_exit(self, code):
+    def _on_bridge_exit(self, proc, code):
         with self.lock:
-            self._watchdog_active = False
+            if (proc is not self.bridge_proc or self.closing or self.busy
+                    or not self._bridge_watchdog_active):
+                return
             self._qmt_missing_since = None
         self._set_bridge_stopped()
-        if not self.closing and not self.busy:
-            self.hint_var.set("桥接已退出（exit=%s）。点「启动」重新开始。" % code)
+        self.hint_var.set("桥接已退出（exit=%s），等待自动重启。" % code)
 
     # ---------------------------------------------------------------- close
+    def _begin_close(self):
+        with self.lock:
+            self._bridge_watchdog_active = False
+            self._watchdog_active = False
+            self.closing = True
+            self._closing_event.set()
+            return self.bridge_proc
+
     def _on_close(self):
-        self._watchdog_active = False
         running = self.bridge_proc is not None and self.bridge_proc.poll() is None
         close_qmt = bool(self.stop_qmt_on_stop.get())
         if running:
@@ -1190,9 +1247,7 @@ class SerialControllerApp(object):
             if not messagebox.askokcancel(
                     "退出", "桥接仍在运行。退出将停止桥接%s。继续？" % suffix):
                 return
-        self.closing = True
-        self._closing_event.set()
-        proc = self.bridge_proc
+        proc = self._begin_close()
         if proc is not None and proc.poll() is None:
             try:
                 proc.terminate()

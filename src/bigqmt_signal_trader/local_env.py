@@ -17,6 +17,11 @@ def read_local_env():
         }
 
 
+def rpc_order_methods_enabled(values):
+    value = values.get("BIGQMT_RPC_ALLOW_ORDER_METHODS", "")
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 def local_serial_settings():
     values = read_local_env()
     return {

@@ -95,10 +95,9 @@ class SerialBridgeFeatures:
         existing = read_download_status(self.vk, self.account_id, job_id)
         if existing is not None:
             return existing
-        if method == "submit_download_history_data":
-            codes = params.get("stock_code") or params.get("code")
-        else:
-            codes = params.get("stock_list") or params.get("stock_code")
+        codes = (params.get("stock_code") or params.get("code")
+                 if method == "submit_download_history_data"
+                 else params.get("stock_list") or params.get("stock_code"))
         if isinstance(codes, str):
             codes = [codes]
         if not isinstance(codes, list) or not codes or not all(isinstance(code, str) for code in codes):

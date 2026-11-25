@@ -717,7 +717,9 @@ python tools/build_single_file.py
 | `build_single_file.py` | `BIGQMT_VK_DRYRUN_ALL_IN_ONE.py` | base64 | 串口（默认） |
 
 
-**用法**：编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_CONFIG`，把这**一个文件**拷进 QMT 的 python 目录当策略加载即可。策略启动时读取环境变量 `BIGQMT_ACCOUNT_ID`；未设置或只有空白时会提示。首次验证请将 `rpc_allow_order_methods` 设为 `False`，需要远程下单或撤单时再打开。
+构建器读取命令启动目录中的 `.env`，并将 `BIGQMT_RPC_ALLOW_ORDER_METHODS` 写为生成文件顶部的 `BIGQMT_CONFIG["rpc_allow_order_methods"]`。默认关闭。需要启用远程下单和撤单时，在 `.env` 中设置 `BIGQMT_RPC_ALLOW_ORDER_METHODS=1` 后重新构建。`true`、`yes`、`on` 也表示开启，匹配时忽略大小写。`bigqmt-init` 用该值作为下单和撤单问题的默认选项，交互回答优先。
+
+按部署需要编辑生成文件顶部的 `BIGQMT_ACCOUNT_TYPE` 和 `BIGQMT_CONFIG`，再把单文件拷进 QMT 的 python 目录加载。策略启动时从进程环境读取 `BIGQMT_ACCOUNT_ID`，未设置或只有空白时会提示。QMT 运行时直接使用单文件内的 RPC 开关。
 
 产物约 900KB / 700KB，已加入 `.gitignore`——**用时重新生成，不要提交**。改动包内代码后需重新运行生成器。
 

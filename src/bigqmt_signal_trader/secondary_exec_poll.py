@@ -170,10 +170,7 @@ def build_row_publisher(sink, context_info=None, identity_vk=None, log=None):
             return ""
 
     def publish(kind, account_id, row):
-        if kind == "trade":
-            event = exec_events.normalize_trade_event(row, account_id)
-        else:
-            event = exec_events.normalize_order_event(row, account_id)
+        event = exec_events.normalize_trade_event(row, account_id) if kind == "trade" else exec_events.normalize_order_event(row, account_id)
         if identity_vk is not None:
             try:
                 event = exec_events.enrich_order_identity(identity_vk, account_id, event)

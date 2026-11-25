@@ -37,6 +37,9 @@
 .PARAMETER VkPubSub
   客户端用 VK pub/sub 发请求时加上（等价 --vk-pubsub）。
 
+.PARAMETER VkTimeout
+  VK 单条命令的 socket 超时（秒），默认 5；VK 闪断时桥接会退避重试而不是退出。
+
 .PARAMETER LogFile
   输出同时追加写入该文件。
 
@@ -100,6 +103,7 @@ param(
     [int]$MaxFrameBytes = 8388608,
     [string]$LocalConfig = "",
     [switch]$VkPubSub,
+    [ValidateRange(0.1, 60)][double]$VkTimeout = 5.0,
     [string]$LogFile = "",
     [switch]$CheckOnly,
     [switch]$Force,
@@ -481,7 +485,7 @@ if (-not $pyExe) {
 }
 else {
     $env:BIGQMT_PREFLIGHT_VK_URL = $VkUrl
-    $probe = Invoke-Capture $pyExe @("-c", "import os; from bigqmt_signal_trader.adapters.vk_common import build_vk_client; build_vk_client(dict(url=os.environ['BIGQMT_PREFLIGHT_VK_URL'], socket_timeout=2, socket_connect_timeout=2)).ping(); print('ok')")
+    $probe = Invoke-Capture $pyExe @("-c", "import os; from bigqmt_signal_trader.adapters.vk_common import build_vk_client; build_vk_client(dict(url=os.environ['BIGQMT_PREFLIGHT_VK_URL'], socket_timeout=$VkTimeout, socket_connect_timeout=min(2.0, $VkTimeout))).ping(); print('ok')")
     if ($probe.Code -eq 0) {
         Say-Ok ("VK 可达: " + (Format-VkUrl $VkUrl))
     }
@@ -625,7 +629,8 @@ $bridgeArgs = @($entry.Prefix) + @(
     "--baudrate", [string]$Baudrate,
     "--account-id", $Account,
     "--max-frame-bytes", [string]$MaxFrameBytes,
-    "--vk-url", $VkUrl
+    "--vk-url", $VkUrl,
+    "--vk-timeout", [string]$VkTimeout
 )
 if ($VkPubSub) { $bridgeArgs += "--vk-pubsub" }
 

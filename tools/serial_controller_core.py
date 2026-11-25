@@ -23,6 +23,7 @@ CREATE_NO_WINDOW = 0x08000000 if IS_WINDOWS else 0
 CREATE_NEW_PROCESS_GROUP = 0x00000200 if IS_WINDOWS else 0
 
 DEFAULT_VK_URL = "valkey://127.0.0.1:6379/5"
+DEFAULT_VK_TIMEOUT = 5.0
 DEFAULT_QMT_EXE = "XtItClient.exe"
 DEFAULT_PORT = "COM11"
 DEFAULT_BAUDRATE = 921600
@@ -516,6 +517,17 @@ def _as_int(value, name):
         raise ConfigError("%s 不是有效整数：%r" % (name, value))
 
 
+def parse_vk_timeout(value):
+    message = "VK 桥接超时必须为大于 0 且不超过 60 的秒数"
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(message) from None
+    if not 0 < seconds <= 60:
+        raise ValueError(message)
+    return seconds
+
+
 def normalize_qmt_root(path):
     """把安装根目录、bin.x64 或 exe 路径统一成安装根目录。"""
     if not path:
@@ -544,6 +556,7 @@ class Config(object):
         self.vk_db = 0
         self.vk_username = ""
         self.vk_password = ""
+        self.vk_timeout = DEFAULT_VK_TIMEOUT
         self.qmt_root = ""
         self.qmt_exe = DEFAULT_QMT_EXE
         self.qmt_mode = "exe"
@@ -567,9 +580,9 @@ class Config(object):
         return os.path.join(self.qmt_root, "userdata", "log") if self.qmt_root else ""
 
     def summary(self):
-        return "账号 %s  |  串口 %s@%s  |  VK %s  |  QMT %s" % (
+        return "账号 %s  |  串口 %s@%s  |  VK %s（超时 %s 秒）  |  QMT %s" % (
             self.account or "(未配置)", self.port, self.baudrate,
-            redact_url(self.vk_url), self.qmt_root or "(未配置)")
+            redact_url(self.vk_url), self.vk_timeout, self.qmt_root or "(未配置)")
 
     def login_credentials(self):
         return self.login_user, self.login_password
@@ -607,6 +620,11 @@ def load_config(overrides=None, env_file=None):
     vk_db = pick("vk_db", "BIGQMT_VK_DB", "0") or "0"
     vk_username = pick("vk_username", "BIGQMT_VK_USERNAME")
     vk_password = pick("vk_password", "BIGQMT_VK_PASSWORD")
+    try:
+        vk_timeout = parse_vk_timeout(
+            pick("vk_timeout", "BIGQMT_SERIAL_VK_TIMEOUT", str(DEFAULT_VK_TIMEOUT)))
+    except ValueError as exc:
+        raise ConfigError("BIGQMT_SERIAL_VK_TIMEOUT：%s" % exc) from exc
     if not vk_url and vk_host:
         vk_url = build_vk_url(vk_host, vk_port, vk_db,
                                       vk_username, vk_password)
@@ -657,6 +675,7 @@ def load_config(overrides=None, env_file=None):
         vk_db=vk_parts["db"],
         vk_username=vk_parts["username"],
         vk_password=vk_parts["password"],
+        vk_timeout=vk_timeout,
         qmt_root=qmt_root,
         qmt_exe=qmt_exe,
         qmt_mode=qmt_mode,
@@ -755,7 +774,7 @@ _BRIDGE_MARKERS = (
 
 
 def _is_bridge_command(cmdline):
-    text = " ".join(str(part) for part in (cmdline or []))
+    text = cmdline if isinstance(cmdline, str) else " ".join(str(part) for part in (cmdline or []))
     return any(marker in text for marker in _BRIDGE_MARKERS)
 
 
@@ -985,6 +1004,7 @@ def bridge_command(python_command, config):
         "--account-id", config.account,
         "--max-frame-bytes", str(config.max_frame_bytes),
         "--vk-url", config.vk_url,
+        "--vk-timeout", str(config.vk_timeout),
     ]
     if config.pubsub:
         command.append("--vk-pubsub")

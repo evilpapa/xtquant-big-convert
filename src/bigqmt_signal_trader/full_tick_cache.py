@@ -33,13 +33,10 @@ def normalize_full_tick_codes(codes):
         text = str(code or "").strip()
         if not text:
             continue
-        if text.upper() in MARKET_CODES:
-            item = text.upper()
-        else:
-            # Pass the raw code through: futures symbol case is exchange
-            # convention and normalize_stock_code preserves it (issue #95).
-            # Uppercasing here would undo that before it ever gets the chance.
-            item = normalize_stock_code(text)
+        # Pass the raw code through: futures symbol case is exchange
+        # convention and normalize_stock_code preserves it (issue #95).
+        # Uppercasing here would undo that before it ever gets the chance.
+        item = text.upper() if text.upper() in MARKET_CODES else normalize_stock_code(text)
         if item not in seen:
             seen.add(item)
             normalized.append(item)

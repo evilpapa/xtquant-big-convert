@@ -41,3 +41,5 @@ bigqmt_signal_trader_client_config.py
 /.env
 xtquant/
 .vscode/
+aoci*.txt
+.aoci/

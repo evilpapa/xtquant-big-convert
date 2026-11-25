@@ -3,6 +3,9 @@
 
 import os
 import sys
+from types import SimpleNamespace
+
+import pytest
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -85,6 +88,18 @@ def test_find_bridge_processes_scopes_to_the_configured_port(monkeypatch):
     assert core.find_bridge_processes("COM99") == []
 
 
+def test_find_bridge_processes_reads_windows_command_line_from_wmic(monkeypatch):
+    stdout = (b"Name=python.exe\r\n"
+              b"CommandLine=python.exe -m bigqmt_signal_trader.serial_vk_bridge --port COM12\r\n"
+              b"ProcessId=4242\r\n\r\n")
+    monkeypatch.setattr(core, "_bridge_processes_psutil", lambda: None)
+    monkeypatch.setattr(core.os, "getpid", lambda: 1)
+    monkeypatch.setattr(core.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout=stdout))
+
+    assert [item["pid"] for item in core.find_bridge_processes("COM12")] == [4242]
+    assert core.find_bridge_processes("COM11") == []
+
+
 def test_normalize_qmt_root_accepts_root_bin_and_exe(tmp_path):
     root = tmp_path / "qmt"
     bin_dir = root / "bin.x64"
@@ -120,6 +135,7 @@ def test_load_config_reads_explicit_env_file(tmp_path):
         "BIGQMT_SERIAL_PORT=COM12\n"
         "BIGQMT_SERIAL_BAUDRATE=115200\n"
         "BIGQMT_SERIAL_VK_URL=valkey://127.0.0.1:6379/7\n"
+        "BIGQMT_SERIAL_VK_TIMEOUT=7.5\n"
         "BIGQMT_QMT_MODE=login\n",
         encoding="utf-8")
 
@@ -131,7 +147,17 @@ def test_load_config_reads_explicit_env_file(tmp_path):
     assert config.port == "COM12"
     assert config.baudrate == 115200
     assert config.vk_url == "valkey://127.0.0.1:6379/7"
+    assert config.vk_timeout == 7.5
     assert config.qmt_mode == "login"
+
+
+@pytest.mark.parametrize("timeout", ["0", "-1", "60.01", "nan", "inf", "abc"])
+def test_load_config_rejects_invalid_vk_timeout(tmp_path, timeout):
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"BIGQMT_SERIAL_VK_TIMEOUT={timeout}\n", encoding="utf-8")
+
+    with pytest.raises(core.ConfigError, match="BIGQMT_SERIAL_VK_TIMEOUT"):
+        core.load_config(env_file=str(env_file))
 
 
 def test_load_config_rejects_a_missing_explicit_env_file(tmp_path):
@@ -154,7 +180,8 @@ def test_load_config_uses_running_qmt_when_dir_is_unset(monkeypatch, tmp_path):
     assert config.qmt_root == os.path.abspath("D:/running_qmt")
 
 
-def test_bridge_command_carries_no_login_password(tmp_path):
+def test_bridge_command_carries_no_login_password(tmp_path, monkeypatch):
+    monkeypatch.delenv("BIGQMT_SERIAL_VK_TIMEOUT", raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text(
         "BIGQMT_ACCOUNT_ID=123456\n"
@@ -166,6 +193,8 @@ def test_bridge_command_carries_no_login_password(tmp_path):
 
     assert "--account-id" in command
     assert "secret-value" not in command
+    assert config.vk_timeout == 5.0
+    assert command[command.index("--vk-timeout") + 1] == "5.0"
     assert command[:3] == ["python.exe", "-m",
                            "bigqmt_signal_trader.serial_vk_bridge"]
 

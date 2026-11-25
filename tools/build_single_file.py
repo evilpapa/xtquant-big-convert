@@ -5,6 +5,7 @@
 """
 import base64
 import os
+import runpy
 from datetime import datetime
 
 # 源码仓库在 tools/ 提供构建器，安装包在 bigqmt_signal_trader/_singlefile/
@@ -93,6 +94,8 @@ def embed_block(sources, extra):
 
 def main():
     top_dir, package_dir = resolve_source_dirs()
+    local_env = runpy.run_path(os.path.join(package_dir, "local_env.py"))
+    allow_order_methods = local_env["rpc_order_methods_enabled"](local_env["read_local_env"]())
     sources = collect_package(package_dir, top_dir)
     extra = {}
     for name in ("bigqmt_signal_trader_strategy.py",
@@ -107,6 +110,7 @@ def main():
     template = TEMPLATE.encode("ascii", "backslashreplace").decode("ascii")
     generated_at = datetime.now().astimezone().isoformat(sep=" ", timespec="seconds")
     template = template.replace("__GENERATED_AT__", generated_at, 1)
+    template = template.replace("__RPC_ALLOW_ORDER_METHODS__", repr(allow_order_methods), 1)
     template = template.replace("__EMBEDDED_SOURCES_BLOCK__", embedded)
 
     total = sum(len(v) for v in sources.values()) + sum(len(v) for v in extra.values())
@@ -151,7 +155,7 @@ BIGQMT_CONFIG = {
     # "db": 5,
     # "username": "",
     # "password": "",
-    "rpc_allow_order_methods": False, # 除非您明确想要远程下单/撤单，否则请保持订单 RPC 禁用。
+    "rpc_allow_order_methods": __RPC_ALLOW_ORDER_METHODS__,
     # 请求通过 QMT 的 run_time("adjust", ...) 回调在主策略线程中排队。
     # get_trade_detail_data 在其他线程中返回 EMPTY，因此
     # 订单/查询方法不得移至后台线程。

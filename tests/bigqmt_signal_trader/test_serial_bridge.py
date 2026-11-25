@@ -675,12 +675,21 @@ def test_bridge_warns_and_stops_without_an_account(tmp_path, monkeypatch, caplog
     assert "BIGQMT_ACCOUNT_ID" in caplog.text
 
 
-@pytest.mark.parametrize("source, scheme", [("argument", "valkey"), ("dotenv", "redis")])
-def test_bridge_startup_names_the_side_that_failed(tmp_path, monkeypatch, caplog, source, scheme):
+@pytest.mark.parametrize("source, scheme, timeout", [
+    ("argument", "valkey", None),
+    ("argument", "valkey", 7.5),
+    ("dotenv", "redis", None),
+])
+def test_bridge_startup_names_the_side_that_failed(
+        tmp_path, monkeypatch, caplog, source, scheme, timeout):
+    query = "?socket_timeout=3&db=5"
+    expected_query = "?db=5" if timeout is not None else query
+
     class FakeVk:
         @classmethod
         def from_url(cls, url, **kwargs):
-            assert url == "valkey://user:secret@127.0.0.1:6399/5"
+            assert url == f"valkey://user:secret@127.0.0.1:6399/5{expected_query}"
+            assert kwargs["socket_timeout"] == (5.0 if timeout is None else timeout)
             return cls()
 
         def ping(self):
@@ -702,8 +711,10 @@ def test_bridge_startup_names_the_side_that_failed(tmp_path, monkeypatch, caplog
     monkeypatch.setitem(sys.modules, "valkey.retry", retry)
     monkeypatch.setenv("BIGQMT_ACCOUNT_ID", " acct ")
     monkeypatch.chdir(tmp_path)
-    dotenv_url = f"{scheme}://user:secret@127.0.0.1:6399/5"
+    dotenv_url = f"{scheme}://user:secret@127.0.0.1:6399/5{query}"
     argv = ["--vk-url", dotenv_url]
+    if timeout is not None:
+        argv.extend(["--vk-timeout", str(timeout)])
     if source == "dotenv":
         monkeypatch.setenv("BIGQMT_SERIAL_VK_URL", "valkey://wrong-host:6379/5")
         monkeypatch.delenv("BIGQMT_ACCOUNT_ID")
@@ -719,3 +730,73 @@ def test_bridge_startup_names_the_side_that_failed(tmp_path, monkeypatch, caplog
     assert code == 1
     assert "无法连接 VK 127.0.0.1:6399/5" in caplog.text
     assert "secret" not in caplog.text
+
+
+class VkTimeoutError(Exception):
+    """模拟 valkey.TimeoutError；_is_vk_error 按模块名识别。"""
+
+
+VkTimeoutError.__module__ = "valkey.exceptions"
+
+
+def test_bridge_survives_vk_timeouts_and_keeps_the_serial_link(duplex, caplog):
+    qmt, windows = duplex
+
+    class FlakyVk(MemoryVk):
+        def __init__(self):
+            super().__init__()
+            self.failures = 2
+
+        def lpop(self, key):
+            if self.failures:
+                self.failures -= 1
+                raise VkTimeoutError("Timeout reading from socket")
+            return super().lpop(key)
+
+    vk = FlakyVk()
+    bridge = SerialVkBridge(vk, windows, ACCOUNT, vk_endpoint="192.168.2.112:6379/5")
+    wire = serial_transport.SerialFrames(qmt)
+    wire.begin({"type": "hello", "account_id": ACCOUNT, "session": "session-1"})
+    while wire.writing:
+        wire.write_step()
+    bridge.step()
+    vk.rpush(REQUEST_QUEUE, request("after-timeout"))
+
+    with caplog.at_level(logging.INFO, logger=serial_vk_bridge._log.name):
+        bridge.step()
+    assert "VK 192.168.2.112:6379/5 暂时不可用" in caplog.text
+    assert "Timeout reading from socket" in caplog.text
+    assert bridge._session == "session-1"
+    assert bridge._vk_cooldown_until > time.monotonic()
+
+    # 冷却期仍然读串口；VK 发布失败只丢这一条，不抛异常
+    wire.begin({"type": "event", "session": "session-1",
+                "topic": "bigqmt:quote_push:%s:test" % ACCOUNT, "data": {"000001.SZ": {}}})
+    while wire.writing:
+        wire.write_step()
+    bridge.step()
+    assert "放弃发布行情推送" in caplog.text
+
+    # 退避结束后继续取请求（默认端口每次只写出 37 字节，需要多轮 write_step）
+    with caplog.at_level(logging.INFO, logger=serial_vk_bridge._log.name):
+        for _ in range(500):
+            bridge._vk_cooldown_until = 0
+            bridge.step()
+            if bridge._inflight:
+                break
+    assert "after-timeout" in bridge._inflight
+    assert not vk.lists[REQUEST_QUEUE]
+    assert "已恢复" in caplog.text
+
+
+def test_qmt_serial_reports_lost_peer_after_consecutive_write_timeouts(caplog):
+    transport = serial_transport.SerialTransport(account_id=ACCOUNT)
+    with caplog.at_level(logging.WARNING, logger=serial_transport._log.name):
+        for _ in range(serial_transport._STALL_WRITE_TIMEOUTS - 1):
+            transport._write_timeout()
+        assert "连续写超时" not in caplog.text
+        transport._write_timeout()
+    assert "连续写超时" in caplog.text
+    assert "桥接进程可能已停止" in caplog.text
+    transport._link_alive()
+    assert transport._write_timeouts == 0

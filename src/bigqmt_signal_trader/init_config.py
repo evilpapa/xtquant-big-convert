@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import sys
 
-from .local_env import read_local_env
+from .local_env import read_local_env, rpc_order_methods_enabled
 
 
 ACCOUNT_TYPES = ("STOCK", "CREDIT", "FUTURE", "STOCK_OPTION", "HUGANGTONG", "SHENGANGTONG")
@@ -295,7 +295,7 @@ def prompt_answers(write, read, read_secret=None):
 
     write("\n远程下单/撤单默认关闭。打开后，任何能连上这条通道的程序都可以下单。\n")
     answers["allow_order_methods"] = _ask_bool(
-        read, "允许远程下单/撤单？", default=False)
+        read, "允许远程下单/撤单？", default=rpc_order_methods_enabled(local_env))
 
     answers["deployment"] = _ask(
         write, read, "部署方式", default="package", choices=DEPLOYMENTS)

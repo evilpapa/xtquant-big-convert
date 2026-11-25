@@ -250,10 +250,7 @@ def _infer_chain_dividend_yield(
         return None, 0, {}
     implied.sort()
     middle = len(implied) // 2
-    if len(implied) % 2:
-        median = implied[middle]
-    else:
-        median = (implied[middle - 1] + implied[middle]) / 2.0
+    median = implied[middle] if len(implied) % 2 else (implied[middle - 1] + implied[middle]) / 2.0
     return median, len(implied), implied_by_strike
 
 

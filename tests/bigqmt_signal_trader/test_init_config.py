@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -163,6 +164,15 @@ class PromptFlowTest(unittest.TestCase):
             script.write, script.read, read_secret=script.read_secret)
 
         self.assertEqual(answers["account_id"], "8886800503")
+
+    def test_explicit_order_answer_overrides_local_env_default(self):
+        for answer, expected in (("", True), ("n", False)):
+            with self.subTest(answer=answer), patch.object(init_config, "read_local_env",
+                    return_value={"BIGQMT_RPC_ALLOW_ORDER_METHODS": "1"}):
+                script = _Script(answers=["test-account"] + [""] * 6 + [answer])
+                answers = init_config.prompt_answers(
+                    script.write, script.read, read_secret=script.read_secret)
+                self.assertIs(answers["allow_order_methods"], expected)
 
     def test_a_bad_port_is_re_asked_rather_than_silently_zeroed(self):
         script = _Script(

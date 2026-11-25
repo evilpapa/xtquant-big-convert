@@ -290,10 +290,9 @@ def _missing_account_id_message():
     except Exception:
         pass
 
-    if found:
-        detail = ("imported %s, but it defines no BIGQMT_ACCOUNT_ID" % found)
-    else:
-        detail = ("none of these modules could be imported: %s" % ", ".join(searched))
+    detail = (("imported %s, but it defines no BIGQMT_ACCOUNT_ID" % found)
+              if found
+              else ("none of these modules could be imported: %s" % ", ".join(searched)))
     lines = [
         "Big QMT account_id is required -- %s." % detail,
         "Fix it in any one of these ways:",

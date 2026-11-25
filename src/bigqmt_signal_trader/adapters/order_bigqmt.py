@@ -817,10 +817,9 @@ class BigQmtOrderGateway:
         query = self._require_query_func()
         account_type = self._resolve_account_type(account_id)
         # DEAL is the documented trade detail type; an empty result is a success.
-        if str(strategy_name or "").strip():
-            rows = query(account_id, account_type, "DEAL", strategy_name) or []
-        else:
-            rows = query(account_id, account_type, "DEAL") or []
+        rows = (query(account_id, account_type, "DEAL", strategy_name) or []
+                if str(strategy_name or "").strip()
+                else query(account_id, account_type, "DEAL") or [])
         result = []
         account_type_code = self._account_type_code(account_id)
         name_cache = {}
