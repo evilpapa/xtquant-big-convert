@@ -9,7 +9,7 @@ from .base import RpcTransport
 from .vk_transport import VkTransport
 
 
-KNOWN_TRANSPORTS = ("valkey", "serial", "shm")
+KNOWN_TRANSPORTS = ("valkey", "serial", "pipe", "shm", "copydata")
 
 
 def transport_supports_drain(name):
@@ -30,6 +30,12 @@ def transport_supports_drain(name):
             from .vk_transport import VkTransport as cls
         elif name == "serial":
             from .serial_transport import SerialTransport as cls
+        elif name == "pipe":
+            from .pipe_transport import PipeTransport as cls
+        elif name == "shm":
+            from .shm_transport import SharedMemoryTransport as cls
+        elif name == "copydata":
+            from .copydata_transport import CopyDataTransport as cls
         else:
             return False
     except ImportError:
@@ -62,6 +68,16 @@ def build_transport(
 
         return SerialTransport(account_id=account_id, print_prefix=print_prefix,
                                **dict(config.get("serial") or {}))
+    if name == "pipe":
+        from .pipe_transport import PipeTransport
+
+        return PipeTransport(account_id=account_id, print_prefix=print_prefix,
+                             **dict(config.get("pipe") or {}))
+    if name == "copydata":
+        from .copydata_transport import CopyDataTransport
+
+        return CopyDataTransport(account_id=account_id, print_prefix=print_prefix,
+                                 **dict(config.get("copydata") or {}))
     if name == "shm":
         return _build_shm(config, account_id, print_prefix)
     raise ValueError(

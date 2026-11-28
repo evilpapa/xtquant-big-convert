@@ -22,6 +22,15 @@ BIGQMT_ACCOUNT_ID = "YOUR_ACCOUNT_ID"
 BIGQMT_ACCOUNT_TYPE = "STOCK"
 
 BIGQMT_CONFIG = {
+    # Windows 本机命名管道，搭配独立 bigqmt-pipe-bridge（仅模拟或获准）：
+    # "transport": "pipe",
+    # "pipe": {"name": "qmt_bridge"},
+    # Windows 窗口消息（WM_COPYDATA），搭配独立 bigqmt-copydata-bridge（仅模拟或获准）：
+    # "transport": "copydata",
+    # "copydata": {"window_name": "qmt_bridge"},
+    # Windows 同一登录会话内的本机 IPC；仅在模拟或获准环境中启用。
+    # "transport": "shm",
+    # "shm": {"namespace": "qmt_shm"},
     # 这台机器上有没有 VK 可用。默认 True，仅对非 VK 传输生效。
     #
     # 设 False 时整个 VK 块不再下发给策略，于是委托身份库、异步下载任务、

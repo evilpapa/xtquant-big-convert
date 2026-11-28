@@ -138,7 +138,7 @@ def build_app(context_info=None, config=None):
         # native xtdata SDK 调用本地行情服务，可通过配置关闭。
         _rpc_cfg = dict(config.get("rpc") or {})
         _native_enabled = _rpc_cfg.get("native_xtdata_enabled")
-        if str(_rpc_cfg.get("transport") or "").lower() == "serial":
+        if str(_rpc_cfg.get("transport") or "").lower() in ("serial", "pipe", "shm", "copydata"):
             _native_enabled = False
         elif _native_enabled is None:
             _native_enabled = True

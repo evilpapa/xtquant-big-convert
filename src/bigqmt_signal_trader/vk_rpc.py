@@ -1433,7 +1433,7 @@ class BigQmtRpcHandlers:
         连接超时），此时只报暴露情况，verdict 是 `exposed_untested`。
         """
         flag = (params or {}).get("download_probe", True)
-        dial = (getattr(getattr(self, "rpc_transport", None), "name", None) != "serial"
+        dial = (getattr(getattr(self, "rpc_transport", None), "name", None) not in ("serial", "pipe", "shm", "copydata")
                 and str(flag).strip().lower() not in ("0", "false", "no", "off"))
         try:
             return self.market_data.probe_download_channels(dial=dial)
@@ -2665,7 +2665,7 @@ class BigQmtRpcHandlers:
         """本处理器优先向 VK 发布执行事件，其次通过行情推送通道发布，
         最后 None。"""
         transport = getattr(self, "rpc_transport", None)
-        if getattr(transport, "name", None) == "serial":
+        if getattr(transport, "name", None) in ("serial", "pipe", "copydata"):
             return transport if getattr(self, "exec_events_enabled", True) else None
         vk_client = self._identity_vk()
         if vk_client is not None:
@@ -4198,6 +4198,11 @@ class VkPubSubRpcService:
         return received_at + timeout - margin
 
     def _expired_before_dispatch(self, request, method):
+        # 同机单调时钟把 adjust 与后续排队的时间都计入客户端期限。
+        deadline = request.get("_shm_deadline")
+        if deadline is not None and getattr(getattr(self, "_transport", None), "name", None) == "shm":
+            if _monotonic() >= deadline:
+                return max(0.0, time.time() - request["_received_at"])
         if self._canonical(method) in self._EXPIRY_EXEMPT_METHODS:
             return None
         deadline = self._client_deadline(request)
@@ -4364,12 +4369,9 @@ class VkPubSubRpcService:
         except Exception:
             # 响应发布失败（例如 VK 故障）不能传播到 adjust 线程——QMT 在回调抛
             # 异常时会停掉策略。请求已经执行；客户端只会看到超时。
-            import traceback as _tb
             try:
                 from .logging_setup import get_logger
-                get_logger("rpc").error(
-                    "发布应答失败 method=%s：\n%s", method, _tb.format_exc()
-                )
+                get_logger("rpc").exception("发布应答失败 method=%s", method)
             except Exception:
                 pass
         _t_pub1 = time.perf_counter()

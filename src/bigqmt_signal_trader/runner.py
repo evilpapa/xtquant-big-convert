@@ -1,11 +1,8 @@
 """大 QMT 运行文件可复用的转发入口。"""
 
 import datetime as _dt
-import traceback
 
 from .logging_setup import get_logger
-
-_log = get_logger("runner")
 
 _APP = None
 
@@ -34,7 +31,7 @@ def tick_app(context_info, now=None):
     try:
         return _APP.tick(now)
     except Exception:
-        _log.error("策略周期任务 tick_app 执行失败：\n%s", traceback.format_exc())
+        get_logger("runner").exception("策略周期任务 tick_app 执行失败")
         return None
 
 
@@ -47,7 +44,7 @@ def forward_order_event(event):
     try:
         return _APP.on_order_event(event)
     except Exception:
-        _log.error("转发委托回报失败：\n%s", traceback.format_exc())
+        get_logger("runner").exception("转发委托回报失败")
         return None
 
 
@@ -57,7 +54,7 @@ def forward_trade_event(event):
     try:
         return _APP.on_trade_event(event)
     except Exception:
-        _log.error("转发成交回报失败：\n%s", traceback.format_exc())
+        get_logger("runner").exception("转发成交回报失败")
         return None
 
 
@@ -67,5 +64,5 @@ def sync_positions_app(reason="manual"):
     try:
         return _APP.sync_positions(reason)
     except Exception:
-        _log.error("同步持仓失败：\n%s", traceback.format_exc())
+        get_logger("runner").exception("同步持仓失败")
         return None

@@ -440,20 +440,23 @@ def _resolve_runtime_name(name):
 def _detect_account_id(context_info=None):
     if _account_id:
         return _account_id
-    try:
-        import importlib
-        import bigqmt_signal_trader_qmt_config as _local_config
+    if _transport_name(_config) not in _NO_RUNTIME_RELOAD_TRANSPORTS:
+        try:
+            import importlib
+            import bigqmt_signal_trader_qmt_config as _local_config
 
-        _local_config = importlib.reload(_local_config)
-        value = str(
-            getattr(_local_config, "BIGQMT_ACCOUNT_ID", "")
-            or _vk_settings.local_vk_config(_local_config).get("account_id")
-            or ""
-        )
-        if value:
-            return value
-    except Exception:
-        pass
+            _local_config = importlib.reload(_local_config)
+            value = str(
+                getattr(_local_config, "BIGQMT_ACCOUNT_ID", "")
+                or _vk_settings.local_vk_config(_local_config).get("account_id")
+                or ""
+            )
+            if value:
+                return value
+        except Exception:
+            pass
+    elif account_id := (_config.get("account_id") or (_config.get("rpc") or {}).get("account_id")):
+        return str(account_id)
     for name in ("account", "account_id", "accountID"):
         value = _resolve_runtime_name(name)
         if value:
@@ -520,9 +523,26 @@ def capture_qmt_injected_funcs(namespace):
     return captured
 
 
+_VK_TRANSPORT_NAMES = ("valkey", "", "default")
+_LOCAL_IPC_TRANSPORTS = ("serial", "pipe", "shm", "copydata")
+_BRIDGED_LOCAL_TRANSPORTS = ("serial", "pipe", "copydata")
+_NO_RUNTIME_RELOAD_TRANSPORTS = ("pipe", "shm", "copydata")
+
+
+def _transport_name(config):
+    return str((config.get("rpc") or {}).get("transport") or "valkey").lower()
+
+
+def _use_qmt_stdout():
+    from bigqmt_signal_trader.logging_setup import use_qmt_stdout
+
+    use_qmt_stdout()
+
+
 def _build_config():
     config = dict(_config)
-    if str((config.get("rpc") or {}).get("transport") or "").lower() == "serial":
+    transport_name = _transport_name(config)
+    if transport_name in _LOCAL_IPC_TRANSPORTS:
         config["valkey"] = {}
         config["schedule_adjust"] = True
         for key in ("signal_source_type", "source_type", "state_store_type", "position_sync_type"):
@@ -530,6 +550,8 @@ def _build_config():
                 config[key] = ""
         for key in ("download_jobs", "full_tick_cache"):
             config[key] = dict(config.get(key) or {}, enabled=False)
+    if transport_name == "shm":
+        config["exec_events"] = dict(config.get("exec_events") or {}, enabled=False)
     if _account_id:
         config["account_id"] = _account_id
     qmt_api = dict(config.get("qmt_api") or {})
@@ -561,15 +583,12 @@ def _config_bool(value, default=False):
 def _native_xtdata_enabled(rpc_config):
     """Resolve whether the RPC-side market provider may use native xtdata."""
     rpc_config = dict(rpc_config or {})
-    if str(rpc_config.get("transport") or "").lower() == "serial":
+    if str(rpc_config.get("transport") or "").lower() in _LOCAL_IPC_TRANSPORTS:
         return False
     enabled = rpc_config.get("native_xtdata_enabled")
     if enabled is None:
         enabled = True
     return bool(enabled)
-
-
-_VK_TRANSPORT_NAMES = ("valkey", "", "default")
 
 
 def _is_vk_transport(transport_name):
@@ -602,7 +621,7 @@ def _resolve_background_threads(transport_name, configured):
     Ask the transport class whether it implements draining.
     """
     normalized = str(transport_name or "valkey").lower()
-    if normalized == "serial":
+    if normalized in _LOCAL_IPC_TRANSPORTS:
         return False
     if _is_vk_transport(normalized):
         return bool(configured)
@@ -641,9 +660,10 @@ def _build_quote_subscription_service(context_info, config, transport_name, acco
         _qsm = _load_bridge_module("bigqmt_signal_trader.quote_subscription_manager")
     else:
         from bigqmt_signal_trader import quote_subscription_manager as _qsm
-    import importlib
+    if transport_name not in _NO_RUNTIME_RELOAD_TRANSPORTS:
+        import importlib
 
-    _qsm = importlib.reload(_qsm)
+        _qsm = importlib.reload(_qsm)
     heartbeat_timeout = float(quote_config.get("heartbeat_timeout_seconds", 30.0))
     return _qsm.build_quote_subscription_service(
         context_info,
@@ -662,8 +682,12 @@ def _build_rpc_service(context_info, app, config):
     enabled = _config_bool(config.get("enable_rpc"), False) or _config_bool(rpc_config.get("enabled"), False)
     if not enabled:
         return None
-    transport_name = str(rpc_config.get("transport") or "valkey").lower()
-    vk_transport = transport_name in ("valkey", "", "default")
+    transport_name = _transport_name(config)
+    vk_transport = _is_vk_transport(transport_name)
+    shm = transport_name == "shm"
+    no_runtime_reload = transport_name in _NO_RUNTIME_RELOAD_TRANSPORTS
+    if no_runtime_reload:
+        _use_qmt_stdout()
 
     import importlib
     if _load_bridge_module is not None:
@@ -679,20 +703,20 @@ def _build_rpc_service(context_info, app, config):
         BigQmtRpcHandlers = _vk_rpc.BigQmtRpcHandlers
         VkPubSubRpcService = _vk_rpc.VkPubSubRpcService
 
-    # QMT 重跑策略时会沿用进程内的模块缓存，重载适配器以应用已同步的修改。
-    _market_bigqmt = importlib.reload(_market_bigqmt)
-    _position_bigqmt = importlib.reload(_position_bigqmt)
-    # 一并重载延迟导入的模块，使其修改也能在策略重跑时生效。
-    for _mod_name in (
-        "bigqmt_signal_trader.full_tick_cache",
-        "bigqmt_signal_trader.download_jobs",
-        "bigqmt_signal_trader.order_remarks",
-        "bigqmt_signal_trader.exec_events",
-    ):
-        try:
-            importlib.reload(importlib.import_module(_mod_name))
-        except Exception as _reload_err:
-            print("[bigqmt_rpc] 重新加载 %s 失败：%s" % (_mod_name, _reload_err))
+    # Pipe/SHM 使用已部署的模块，运行期不从磁盘重载。
+    if not no_runtime_reload:
+        _market_bigqmt = importlib.reload(_market_bigqmt)
+        _position_bigqmt = importlib.reload(_position_bigqmt)
+        for _mod_name in (
+            "bigqmt_signal_trader.full_tick_cache",
+            "bigqmt_signal_trader.download_jobs",
+            "bigqmt_signal_trader.order_remarks",
+            "bigqmt_signal_trader.exec_events",
+        ):
+            try:
+                importlib.reload(importlib.import_module(_mod_name))
+            except Exception as _reload_err:
+                print("[bigqmt_rpc] 重新加载 %s 失败：%s" % (_mod_name, _reload_err))
     # 复用 RPC 已加载的回报模块，避免在 C++ 回调中导入。
     _exec_events = _vk_rpc._exec_events
     BigQmtMarketDataProvider = _market_bigqmt.BigQmtMarketDataProvider
@@ -735,9 +759,9 @@ def _build_rpc_service(context_info, app, config):
         transport = build_transport(transport_name, rpc_config, account_id=account_id)
     allow_order_methods = _config_bool(rpc_config.get("allow_order_methods"), False)
     global _quote_subscription_service
-    _quote_subscription_service = _build_quote_subscription_service(
+    _quote_subscription_service = None if shm else _build_quote_subscription_service(
         context_info, config, transport_name, account_id, vk_client,
-        transport if transport_name == "serial" else None,
+        transport if transport_name in _BRIDGED_LOCAL_TRANSPORTS else None,
     )
     quote_manager = (
         _quote_subscription_service[0] if _quote_subscription_service is not None else None
@@ -760,7 +784,7 @@ def _build_rpc_service(context_info, app, config):
         allowed_methods=rpc_config.get("allowed_methods"),
         qmt_api=qmt_api,
         # 默认由后续 adjust 确认委托。仅在无法通过 adjust 重试确认时，才需要同步确认。
-        settle_orders_inline=(transport_name != "serial"
+        settle_orders_inline=(transport_name not in _LOCAL_IPC_TRANSPORTS
                               and _config_bool(rpc_config.get("settle_orders_inline"), False)),
         order_settle_timeout_seconds=float(rpc_config.get("order_settle_timeout_seconds", 3.0)),
         quote_subscription_manager=quote_manager,
@@ -774,11 +798,11 @@ def _build_rpc_service(context_info, app, config):
     handlers.order_identity_vk_client = _store_vk
     handlers.order_remark_vk_client   = _exec_events.bounded_identity_client(_store_vk)
     handlers.order_watch_table            = _order_watch_table      # 确认委托时优先查回调写入的跟踪表（#164）。
-    handlers.reload_hook                  = request_reload # 通过钩子将 reload_deployment 交给策略模块处理。
+    handlers.reload_hook                  = None if no_runtime_reload else request_reload
     handlers.reload_status_hook           = reload_status
-    handlers.exec_event_publisher         = _publish_synthesized_cancel_error  # QMT 拒绝撤单时没有回调，确认路径通过此钩子发布 cancel_error（#389）。
-    handlers.exec_events_enabled          = _config_bool((config.get("exec_events") or {}).get("enabled"), True)
-    handlers.download_jobs_enabled        = _config_bool((config.get("download_jobs") or {}).get("enabled"), False)
+    handlers.exec_event_publisher         = None if shm else _publish_synthesized_cancel_error
+    handlers.exec_events_enabled          = not shm and _config_bool((config.get("exec_events") or {}).get("enabled"), True)
+    handlers.download_jobs_enabled        = not no_runtime_reload and _config_bool((config.get("download_jobs") or {}).get("enabled"), False)
     handlers.download_job_chunk_size      = int((config.get("download_jobs") or {}).get("chunk_size") or 10)
     handlers.download_job_ttl_seconds     = int((config.get("download_jobs") or {}).get("job_ttl_seconds") or 3600)
     process_in_listener                   = _config_bool(rpc_config.get("process_in_listener"), True)
@@ -810,10 +834,10 @@ def _build_rpc_service(context_info, app, config):
         debug_log_limit=int(rpc_config.get("debug_log_limit", 5)),
         transport=transport,
         # adjust 处理队列时，可把大查询移交给工作线程（#351）。
-        heavy_offload=_config_bool(rpc_config.get("heavy_offload"), True),
+        heavy_offload=not no_runtime_reload and _config_bool(rpc_config.get("heavy_offload"), True),
         heavy_codes_threshold=int(rpc_config.get("heavy_codes_threshold", 20) or 20),
     )
-    if transport_name == "serial":
+    if transport_name in _LOCAL_IPC_TRANSPORTS:
         return service
     # BIGQMT_ACCOUNT_TYPE_MAP 含多个账号时，每个账号创建一个 RPC 服务，共用处理器。
     try:
@@ -1151,6 +1175,8 @@ def _apply_gil_tuning():
 
 
 def init(ContextInfo):
+    if _transport_name(_config) in _NO_RUNTIME_RELOAD_TRANSPORTS:
+        _use_qmt_stdout()
     detected_account_id = _detect_account_id(ContextInfo)
     if detected_account_id and not _account_id:
         set_account_id(detected_account_id)
@@ -1394,7 +1420,10 @@ def _context_warmup_loop(context_info):
 
 def _start_context_warmup(context_info, config):
     """Kick the warmup onto a daemon thread. Never blocks init."""
-    flag = dict(config.get("rpc") or {}).get("warm_context_data", True)
+    rpc = config.get("rpc") or {}
+    if str(rpc.get("transport") or "").lower() in _NO_RUNTIME_RELOAD_TRANSPORTS:
+        return
+    flag = rpc.get("warm_context_data", True)
     if isinstance(flag, str):
         flag = flag.strip().lower() not in ("0", "false", "no", "off", "")
     if not flag:
@@ -1464,13 +1493,16 @@ def _adjust_phase(name, fn, *args):
     t0 = time.perf_counter()
     try:
         return fn(*args)
-    except Exception:
-        import traceback as _tb
-        try:
-            from bigqmt_signal_trader.logging_setup import get_logger
-            get_logger("adjust").error("adjust 阶段 %s 执行失败：\n%s", name, _tb.format_exc())
-        except Exception:
-            pass
+    except Exception as exc:
+        if _transport_name(_config) in _NO_RUNTIME_RELOAD_TRANSPORTS:
+            # traceback 的源码行查找可能访问磁盘。
+            print("[bigqmt_signal_trader] adjust %s 失败：%s: %s" % (name, type(exc).__name__, exc))
+        else:
+            try:
+                from bigqmt_signal_trader.logging_setup import get_logger
+                get_logger("adjust").error("adjust 阶段 %s 执行失败：\n%s", name, _traceback.format_exc())
+            except Exception:
+                pass
         return None
     finally:
         ms = (time.perf_counter() - t0) * 1000.0
@@ -1641,7 +1673,7 @@ def _event_instrument_name(context_info, stock_code):
 
 def _push_channel_sink():
     transport = getattr(_rpc_service, "_transport", None)
-    if getattr(transport, "name", None) == "serial":
+    if getattr(transport, "name", None) in _BRIDGED_LOCAL_TRANSPORTS:
         return transport
     if _quote_subscription_service is None:
         return None
@@ -1771,7 +1803,7 @@ def _exec_event_vk(config):
     explicitly disabled; omitted flags retain the legacy enabled behavior.
     """
     global _exec_event_vk_client
-    if str((config.get("rpc") or {}).get("transport") or "").lower() == "serial":
+    if _transport_name(config) in _LOCAL_IPC_TRANSPORTS:
         return None
     existing = getattr(_rpc_service, "vk", None)
     if existing is not None:

@@ -36,8 +36,10 @@ def open_serial(port, baudrate):
 class SerialFrames:
     """调用方管理串口，每帧由 CRC32、制表符、UTF-8 JSON 和换行符组成。"""
 
-    def __init__(self, port, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
+    def __init__(self, port, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES, *, link_label="串口", logger=_log):
         self.port = port
+        self.link_label = link_label
+        self._logger = logger
         self.max_frame_bytes = int(max_frame_bytes)
         if self.max_frame_bytes < 1024:
             raise ValueError("max_frame_bytes must be at least 1024")
@@ -51,7 +53,7 @@ class SerialFrames:
     def _bad_frame(self, reason):
         self._bad_frames += 1
         if self._bad_frames <= 3 or self._bad_frames % 100 == 0:
-            _log.warning("已丢弃无效串口帧：%s（累计 %d 帧）", reason, self._bad_frames)
+            self._logger.warning("已丢弃无效%s帧：%s（累计 %d 帧）", self.link_label, reason, self._bad_frames)
 
     def _accept_chunk(self, chunk):
         parts = chunk.split(b"\n")
@@ -127,6 +129,8 @@ class SerialFrames:
 
 class SerialTransport(RpcTransport):
     name = "serial"
+    link_label = "串口"
+    _logger = _log
 
     def __init__(self, account_id="", print_prefix="[bigqmt_rpc]", port="COM10",
                  baudrate=DEFAULT_BAUDRATE, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES):
@@ -146,19 +150,23 @@ class SerialTransport(RpcTransport):
         self._write_timeouts = 0
 
     def send_request(self, request, timeout_seconds):
-        raise TransportError("serial is server-side only; use a VK client via the bridge")
+        raise TransportError("%s is QMT-side only; use a VK client via the bridge" % self.name)
+
+    def _open_port(self):
+        return open_serial(self.port, self.baudrate)
 
     def start_receiving(self, on_request, background_threads=False):
         if background_threads:
-            raise ValueError("serial RPC handlers must be drained on the strategy thread")
+            raise ValueError("%s RPC handlers must be drained on the strategy thread" % self.name)
         if self._io_thread is not None:
-            raise RuntimeError("build a new SerialTransport to reopen the port")
-        port = open_serial(self.port, self.baudrate)
+            raise RuntimeError("build a new %s transport to reopen the link" % self.name)
+        port = self._open_port()
         try:
-            wire = SerialFrames(port, self.max_frame_bytes)
+            wire = SerialFrames(port, self.max_frame_bytes, link_label=self.link_label,
+                                logger=self._logger)
             super(SerialTransport, self).start_receiving(on_request)
             self._io_thread = threading.Thread(
-                target=self._io_loop, args=(wire,), name="bigqmt-serial-io", daemon=True)
+                target=self._io_loop, args=(wire,), name="bigqmt-%s-io" % self.name, daemon=True)
             self._io_thread.start()
         except Exception:
             super(SerialTransport, self).stop()
@@ -200,9 +208,11 @@ class SerialTransport(RpcTransport):
                     self._link_alive()
                 if not frames and not sent:
                     self._stopped.wait(0.002)
-        except Exception:
+        except Exception as exc:
             self._failed = True
-            _log.exception("串口 %s 通信失败，请检查端口后重启策略", self.port)
+            # Traceback source lookup can touch disk in the QMT process.
+            self._logger.error("%s %s 通信失败：%s；请检查链路后重启策略",
+                       self.link_label, self.port, exc)
         finally:
             wire.port.close()
 
@@ -221,8 +231,8 @@ class SerialTransport(RpcTransport):
                 error = {key: response.get(key) for key in (
                     "schema_version", "request_id", "account_id", "method")}
                 error.update(ok=False, data=None, error=(
-                    "Response exceeds serial frame limit or failed encoding; "
-                    "the RPC was already handled"))
+                    "Response exceeds %s frame limit or failed encoding; "
+                    "the RPC was already handled" % self.name))
                 wire.begin({"type": "response", "response": error, "session": self._session})
             else:
                 self._note_drop("事件超过帧大小上限或无法编码")
@@ -243,30 +253,30 @@ class SerialTransport(RpcTransport):
     def _note_drop(self, reason):
         self._drops += 1
         if self._drops <= 3 or self._drops % 100 == 0:
-            _log.warning("串口 %s：%s（累计丢弃 %d 条消息）", self.port, reason, self._drops)
+            self._logger.warning("%s %s：%s（累计丢弃 %d 条消息）", self.link_label, self.port, reason, self._drops)
 
     def _write_timeout(self):
         self._write_timeouts += 1
         if (self._write_timeouts == _STALL_WRITE_TIMEOUTS
                 or (self._write_timeouts > _STALL_WRITE_TIMEOUTS
                     and self._write_timeouts % _STALL_REPORT_EVERY == 0)):
-            _log.warning(
-                "串口 %s 连续写超时 %d 次且未收到对端数据：桥接进程可能已停止或未读取串口，"
+            self._logger.warning(
+                "%s %s 连续写超时 %d 次且未收到对端数据：桥接进程可能已停止或未读取链路，"
                 "请检查桥接日志并重启桥接；已转发的请求不会重放，重启前先查委托和成交",
-                self.port, self._write_timeouts)
+                self.link_label, self.port, self._write_timeouts)
 
     def _link_alive(self):
         self._write_timeouts = 0
 
     def _enqueue(self, buffer, frame):
         if self._failed or not self._running:
-            self._note_drop("串口连接已断开")
-            raise TransportError("serial link is down")
+            self._note_drop("连接已断开")
+            raise TransportError("%s link is down" % self.name)
         try:
             buffer.put_nowait(frame)
         except queue.Full:
             self._note_drop("发送队列已满")
-            raise TransportError("串口发送队列已满")
+            raise TransportError("%s发送队列已满" % self.link_label)
 
     def send_response(self, request, response):
         self._enqueue(self._replies, {"type": "response", "response": response})
@@ -286,4 +296,4 @@ class SerialTransport(RpcTransport):
         if thread is not None and thread is not threading.current_thread():
             thread.join(1.0)
             if thread.is_alive():
-                _log.warning("串口 %s 的收发线程仍在退出", self.port)
+                self._logger.warning("%s %s 的收发线程仍在退出", self.link_label, self.port)

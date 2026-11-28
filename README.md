@@ -1,12 +1,10 @@
 # xtquant_big_convert[valkey, serial]
 
-大 QMT 运行环境里的 RPC 桥接包：把大 QMT 内置 Python（行情查询、交易、持仓）封装成可远程调用的服务，并兼容一组 MiniQMT（xtquant）方法名，使外部程序无需 XtQuantServer 权限即可驱动大 QMT。
-
 本项目是个人学习与技术研究的产物，不是面向公众的产品。
 
 ## 项目状态
 
-**券商已禁止本项目原有的远程传输方案。** VK 迁移不改变这一限制。仓库中的相关代码与文档仅供历史研究。
+**券商 QMT 环境是禁止使用文件读写和 SOCKET 连接。** 本项目不改变这一限制。仓库中的相关代码与文档仅供研究。请在模拟或明确获准的环境中使用。
 
 ## 免责声明
 
@@ -39,7 +37,7 @@ pip install ".[valkey]"
 - [使用指南](docs/USER_GUIDE.md)：功能、配置与排错
 - [部署快速开始](docs/DEPLOY_QUICKSTART.md)；
 - [RPC API 参考](docs/RPC_API_REFERENCE.md)；
-- [传输层](docs/RPC_TRANSPORTS.md)
+- [传输层](docs/RPC_TRANSPORTS.md)：串口、Windows 本机命名管道、窗口消息（WM_COPYDATA）与共享内存配置
 - [策略转换工具](docs/MiniQMT_2_BigQMT-Skill/README.md)；
 - [延迟报告](docs/LATENCY_REPORT.md)
 - 实现细节和行为契约见 `src/` 与 `tests/`。

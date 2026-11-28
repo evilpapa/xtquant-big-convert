@@ -264,6 +264,8 @@ def _build_quote_push_channel(client):
     from .quote_push_channel import VkQuotePushChannel
 
     transport_name = str(getattr(client, "transport_name", "valkey") or "valkey").lower()
+    if transport_name == "shm":
+        raise RuntimeError("SHM does not support quote push; use get_full_tick polling")
     if (transport_name not in ("valkey", "", "default")
             and not getattr(client, "_vk_explicit", True)):
         raise RuntimeError(
@@ -1307,6 +1309,15 @@ class BigQmtRpcClient:
         merged_vk_config = dict(module_vk_config)
         merged_vk_config.update(local_vk_config)
         merged_vk_config.update(vk_config)
+        # 默认使用 VK RPC，其余传输交给传输工厂。
+        self.transport_name = str(
+            transport
+            or vk_config.get("transport")
+            or local_env.get("BIGQMT_RPC_TRANSPORT")
+            or module_vk_config.get("transport")
+            or os.environ.get("BIGQMT_RPC_TRANSPORT")
+            or "valkey"
+        ).lower()
         self.account_id = str(
             account_id
             or vk_config.get("account_id")
@@ -1335,7 +1346,7 @@ class BigQmtRpcClient:
             or os.environ.get("BIGQMT_VK_PASSWORD")
             or os.environ.get("BIGQMT_VK_URL")
         )
-        self.vk_config = {
+        self.vk_config = {} if self.transport_name == "shm" else {
             "host": merged_vk_config.get("host") or os.environ.get("BIGQMT_VK_HOST", "127.0.0.1"),
             "port": int(merged_vk_config.get("port") or os.environ.get("BIGQMT_VK_PORT") or 6379),
             "db": int(db),
@@ -1419,16 +1430,12 @@ class BigQmtRpcClient:
                 or "auto"  # 有 pyarrow 时用 Parquet，否则用 pickle
             ),
         }
-        # 默认使用 call_vk_rpc，其余传输交给传输工厂。
-        self.transport_name = str(
-            transport
-            or vk_config.get("transport")
-            or local_env.get("BIGQMT_RPC_TRANSPORT")
-            or module_vk_config.get("transport")
-            or os.environ.get("BIGQMT_RPC_TRANSPORT")
-            or "valkey"
-        ).lower()
         self._transport_instance = None  # 由 _transport() 按需创建
+        if self.transport_name == "shm":
+            self._shm_config = dict(module_vk_config.get("shm") or {})
+            self._shm_config.update(vk_config.get("shm") or {})
+            self._vk_explicit = False
+            self.full_tick_cache_config["enabled"] = False
         # FormulaServer（默认 58600 端口）直读历史和参考数据，失败时回退到 RPC。
         # 按字段合并模块配置、本地 .env 和显式参数（#289）。
         formula_config = dict(client_config.get("formula_server_config") or {})
@@ -1441,6 +1448,8 @@ class BigQmtRpcClient:
         self._formula_router_instance = None  # 由 _formula_router() 按需创建
 
     def _vk(self):
+        if self.transport_name == "shm":
+            raise RuntimeError("VK is not available in SHM mode")
         if self.vk_client is None:
             client_class = vk_client_class()
             cfg = dict(self.vk_config)
@@ -1463,7 +1472,7 @@ class BigQmtRpcClient:
 
             self._transport_instance = build_transport(
                 self.transport_name,
-                {},
+                {"shm": self._shm_config} if self.transport_name == "shm" else {},
                 account_id=self.account_id,
                 print_prefix="[bigqmt_client]",
             )
@@ -1522,7 +1531,7 @@ class BigQmtRpcClient:
         # use_formula=False 用于必须拿到最新数据的调用（如 subscribe_quote 的
         # 盘中形成 bar 轮询）——FormulaServer 的快照可能滞后数小时（实测盘中
         # 11:30 后冻结），形成 bar 只能走 RPC 桥读 QMT 实时数据。
-        router = self._formula_router() if use_formula else None
+        router = self._formula_router() if use_formula and self.transport_name != "shm" else None
         # 冷却期（公式数据刚被检出滞后）只对 get_market_data_ex 跳过直连——
         # 其他方法是静态参考数据，不受时间序列滞后影响，照常走快速路径。
         skip_formula = (

@@ -59,7 +59,7 @@ class RpcHandlerNativeGateTest(unittest.TestCase):
     def test_explicit_value_wins_over_transport_default(self):
         import bigqmt_signal_trader_strategy as strategy
 
-        self.assertTrue(strategy._native_xtdata_enabled(
+        self.assertFalse(strategy._native_xtdata_enabled(
             {"transport": "shm", "native_xtdata_enabled": True}))
         self.assertFalse(strategy._native_xtdata_enabled(
             {"transport": "valkey", "native_xtdata_enabled": False}))

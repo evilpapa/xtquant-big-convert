@@ -29,6 +29,41 @@ class TransportTimeout(TimeoutError):
     """A request did not complete within the timeout window."""
 
 
+class LocalIpcChannel(object):
+    """Pluggable local IPC byte channel with unified non-blocking poll() and send().
+
+    Concrete local transports (WM_COPYDATA, Windows named pipe, serial/com0com)
+    expose ``poll()`` and ``send()`` alongside the byte-stream hooks
+    (``in_waiting``, ``read``, ``write``, ``close``) consumed by
+    :class:`~bigqmt_signal_trader.transports.serial_transport.SerialFrames`.
+    """
+
+    @property
+    def in_waiting(self):
+        raise NotImplementedError
+
+    def read(self, size):
+        raise NotImplementedError
+
+    def write(self, data):
+        raise NotImplementedError
+
+    def poll(self, max_bytes=65536):
+        """Non-blocking read of up to ``max_bytes`` currently buffered bytes."""
+        waiting = self.in_waiting
+        if not waiting:
+            return b""
+        return self.read(min(waiting, int(max_bytes)))
+
+    def send(self, data):
+        """Write ``data`` to the local IPC peer and return bytes written."""
+        return self.write(data)
+
+    def close(self):
+        """Release underlying OS handles/windows."""
+        raise NotImplementedError
+
+
 class RpcTransport(object):
     """Abstract request/response transport. Concrete implementations own the wire.
 

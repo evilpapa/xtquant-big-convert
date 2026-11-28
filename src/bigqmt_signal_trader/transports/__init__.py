@@ -10,7 +10,7 @@ Select a transport with ``rpc.transport`` in the config (default ``"valkey"``).
 See :mod:`~bigqmt_signal_trader.transports.factory`.
 """
 
-from .base import RpcTransport, TransportError, TransportTimeout
+from .base import LocalIpcChannel, RpcTransport, TransportError, TransportTimeout
 from .factory import build_transport
 
-__all__ = ["RpcTransport", "TransportError", "TransportTimeout", "build_transport"]
+__all__ = ["LocalIpcChannel", "RpcTransport", "TransportError", "TransportTimeout", "build_transport"]

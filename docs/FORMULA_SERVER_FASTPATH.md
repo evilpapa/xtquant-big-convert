@@ -1,171 +1,84 @@
 # FormulaServer 直连快速路径（58600）
 
-## 这是什么
+## 概述与协议
 
-大 QMT 的 `58600` 端口是 **FormulaServer** —— QMT 内置的 C++ 行情/参考数据服务。端口取自
-QMT 安装目录的 `config/formulaserver/formulaserver.ini`：
+大 QMT 的 `58600` 端口是内置 C++ 行情/参考数据服务 **FormulaServer**（地址见 `<QMT>/config/formulaserver/formulaserver.ini` 的 `[server_formula] address = 0.0.0.0:58600`），对应官方客户端为 `bin.x64/Lib/site-packages/qmt_api`。
 
-```ini
-[server_formula]
-address = 0.0.0.0:58600
-```
+协议为 **BSON over TCP**（见 `qmt_api/net/RPCBase.py`）：
 
-QMT 自带 Python 里就有它的官方客户端：`bin.x64/Lib/site-packages/qmt_api`。协议是
-**BSON over TCP**，帧格式在 `qmt_api/net/RPCBase.py`：
-
-```
+```text
 | packLen(uint32 BE) | seq(uint32 BE) | cmd(uint16 BE) | tag(uint16 BE) | BSON body |
 ```
 
-`cmd = 3`（`NET_CMD_RPC`），body 是 `{"func": <名字>, "params": {...}}`，
-响应 `{"status": 0, "params": {...}}`，`status != 0` 时 `params` 里带 `ErrorID`/`ErrorMsg`。
-`tag & 7` 标记 zlib 压缩，`tag >> 8` 的低 4 位是 seq 的高位。
+- `cmd = 3`（`NET_CMD_RPC`），请求体 `{"func": <名>, "params": {...}}`，响应 `{"status": 0, "params": {...}}`（非 0 时含 `ErrorID` / `ErrorMsg`）。
+- `tag & 7` 标记 zlib 压缩，`tag >> 8` 的低 4 位为 `seq` 高位。
+- **性能**：绕开策略进程与 GIL，实测裸往返 **p50 0.07ms**、穿过完整 `BigQmtRpcClient.call` 为 **0.145ms**（对照迁移 VK 前 Redis RPC ~13ms，快约 90 倍）。
 
-## 为什么值得接
+## 能力边界与路由清单
 
-原来所有只读请求都要绕一整圈：
+FormulaServer **仅提供行情/参考数据**，所有账户、持仓、委托、成交、下单和五档盘口（`getAsset` / `getPositions` / `getAccountDetail` / `passorder` / `getFullTick` / `getQuote`）均返回 `ErrorID 200005 未找到该服务`，仍须走 RPC 桥。
 
+### 已接入方法（8 个）
 
+| 客户端方法 | FormulaServer func |
+|-----------|--------------------|
+| `get_last_volume` / `get_total_share` | `getLastVolume` / `getTotalShare` |
+| `get_contract_multiplier` / `get_main_contract` | `getContractMultiplier` / `getMainContract` |
+| `get_weight_in_index` / `get_stock_list_in_sector` | `getWeightInIndex` / `getStockListInSector` |
+| `get_market_data_ex` / `get_market_data` | `getMarketData`（仅 `dividend_type="none"` 或空） |
 
-直连 FormulaServer 完全绕开策略进程：
+### 刻意不走直连的方法
 
-| 路径 | p50 |
-|------|-----|
-| 迁移 VK 前的 Redis RPC | ~13ms |
-| **FormulaServer 直连** | **0.07ms**，无 GIL 竞争 |
+- **`get_trading_dates`**：FormulaServer 要求传股票代码（传市场代码如 `SH` 静默返空），与本桥按市场查询语义不符。
+- **`get_divid_factors` / `get_risk_free_rate`**：参数语义不同（区间 vs 单日、`index=-1` vs `timetag`）。
+- **复权 K 线**：实测 `dividendType` 传 `front` 与 `none` 结果相同（复权未生效），非 `"none"` 一律回退 RPC。
+- **`get_instrument` / `get_instrument_detail`（0.3.61 起移除）**：国金 build 抽样 300 只显示 43% `TotalVolume=0`、32% `OpenDate=0`、22% 陈旧（另注：其字段名有官方拼写 `FloatVolumn`/`TotalVolumn`）。改为走 RPC（#405 起在同机存在已登录 miniQMT 且 `native_xtdata_enabled` 开启时优先走 native SDK，再回落 `ContextInfo`）。
 
-穿过完整客户端栈（`BigQmtRpcClient.call`）实测 **0.145ms/次**，比当时的 RPC 路径快约 90 倍。
+### 待盘中验证项
 
-## 能力边界
-
-**FormulaServer 只有行情/参考数据。** 实测所有账户/交易类方法一律返回
-`ErrorID 200005 未找到该服务`：
-
-```
-getAsset / getPositions / getAccountDetail / passorder   -> 200005
-getFullTick / getQuote                                   -> 200005
-```
-
-所以它是**只读快速路径，不是 RPC 桥的替代品**。交易、账户查询、持仓、委托、成交、
-五档盘口全部仍然走 RPC。
-
-### 已接入的方法（8 个）
-
-| 我们的方法 | FormulaServer func |
-|---|---|
-| `get_last_volume` | `getLastVolume` |
-| `get_total_share` | `getTotalShare` |
-| `get_contract_multiplier` | `getContractMultiplier` |
-| `get_main_contract` | `getMainContract` |
-| `get_weight_in_index` | `getWeightInIndex` |
-| `get_stock_list_in_sector` | `getStockListInSector` |
-| `get_market_data_ex` | `getMarketData` |
-| `get_market_data` | `getMarketData` |
-
-### 刻意不接的方法，以及原因
-
-宁可慢，不能悄悄给错数据。以下几项参数语义与我们的调用方不一致：
-
-- **`get_trading_dates`** —— FormulaServer 要的是**股票代码**。实测：
-  ```
-  {'stockCode': 'SH',        ...} -> {'result': []}          # 静默空
-  {'stockCode': '000001.SZ', ...} -> ['20260630', '20260701', ...]
-  ```
-  而 `market_bigqmt.get_trading_dates(market, ...)` 的调用方传的是市场代码。传错了不报错、
-  只给空列表，交易日历错了后果太重。
-
-- **`get_divid_factors`** —— 我们是 `(stock_code, start_time, end_time)` 区间，
-  FormulaServer 是 `(stockCode, date)` 单日。
-
-- **`get_risk_free_rate`** —— 我们传 `index=-1`，FormulaServer 要 `timetag`。语义不同。
-
-- **`get_instrument` / `get_instrument_detail`** —— 曾经接入 `getInstrumentDetail`，
-  0.3.61 起移除（#392）：国金 build 上该服务对日频参考字段的回答不可信——300 只抽样里
-  43% 的 `TotalVolume` 返回 0、32% 的 `OpenDate` 返回 0、22% 非零但陈旧（最大偏差 87.7%），
-  而走桥的 `ContextInfo.get_instrument_detail` 300/300 全对。合约元数据是基准数据，
-  结构完整但值错误的答案比没有答案更糟，且适配层无法区分陈旧与正确，所以一律走 RPC。
-  2026-10-11 补充（#405）：ContextInfo 侧的合约库在个别机器上同样会被污染且重启不自愈
-  （OpenDate=0/更名日）；`get_instrument` 因此改为 native SDK 优先（miniQMT 共存时天然
-  对齐）、ContextInfo 回落——native 开关沿用 `native_xtdata_enabled`（VK 传输默认开）。
-  激活条件＝同机保持一个已登录的 miniQMT 进程。
-
-- **复权 K 线** —— 实测 `dividendType` 传 `none` 和 `front` 返回**完全相同**的价格，
-  说明复权没有生效。因此只有 `dividend_type="none"`（或空）才走直连，其他复权类型直接
-  判为 unroutable 回退 RPC。否则策略要前复权、拿到的却是不复权价格，且毫无提示。
-
-### 字段名坑（历史记录）
-
-FormulaServer 的 `getInstrumentDetail` 返回 **`FloatVolumn` / `TotalVolumn`**（官方拼写错误），
-而原生 xtdata SDK 用的是 `FloatVolume` / `TotalVolume`。该方法自 0.3.61 起不再走直连（见上），
-此节留档备查。
-
-### 尚未验证
-
-`qmt_api/api.py` 的 `getMarketData` 支持 `fields=['quoter']`，注释说会返回 `askPrice/askVol/bidPrice/bidVol`（level1 五档 / level2 十档）。
-**如果这在盘中可用， `get_full_tick` 也能走直连** —— 这是热路径，收益很大。
-
-但收盘时段实测返回空，无法确认。需要**盘中**再测一次：
+`getMarketData` 支持 `fields=['quoter']`（注释称返回盘口五档/十档），但收盘后实测返空，**未盘中验证前不接入 `get_full_tick`**：
 
 ```python
-c.request('getMarketData', {'fields': ['quoter'], 'stockCodes': ['000001.SZ'],
-                            'startTime': '', 'endTime': '', 'period': 'tick',
-                            'dividendType': 'none', 'count': -1})
+c.request('getMarketData', {
+    'fields': ['quoter'], 'stockCodes': ['000001.SZ'],
+    'startTime': '', 'endTime': '', 'period': 'tick',
+    'dividendType': 'none', 'count': -1,
+})
 ```
 
-在确认之前不要接 —— 没验证就上映射，正是订单方向判定踩过的坑。
+## 失败回退与依赖
 
-## 失败行为
-
-**任何失败都自动回退 RPC**，所以连不上 58600 的客户端行为与改动前完全一致：
+所有异常均自动回退 RPC 桥；内置纯 Python 无依赖 BSON 编解码，若存在 `pymongo.bson` 或 `xtquant.xtbson` 则优先使用（输出逐字节一致）。
 
 | 情况 | 行为 |
-|---|---|
-| 方法不在映射表 | `supports()` 返回 False，直接走 RPC |
-| 参数 translate 不了 | `Unroutable`，走 RPC，**不**触发熔断（这是单次调用的问题） |
-| 服务连不上 / IO 失败 | `Unroutable` + 熔断 `failure_cooldown_seconds`（默认 30s），期间全部走 RPC |
-| 服务端回 `200005` | 该方法永久标记 unimplemented，只停这一个方法，不影响其他 |
-| socket 断了（QMT 重启） | 自动重连重试一次 |
+|------|------|
+| 方法不在映射表 | `supports()` 为 False，直接走 RPC |
+| 参数无法翻译 | 返回 `Unroutable` 回退 RPC，不触发熔断 |
+| 连接/IO 失败 | 回退 RPC 并熔断 `failure_cooldown_seconds`（默认 30s） |
+| 服务端返回 `200005` | 永久标记该方法为 unimplemented，不影响其他方法 |
+| Socket 断开（如 QMT 重启） | 自动重连并重试一次 |
 
-## 依赖
+## 配置与排查
 
-**不需要装任何东西。** BSON 编解码内置了无依赖实现；
-如果环境里有 pymongo 的 `bson` 或 QMT 的 `xtquant.xtbson`，会优先用（更快、更久经考验）。
-两条路径的输出实测逐字节一致， 测试里有对拍用例。
-
-## 配置
-
-客户端侧，默认开启，通常不用写：
+客户端默认开启，通常无需配置（`BIGQMT_CONFIG["formula_server"]` 优先级高于 `BIGQMT_FORMULA_SERVER_CONFIG`；环境变量 `BIGQMT_FORMULA_ENABLED=0` 可关闭）：
 
 ```python
 BIGQMT_FORMULA_SERVER_CONFIG = {
-    "enabled": True,            # 或环境变量 BIGQMT_FORMULA_ENABLED=0 关闭
-    # "host": "127.0.0.1",     # 绑的是 0.0.0.0，跨机可达（需放行防火墙）
-    # "port": 58600,           # 不写则从 qmt_root 的 ini 读，再退回 58600
+    "enabled": True,
+    # "host": "127.0.0.1",               # 跨机需放行 58600 防火墙
+    # "port": 58600,                     # 缺省先读 qmt_root ini，再退回 58600
     # "qmt_root": r"D:\QMT交易端",
     # "timeout_seconds": 3.0,
-    # "methods": ["get_total_share"],      # 只路由白名单
+    # "methods": ["get_total_share"],    # 白名单限流
     # "failure_cooldown_seconds": 30.0,
 }
 ```
 
-也可以写在 `BIGQMT_CONFIG["formula_server"]` 里，后者优先级更高。
-
-## 排查
+运行时排查：
 
 ```python
 client._formula_router().stats()
-# {'enabled': True, 'hits': 202, 'misses': 0, 'available': True,
-#  'unimplemented': [], 'methods': [...]}
+# {'enabled': True, 'hits': 202, 'misses': 0, 'available': True, 'unimplemented': [], 'methods': [...]}
 ```
 
-启动时会打一行：
-
-```
-[bigqmt_formula] 已连接 127.0.0.1:58600（10 个方法可直读）
-```
-
-熔断时：
-
-```
-[bigqmt_formula] 暂不可用，接下来 30 秒走 RPC：connect 127.0.0.1:58600 failed: ...
-```
+正常启动日志打印 `[bigqmt_formula] 已连接 127.0.0.1:58600（...）`，熔断时打印 `[bigqmt_formula] 暂不可用，接下来 30 秒走 RPC：...`。

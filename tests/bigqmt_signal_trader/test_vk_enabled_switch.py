@@ -59,7 +59,7 @@ class VkBlockTest(_RuntimeState):
 
 
     def test_disabled_on_shm(self):
-        for transport in ("shm",):
+        for transport in ("shm", "pipe", "copydata"):
             self._configure(False, transport)
 
             self.assertEqual(runtime._vk_block(), {}, transport)
@@ -168,14 +168,15 @@ class RuntimeConfigReadingTest(_RuntimeState):
         runtime.configure_runtime_vk({"transport": "shm", "vk_enabled": True})
         self.assertTrue(runtime.VK_ENABLED_EXPLICIT)
 
-    def test_legacy_disable_setting_is_honored_until_new_key_is_set(self):
+    def test_shm_ignores_vk_even_when_explicitly_enabled(self):
         runtime.configure_runtime_vk({"transport": "shm", "valkey_enabled": False})
         self.assertTrue(runtime.VK_ENABLED_EXPLICIT)
         self.assertEqual(runtime._vk_block(), {})
 
         runtime.configure_runtime_vk(
             {"transport": "shm", "valkey_enabled": False, "vk_enabled": True})
-        self.assertTrue(runtime._vk_block())
+        self.assertTrue(runtime.VK_ENABLED)
+        self.assertEqual(runtime._vk_block(), {})
 
 
 class ModuleLevelReadTest(unittest.TestCase):

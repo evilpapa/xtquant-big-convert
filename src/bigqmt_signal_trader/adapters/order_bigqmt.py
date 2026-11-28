@@ -30,11 +30,17 @@ class _QmtFallbackXtConstant(object):
     CREDIT_DIRECT_CASH_REPAY_SPECIAL = 45
 
 
-try:
-    from xtquant import xtconstant as _xtconstant
-except ImportError:
-    # 完整 QMT 的模型运行时会注入 passorder 等 API，但部分券商终端不提供可 import 的 xtquant package。
+from ..logging_setup import qmt_stdout_only
+
+
+if qmt_stdout_only():
+    # 原生 xtquant 的包初始化可能联网检查更新；策略不导入它。
     _xtconstant = _QmtFallbackXtConstant()
+else:
+    try:
+        from xtquant import xtconstant as _xtconstant
+    except ImportError:
+        _xtconstant = _QmtFallbackXtConstant()
 
 from ..account_type_map import account_type_for
 from ..code_utils import normalize_stock_code

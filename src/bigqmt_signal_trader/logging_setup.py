@@ -21,6 +21,17 @@ except ImportError:
 _LOGGER_NAME = "bigqmt"
 _initialized = False
 _EMBEDDED_STRATEGY = "__bigqmt_load_local_module" in globals()
+_qmt_stdout_only = False
+
+
+def use_qmt_stdout():
+    """Use a console-only logger in this strategy process, without touching files."""
+    global _qmt_stdout_only
+    _qmt_stdout_only = True
+
+
+def qmt_stdout_only():
+    return _EMBEDDED_STRATEGY or _qmt_stdout_only
 
 
 def _env_bool(name, default=True):
@@ -32,7 +43,7 @@ def _env_bool(name, default=True):
 
 def _resolve_log_dir():
     """查找可写的日志目录，优先使用 QMT 的 python 目录，其次使用用户缓存。"""
-    if _EMBEDDED_STRATEGY:
+    if _EMBEDDED_STRATEGY or _qmt_stdout_only:
         return None
     candidates = []
     for entry in sys.path:
@@ -114,7 +125,9 @@ class _FallbackLogger:
         self._write("ERROR", message, args)
 
     def exception(self, message, *args):
-        self._write("ERROR", message, args, traceback.format_exc())
+        exc = sys.exception()
+        details = str(exc) if _qmt_stdout_only else traceback.format_exc()
+        self._write("ERROR", message, args, details)
 
 
 def _cleanup_old_logs(log_dir, retention_days):
@@ -225,9 +238,11 @@ def _setup():
 
 def get_logger(name=""):
     """返回 bigqmt 下的模块日志记录器，例如 bigqmt.rpc。"""
-    _setup()
     suffix = str(name or "").strip(".")
     full = _LOGGER_NAME if not suffix else "%s.%s" % (_LOGGER_NAME, suffix)
+    if _qmt_stdout_only:
+        return _FallbackLogger(full)
+    _setup()
     if logging is None:
         return _FallbackLogger(full)
     return logging.getLogger(full)
@@ -235,6 +250,8 @@ def get_logger(name=""):
 
 def log_file_path():
     """Return the current log file path (or None if file logging is off)."""
+    if _qmt_stdout_only:
+        return None
     _setup()
     log_dir = _resolve_log_dir()
     if log_dir is None:

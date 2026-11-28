@@ -38,7 +38,10 @@ BIGQMT_ACCOUNT_TYPE_MAP 是本地配置中的字典，格式为 ``{account_id: a
 
 import contextlib
 import importlib
+import sys
 import threading
+
+from .logging_setup import qmt_stdout_only
 
 
 _ACCOUNT_TYPE_MAP = None  # None = not loaded yet; {} = loaded but empty
@@ -97,7 +100,8 @@ def _load_map():
     """
     global _ACCOUNT_TYPE_MAP, _PRIMARY_ID, _PRIMARY_TYPES
     try:
-        cfg = importlib.import_module("bigqmt_signal_trader_qmt_config")
+        name = "bigqmt_signal_trader_qmt_config"
+        cfg = sys.modules.get(name) if qmt_stdout_only() else importlib.import_module(name)
         raw = dict(getattr(cfg, "BIGQMT_ACCOUNT_TYPE_MAP", {}) or {})
         _ACCOUNT_TYPE_MAP = {}
         for key, value in raw.items():

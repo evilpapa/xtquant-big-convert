@@ -91,6 +91,9 @@ def _describe(exc):
 
 
 class SerialVkBridge:
+    link_label = "串口"
+    link_name = "Serial"
+
     def __init__(self, vk_client, port, account_id, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES,
                  vk_endpoint="VK"):
         self.vk = vk_client
@@ -98,7 +101,7 @@ class SerialVkBridge:
         if not self.account_id or len(self.account_id) > 128:
             raise ValueError("a valid account_id is required")
         self.vk_endpoint = vk_endpoint or "VK"
-        self.wire = SerialFrames(port, max_frame_bytes)
+        self.wire = SerialFrames(port, max_frame_bytes, link_label=self.link_label)
         self.replies = VkTransport(vk_client, account_id=self.account_id)
         self.quotes = VkQuotePushChannel(vk_client, account_id=self.account_id)
         self.features = SerialBridgeFeatures(vk_client, self.account_id)
@@ -123,16 +126,16 @@ class SerialVkBridge:
             self._vk_retry_delay = _VK_RETRY_INITIAL
             self._vk_last_log = now
             _log.warning(
-                "VK %s 暂时不可用（%s）；桥接保持运行，串口继续收发，%.1f 秒后重试",
-                self.vk_endpoint, described, self._vk_retry_delay)
+                "VK %s 暂时不可用（%s）；桥接保持运行，%s继续收发，%.1f 秒后重试",
+                self.vk_endpoint, described, self.link_label, self._vk_retry_delay)
         else:
             self._vk_retry_delay = min(_VK_RETRY_MAX,
                                        max(_VK_RETRY_INITIAL, self._vk_retry_delay * 2))
             if now - self._vk_last_log >= _VK_LINK_LOG_INTERVAL:
                 self._vk_last_log = now
                 _log.warning(
-                    "VK %s 仍不可用（%s）；已暂停转发 RPC 请求，串口继续收发",
-                    self.vk_endpoint, described)
+                    "VK %s 仍不可用（%s）；已暂停转发 RPC 请求，%s继续收发",
+                    self.vk_endpoint, described, self.link_label)
         self._vk_cooldown_until = now + self._vk_retry_delay
 
     def _vk_recovered(self):
@@ -164,13 +167,21 @@ class SerialVkBridge:
         self._inflight.pop(request_id, None)
         if record.background:
             self._dispatch(lambda: record.reply({"ok": False, "error": (
-                f"No serial response for {record.method}; outcome unknown")}),
+                f"No {self.link_name.lower()} response for {record.method}; outcome unknown")}),
                 now, "下载任务应答")
         if METHOD_ALIASES.get(record.method, record.method) in ORDER_METHODS:
             self._uncertain_writes[request_id] = now + 600
             if len(self._uncertain_writes) > 512:
                 self._uncertain_writes.popitem(last=False)
-        _log.warning("未收到 %s 的串口应答，桥接不会重放该请求", record.method)
+        _log.warning("未收到 %s 的%s应答，桥接不会重放该请求", record.method, self.link_label)
+
+    def _reset_link(self):
+        """Discard the byte stream and its in-flight work, not uncertain order IDs."""
+        self._session = self._last_hello = None
+        self.wire = SerialFrames(self.wire.port, self.wire.max_frame_bytes, link_label=self.link_label)
+        now = time.monotonic()
+        for request_id, record in list(self._inflight.items()):
+            self._forget_request(request_id, record, now)
 
     def _reply_route(self, request_id, ttl):
         fields = {"account_id": self.account_id, "request_id": request_id}
@@ -200,7 +211,9 @@ class SerialVkBridge:
         try:
             self._send_request(request, record)
         except (ValueError, TypeError, RecursionError):
-            reply({"ok": False, "error": "Request cannot be encoded within serial frame limit; NOT dispatched"})
+            reply({"ok": False, "error": (
+                f"Request cannot be encoded within {self.link_name.lower()} frame limit; NOT dispatched"
+            )})
 
     def _account_matches(self, params):
         account = params.get("account")
@@ -226,7 +239,7 @@ class SerialVkBridge:
         _log.info("收到 RPC 请求 %s：method=%s params=%s",
                   request_id, method or "<missing>", _preview(params))
         if request_id in self._inflight:
-            _log.info("请求 %s 仍在等待串口应答，忽略重复投递", request_id)
+            _log.info("请求 %s 仍在等待%s应答，忽略重复投递", request_id, self.link_label)
             return
         try:
             ttl = max(1, min(600, int(request.get("ttl_seconds") or 60)))
@@ -236,18 +249,19 @@ class SerialVkBridge:
         canonical = METHOD_ALIASES.get(method, method)
         if (str(request.get("account_id") or "") != self.account_id
                 or not isinstance(params, dict) or not self._account_matches(params)):
-            self._refuse(route, method, "Serial bridge account mismatch or invalid params")
+            self._refuse(route, method, f"{self.link_name} bridge account mismatch or invalid params")
             return
         outcome_request = params.get("request_id") if method == "get_request_outcome" else None
         uncertain_id = outcome_request if isinstance(outcome_request, str) else request_id
         if self._uncertain_writes.get(uncertain_id, 0) > time.monotonic():
-            self._refuse(route, method, "Serial link lost the order response; query orders and trades before retrying")
+            self._refuse(route, method, f"{self.link_name} link lost the order response; query orders and trades before retrying")
             return
-        if canonical == "submit_orders_batch" and isinstance(params.get("orders"), list):
-            if any(isinstance(item, dict) and not self._account_matches(item)
-                   for item in params["orders"]):
-                self._refuse(route, method, "Serial bridge batch contains a different account")
-                return
+        batch_key = {"submit_orders_batch": "orders", "cancel_orders_batch": "items"}.get(canonical)
+        batch = params.get(batch_key) if batch_key else None
+        if isinstance(batch, list) and any(isinstance(item, dict) and not self._account_matches(item)
+                                           for item in batch):
+            self._refuse(route, method, f"{self.link_name} bridge batch contains a different account")
+            return
         now = time.time()
         try:
             timeout = float(request.get("timeout_seconds", 3))
@@ -255,11 +269,13 @@ class SerialVkBridge:
                 raise ValueError("timeout out of range")
             sent_at = float(request.get("_sent_at", 0))
         except (TypeError, ValueError, OverflowError):
-            self._refuse(route, method, "Serial bridge received invalid request timing")
+            self._refuse(route, method, f"{self.link_name} bridge received invalid request timing")
             return
         valid_timestamp = math.isfinite(sent_at) and 0 < sent_at <= now + 1
         if canonical in ORDER_METHODS and not valid_timestamp:
-            self._refuse(route, method, "Serial order requires a fresh VK RPC client timestamp; check client version and clock")
+            self._refuse(route, method, (
+                f"{self.link_name} order requires a fresh VK RPC client timestamp; check client version and clock"
+            ))
             return
         submitted_at = min(now, sent_at) if valid_timestamp else now
         if submitted_at + timeout <= now:
@@ -285,7 +301,9 @@ class SerialVkBridge:
         try:
             self._send_request(serial_request, record)
         except (ValueError, TypeError, RecursionError):
-            self._refuse(route, method, "Request cannot be encoded within serial frame limit; NOT dispatched")
+            self._refuse(route, method, (
+                f"Request cannot be encoded within {self.link_name.lower()} frame limit; NOT dispatched"
+            ))
 
     def _receive_frame(self, frame):
         session = frame.get("session")
@@ -296,7 +314,7 @@ class SerialVkBridge:
             if session != self._session:
                 for request_id, record in list(self._inflight.items()):
                     self._forget_request(request_id, record, now)
-                _log.info("QMT 串口会话已就绪")
+                _log.info("QMT %s会话已就绪", self.link_label)
             self._session = session
             self._last_hello = now
             return
@@ -310,7 +328,7 @@ class SerialVkBridge:
             record = self._inflight.get(request_id) if isinstance(request_id, str) else None
             if record is None or response.get("method") != record.method:
                 return
-            self._dispatch(lambda: record.reply(response), time.monotonic(), "串口应答")
+            self._dispatch(lambda: record.reply(response), time.monotonic(), f"{self.link_label}应答")
             self._inflight.pop(request_id, None)
         elif frame.get("type") == "event":
             topic, data = frame.get("topic"), frame.get("data")
@@ -384,10 +402,17 @@ class SerialVkBridge:
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    return _bridge_main(argv)
+
+
+def _bridge_main(argv, local_bridge=None):
+    parser = argparse.ArgumentParser(description=__doc__ if local_bridge is None else local_bridge.__doc__)
     parser.add_argument("--account-id", help="资金账号，默认读取本地 .env 或 BIGQMT_ACCOUNT_ID 环境变量")
-    parser.add_argument("--port", default="COM11")
-    parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
+    if local_bridge is None:
+        parser.add_argument("--port", default="COM11")
+        parser.add_argument("--baudrate", type=int, default=DEFAULT_BAUDRATE)
+    else:
+        parser.add_argument(local_bridge.cli_arg, dest="endpoint_name", default=local_bridge.cli_default)
     parser.add_argument("--max-frame-bytes", type=int, default=DEFAULT_MAX_FRAME_BYTES)
     parser.add_argument("--vk-url")
     parser.add_argument("--vk-timeout", type=float,
@@ -398,12 +423,27 @@ def main(argv=None):
     if not 0 < vk_timeout <= 60:
         parser.error("--vk-timeout 必须在 0 到 60 秒之间")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    local_settings = local_serial_settings()
+    if local_bridge is None:
+        link_vk_env = "BIGQMT_SERIAL_VK_URL"
+        local_settings = local_serial_settings()
+    else:
+        import sys
+        from .local_env import read_local_env
+
+        if sys.platform != "win32":
+            parser.error(f"{local_bridge.link_label}桥接需要 Windows")
+        try:
+            args.endpoint_name = local_bridge.normalize_endpoint(args.endpoint_name)
+        except ValueError as exc:
+            parser.error(str(exc))
+        link_vk_env = local_bridge.vk_env_var
+        local_env = read_local_env()
+        local_settings = {"account_id": local_env.get("BIGQMT_ACCOUNT_ID", "").strip(),
+                          "vk_url": local_env.get(link_vk_env) or local_env.get("BIGQMT_VK_URL")}
     args.account_id = ((args.account_id or "").strip() or local_settings["account_id"]
                        or os.environ.get("BIGQMT_ACCOUNT_ID", "").strip())
-    args.vk_url = (args.vk_url or local_settings["vk_url"]
-                       or os.environ.get("BIGQMT_SERIAL_VK_URL")
-                       or os.environ.get("BIGQMT_VK_URL") or "valkey://127.0.0.1:6379/5")
+    args.vk_url = (args.vk_url or local_settings["vk_url"] or os.environ.get(link_vk_env)
+                   or os.environ.get("BIGQMT_VK_URL") or "valkey://127.0.0.1:6379/5")
     if not args.account_id:
         _log.warning("未配置资金账号。请在 .env 中设置 BIGQMT_ACCOUNT_ID，或传入 --account-id。")
         return 2
@@ -412,7 +452,8 @@ def main(argv=None):
         from valkey.backoff import NoBackoff
         from valkey.retry import Retry
     except ImportError:
-        parser.exit(1, "请在桥接进程的 Python 环境中安装 xtquant-big-convert[valkey,serial]。\n")
+        extras = "valkey,serial" if local_bridge is None else "valkey"
+        parser.exit(1, f"请在桥接进程的 Python 环境中安装 xtquant-big-convert[{extras}]。\n")
 
     client = port = None
     endpoint = _vk_endpoint(args.vk_url)
@@ -440,28 +481,39 @@ def main(argv=None):
         except Exception as exc:
             _log.error(
                 "无法连接 VK %s（%s）。桥接从该实例读取 RPC 请求，请通过 --vk-url "
-                "或 BIGQMT_SERIAL_VK_URL 指定实际发送请求的 VK 实例及数据库。",
-                endpoint, describe(exc))
+                "或 %s 指定实际发送请求的 VK 实例及数据库。",
+                endpoint, describe(exc), link_vk_env)
             return 1
         try:
-            port = open_serial(args.port, args.baudrate)
+            port = (open_serial(args.port, args.baudrate) if local_bridge is None
+                    else local_bridge.open_listener(args.endpoint_name))
         except Exception as exc:
-            _log.error(
-                "无法打开串口 %s（波特率 %s，%s）。请检查 com0com 端口对和端口名称，"
-                "并确认 QMT 或其他桥接进程未占用该端口。",
-                args.port, args.baudrate, describe(exc))
+            if local_bridge is None:
+                _log.error(
+                    "无法打开串口 %s（波特率 %s，%s）。请检查 com0com 端口对和端口名称，"
+                    "并确认 QMT 或其他桥接进程未占用该端口。",
+                    args.port, args.baudrate, describe(exc))
+            else:
+                _log.error("无法监听本机%s %s（%s）",
+                           local_bridge.link_label, args.endpoint_name, describe(exc))
             return 1
-        bridge = SerialVkBridge(client, port, args.account_id, args.max_frame_bytes,
-                                vk_endpoint=endpoint)
-        _log.info("VK 串口桥接已启动，串口 %s，波特率 %s，VK %s，账号 %s，"
-                  "VK 超时 %s 秒（断线自动重试，不退出）",
-                  args.port, args.baudrate, endpoint, args.account_id, vk_timeout)
+        bridge_type = SerialVkBridge if local_bridge is None else local_bridge
+        bridge = bridge_type(client, port, args.account_id, args.max_frame_bytes, vk_endpoint=endpoint)
+        if local_bridge is None:
+            _log.info("VK 串口桥接已启动，串口 %s，波特率 %s，VK %s，账号 %s，"
+                      "VK 超时 %s 秒（断线自动重试，不退出）",
+                      args.port, args.baudrate, endpoint, args.account_id, vk_timeout)
+        else:
+            _log.info("VK %s桥接已启动，监听 %s，VK %s，VK 超时 %s 秒",
+                      local_bridge.link_label, args.endpoint_name, endpoint, vk_timeout)
         bridge.run(vk_pubsub=args.vk_pubsub)
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
         module = type(exc).__module__ or ""
-        if module.startswith("valkey"):
+        if local_bridge is not None:
+            hint = f" 请先启动 Windows {local_bridge.link_label}桥接，再重启 QMT 策略。"
+        elif module.startswith("valkey"):
             hint = (" 运行期间 VK %s 出现无法自动恢复的错误。请检查网络/VK 服务后重启桥接；"
                     "串口会话会随之重建，无需重启 QMT 策略。" % endpoint)
         elif module.startswith("serial"):

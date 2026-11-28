@@ -99,147 +99,68 @@ def handlebar(C):
 
 ### 1.6 策略骨架示例
 
-#### 回测（handlebar + 本地数据，双均线）
-
 ```python
 #coding:gbk
+# 1) 回测（handlebar + 本地数据 subscribe=False）
 import numpy as np
 
 def init(C):
-    C.stock = C.stockcode + '.' + C.market        # 主图品种
-    C.line1, C.line2 = 10, 20                    # 快/慢均线期数
-    C.accountid = "testS"                        # 回测资金账号可填任意字符串
+    C.stock = C.stockcode + '.' + C.market
+    C.accountid = "testS"                        # 回测账号可填任意字符串
 
 def handlebar(C):
     bar_date = timetag_to_datetime(C.get_bar_timetag(C.barpos), '%Y%m%d%H%M%S')
-    # 回测用本地数据（subscribe=False）更快；多品种回测需先下载对应周期历史数据
-    local_data = C.get_market_data_ex(['close'], [C.stock], end_time=bar_date,
-                                      period=C.period, count=max(C.line1, C.line2), subscribe=False)
-    close_list = list(local_data[C.stock].iloc[:, 0])
-    if len(close_list) < 1:
-        print(bar_date, '行情不足 跳过')
-    line1_mean = round(np.mean(close_list[-C.line1:]), 2)
-    line2_mean = round(np.mean(close_list[-C.line2:]), 2)
-    account = get_trade_detail_data('test', 'stock', 'account')[0]
-    available_cash = int(account.m_dAvailable)
-    holdings = get_trade_detail_data('test', 'stock', 'position')
-    holdings = {i.m_strInstrumentID + '.' + i.m_strExchangeID: i.m_nVolume for i in holdings}
-    holding_vol = holdings.get(C.stock, 0)
-    if holding_vol == 0 and line1_mean > line2_mean:            # 金叉买入 8 成仓
-        vol = int(available_cash / close_list[-1] / 100) * 100
-        passorder(23, 1101, C.accountid, C.stock, 5, -1, vol, C)
-        C.draw_text(1, 1, '开')
-    elif holding_vol > 0 and line1_mean < line2_mean:           # 死叉全平
-        passorder(24, 1101, C.accountid, C.stock, 5, -1, holding_vol, C)
-        C.draw_text(1, 1, '平')
+    data = C.get_market_data_ex(['close'], [C.stock], end_time=bar_date,
+                                period=C.period, count=20, subscribe=False)
+    closes = list(data[C.stock].iloc[:, 0])
+    if len(closes) < 20: return
+    cash = int(get_trade_detail_data('test', 'stock', 'account')[0].m_dAvailable)
+    holdings = {i.m_strInstrumentID + '.' + i.m_strExchangeID: i.m_nVolume
+                for i in get_trade_detail_data('test', 'stock', 'position')}
+    if holdings.get(C.stock, 0) == 0 and np.mean(closes[-10:]) > np.mean(closes[-20:]):
+        passorder(23, 1101, C.accountid, C.stock, 5, -1, int(cash / closes[-1] / 100) * 100, C)
 ```
-
-#### 实盘（handlebar + 全局变量存状态，双均线）
 
 ```python
 #coding:gbk
-import numpy as np, datetime
+# 2) 实盘（全局对象存状态 + 跳历史 bar + 投资备注对账防超单）
+import datetime
 
-class a(): pass
-A = a()                                          # 全局对象保存委托状态（不能存 ContextInfo）
+class G(): pass
+A = G()
 
 def init(C):
     A.stock = C.stockcode + '.' + C.market
-    A.acct = account                             # 模型交易界面选择的账号/类型（自动注入）
-    A.acct_type = accountType
-    A.amount = 10000                             # 单笔买入金额
-    A.line1, A.line2 = 17, 27
-    A.waiting_list = []                          # 未查到委托列表，存在未查到委托时暂停报单防超单
-    A.buy_code = 23 if A.acct_type == 'STOCK' else 33   # 区分股票与两融账号的买卖代码
+    A.acct, A.acct_type = account, accountType   # 模型交易自动注入
+    A.buy_code = 23 if A.acct_type == 'STOCK' else 33
     A.sell_code = 24 if A.acct_type == 'STOCK' else 34
+    A.waiting_list = []
 
 def handlebar(C):
-    if not C.is_last_bar():                      # 跳过历史 K 线
-        return
-    now_time = datetime.datetime.now().strftime('%H%M%S')
-    if now_time < '093000' or now_time > '150000':
-        return
-    account_ = get_trade_detail_data(A.acct, A.acct_type, 'account')
-    if len(account_) == 0:
-        print(f'账号{A.acct} 未登录 请检查'); return
-    available_cash = int(account_[0].m_dAvailable)
-    if A.waiting_list:                           # 用投资备注对账，确认委托已可查
-        deals = get_trade_detail_data(A.acct, A.acct_type, 'deal')
-        found = [d.m_strRemark for d in deals if d.m_strRemark in A.waiting_list]
-        A.waiting_list = [i for i in A.waiting_list if i not in found]
+    if not C.is_last_bar(): return
+    now = datetime.datetime.now().strftime('%H%M%S')
+    if not ('093000' <= now <= '150000'): return
     if A.waiting_list:
-        print(f"当前有未查到委托 {A.waiting_list} 暂停后续报单"); return
-    holdings = get_trade_detail_data(A.acct, A.acct_type, 'position')
-    holdings = {i.m_strInstrumentID + '.' + i.m_strExchangeID: i.m_nCanUseVolume for i in holdings}
-    data = C.get_market_data_ex(["close"], [A.stock], period='1d', count=max(A.line1, A.line2)+1)
-    close_list = data[A.stock].values
-    if len(close_list) < max(A.line1, A.line2)+1:
-        print('行情长度不足(新上市或最近有停牌) 跳过运行'); return
-    pre1, pre2 = np.mean(close_list[-A.line1-1:-1]), np.mean(close_list[-A.line2-1:-1])
-    cur1, cur2 = np.mean(close_list[-A.line1:]), np.mean(close_list[-A.line2:])
-    vol = int(A.amount / close_list[-1] / 100) * 100
-    if A.amount < available_cash and vol >= 100 and A.stock not in holdings \
-       and pre1 < pre2 and cur1 > cur2:          # 金叉买入，立即下单 quickTrade=2
-        msg = f"双均线实盘 {A.stock} 上穿均线 买入 {vol}股"
-        passorder(A.buy_code, 1101, A.acct, A.stock, 14, -1, vol, '双均线实盘', 2, msg, C)
-        A.waiting_list.append(msg)
-    if A.stock in holdings and holdings[A.stock] > 0 and pre1 > pre2 and cur1 < cur2:
-        msg = f"双均线实盘 {A.stock} 下穿均线 卖出 {holdings[A.stock]}股"
-        passorder(A.sell_code, 1101, A.acct, A.stock, 14, -1, holdings[A.stock], '双均线实盘', 2, msg, C)
-        A.waiting_list.append(msg)
+        found = {d.m_strRemark for d in get_trade_detail_data(A.acct, A.acct_type, 'deal')}
+        A.waiting_list = [m for m in A.waiting_list if m not in found]
+        if A.waiting_list: return                # 存在未确认委托时暂停报单
+    # 触发条件满足时用 quickTrade=2 立即下单并记录唯一投资备注 msg
+    # passorder(A.buy_code, 1101, A.acct, A.stock, 14, -1, vol, '策略名', 2, msg, C)
+    # A.waiting_list.append(msg)
 ```
-
-#### 事件驱动（subscribe）
 
 ```python
 #coding:gbk
-class a(): pass
-A = a()
-A.bought_list = []
-account = 'testaccount'
-
+# 3) 事件驱动（subscribe）与定时任务（run_time）
 def init(C):
-    # 回调函数在 init 中定义可闭包引用 C（下单函数需要 ContextInfo）
-    def callback_func(data):
-        for stock in data:
-            ratio = data[stock]['close'] / data[stock]['preClose'] - 1
-            print(stock, C.get_stock_name(stock), '当前涨幅', ratio)
-            if ratio > 0 and stock not in A.bought_list:
-                # passorder(23, 1101, account, stock, 5, -1, 100, '订阅下单示例', 2, msg, C)
-                A.bought_list.append(stock)
-    for stock in ['600000.SH', '000001.SZ']:
-        C.subscribe_quote(stock, period='1d', callback=callback_func)
-```
+    def on_bar(data):                            # 闭包引用 C 以便下单
+        for s, row in data.items():
+            print(s, row['close'] / row['preClose'] - 1)
+    C.subscribe_quote('600000.SH', period='1d', callback=on_bar)
+    C.run_time("on_timer", "1nSecond", "2019-10-14 13:20:00")  # 历史时间=立即启动
 
-#### 定时任务（run_time）
-
-```python
-#coding:gbk
-import time, datetime
-
-class a(): pass
-A = a()
-
-def init(C):
-    A.hsa = C.get_stock_list_in_sector('沪深A股')
-    A.vol_dict = {s: C.get_last_volume(s) for s in A.hsa}
-    A.bought_list = []
-    C.run_time("f", "1nSecond", "2019-10-14 13:20:00")   # 历史时间=立即启动，此后每秒触发
-
-def f(C):
-    t0 = time.time()
-    full_tick = C.get_full_tick(A.hsa)
-    total_mv, total_ratio = 0, 0
-    for stock in A.hsa:
-        ratio = full_tick[stock]['lastPrice'] / full_tick[stock]['lastClose'] - 1
-        if ratio > 0.09 and stock not in A.bought_list:
-            # passorder(23, 1101, account, stock, 5, -1, 100, '示例策略', 2, msg, C)
-            A.bought_list.append(stock)
-        mv = full_tick[stock]['lastPrice'] * A.vol_dict[stock]
-        total_ratio += ratio * mv
-        total_mv += mv
-    print(f"{datetime.datetime.now()} A股加权涨幅 {round(total_ratio/total_mv*100, 2)}% "
-          f"耗时{round(time.time()-t0, 5)}秒")
+def on_timer(C):
+    ticks = C.get_full_tick(['600000.SH', '000001.SZ'])
 ```
 
 ---
@@ -977,32 +898,7 @@ index_name 不可缺省；draw_style/color 同 paint；noaxis 无坐标；nodraw
 | `add_stock_to_sector(sector, stock_code)` | bool | 添加成分股 |
 | `remove_stock_from_sector(sector, stock_code)` | bool | 移除成分股 |
 
-```python
-create_sector('我的', '新建板块', False)            # -> '新建板块'
-get_sector_list('我的')                             # -> [['我的自选', ...], []]
-reset_sector_stock_list('我的自选', ['000001.SZ', '600000.SH'])
-```
-
-> **实测：这一族在 2.1.19.0 终端上一个都调不通**（issue #143，2026-09-02）。
-> 三条通道全部枚举过（`probe_capabilities` 的 `sector_probe` 块）：
->
-> | | 有什么 |
-> |---|---|
-> | `ContextInfo` | `create_sector`、`get_sector`、`get_stock_list_in_sector` |
-> | QMT 注入的全局函数 | **一个都没有** |
-> | 原生 xtdata SDK | `add_sector`、`remove_sector`、`get_sector_list`、`get_stock_list_in_sector`、`download_sector_data` |
->
-> 也就是说：上表六个里，`create_sector_folder` / `reset_sector_stock_list` /
-> `add_stock_to_sector` / `remove_stock_from_sector` **在三条通道上都不存在**；
-> `create_sector` 只在 `ContextInfo` 上有，而且签名是 `(sector_name, stock_list)`
-> 两参数，**调用后返回 None、什么都不做**（板块数量前后都是 13）。
-> 原生 SDK 的 `add_sector` / `remove_sector` 存在，但在大 QMT 进程内
-> `无法连接行情服务！`。
->
-> 本仓库据此把这一族按 `add_sector(name, stock_list)` 的形状实现（读-合并-写），
-> 并在**每次写入后回读校验**，写不进去就抛错 —— 而不是沿用上表那个在本终端
-> 不存在的三参数签名。`get_sector_list` 同理：拿不到真实板块时抛错，
-> `allow_fallback=True` 才返回那 13 个常用名。
+> **2.1.19.0 实测（#143）**：`create_sector_folder` / `reset_sector_stock_list` / `add_stock_to_sector` / `remove_stock_from_sector` 在 `ContextInfo`、QMT 全局及原生 `xtdata` SDK 三条通道均不存在；`ContextInfo.create_sector(sector_name, stock_list)` 实为两参数且调用无效果；原生 SDK 的 `add_sector` / `remove_sector` 在大 QMT 进程内报「无法连接行情服务」。本仓库因此按 `add_sector(name, stock_list)` 实现读-合并-写并在写入后回读校验；`get_sector_list` 无法取得真实板块时抛错，仅 `allow_fallback=True` 返回 13 个常用板块名。
 
 ---
 
@@ -1023,26 +919,7 @@ download_history_data(stockcode, period, startTime, endTime, incrementally=None)
 | startTime / endTime | string | '20200101' 或 '20200101093000'，可为空 |
 | incrementally | bool | 默认 None；True 为从本地最后一条往后增量下载，部分版本客户端不支持 |
 
-返回：无。
-
-```python
-def init(C):
-    download_history_data("000001.SZ", "1d", "20230101", "")
-    download_history_data("000001.SZ", "1d", "20230101", "", incrementally=True)
-```
-
-批量下载辅助（先按合成规则换算成基础周期再逐个下载）：
-
-```python
-def my_download(stock_list, period, start_date='', end_date=''):
-    if "d" in period: period = "1d"
-    elif "m" in period: period = "1m" if int(period[0]) < 5 else "5m"
-    n = 1
-    for i in stock_list:
-        print(f"当前正在下载{n}/{len(stock_list)}")
-        download_history_data(i, period, start_date, end_date)
-        n += 1
-```
+返回：无。例：`download_history_data("000001.SZ", "1d", "20230101", "", incrementally=True)`（批量下载合成周期时先换算为基础周期 `1d`/`1m`/`5m` 再逐只下载）。
 
 ### 5.2 获取行情数据
 
@@ -1075,19 +952,9 @@ Level-2 周期字段见第 3 章数据结构。
 返回：`dict {stock_code: pd.DataFrame}`，DataFrame 的 index 为时间（stime），columns 为字段，各标的维度相同。subscribe=True 时客户端会自动订阅传入品种（无订阅号，只能停止策略释放订阅数）。
 
 ```python
-def init(C):
-    C.stock_list = ["000001.SZ", "600519.SH", "510050.SH"]
-def handlebar(C):
-    data1 = C.get_market_data_ex([], C.stock_list, period="1d", count=1)                    # 多股多字段一条
-    data2 = C.get_market_data_ex([], C.stock_list, period="1d",
-                                 start_time="20230901", end_time="20231101")               # 指定区间
-    data4 = C.get_market_data_ex(["close", "open"], C.stock_list, period="15m",
-                                 start_time="20230901", end_time="20231101")               # 指定字段
-    tick = C.get_market_data_ex([], C.stock_list, period="tick",
-                                start_time="20230901", end_time="20231101")                # 历史 tick
-    l2q = C.get_market_data_ex([], ["rb2405.SF"], period="l2quote", count=1)                # 期货五档盘口
-    print(data2["000001.SZ"].tail(), tick["000001.SZ"], l2q)
-    # data4["000001.SZ"].to_csv("your_path")  # 导出 csv
+data = C.get_market_data_ex(["close", "open"], ["000001.SZ", "600519.SH"],
+                            period="15m", start_time="20230901", end_time="20231101")
+l2q = C.get_market_data_ex([], ["rb2405.SF"], period="l2quote", count=1)
 ```
 
 #### ContextInfo.get_full_tick - 获取全推快照
@@ -1095,16 +962,10 @@ def handlebar(C):
 获取客户端缓存中的最新全推分笔数据。**不能用于回测；只能取最新，不能取历史**。无需订阅、无品种数量限制、盘中约 50ms 更新。
 
 ```python
-C.get_full_tick(stock_code=[])    # 不指定时为当前主图合约
+C.get_full_tick(stock_code=[])    # 不指定时为当前主图合约；返回 dict{code: tick_dict}，字段见 3.1
 ```
 
-返回：`dict {stock_code: {字段: 值}}`，字段见 3.1 第一表。注意：全推/订阅的分笔是否含五档盘口取决于行情源的全推级别设置（只有最新价时需在行情配置中调高级别）。
-
-```python
-def handlebar(C):
-    tick = C.get_full_tick(["000001.SZ", "600519.SH"])
-    print(tick["000001.SZ"]['lastPrice'], tick["000001.SZ"]['askPrice'])
-```
+注意：是否含五档盘口取决于行情源的全推级别设置（只有最新价时需在行情配置中调高级别）。
 
 #### ContextInfo.subscribe_quote - 订阅行情
 
@@ -1615,31 +1476,11 @@ passorder(opType, orderType, accountid, orderCode, prType, price, volume,
 | userOrderId | string | 用户自设委托 ID（投资备注，长度 < 24），对应 Order/Deal 的 `m_strRemark`；传入时 strategyName 与 quickTrade 也需填写 |
 | ContextInfo | class | 上下文对象 |
 
-返回：无（异步，见 1.5）。
+返回：无（异步，见 1.5）。典型各品种下单示例见 11.1；账号组/ETF 短签名示例：
 
 ```python
-#coding:gbk
-account = "test"
-def init(C): pass
-
-def handlebar(C):
-    if not C.is_last_bar():
-        return
-    # 期货最新价开多 10 手（prType=5 最新价，price 占位 -1）
-    passorder(0, 1101, account, "rb2405.SF", 5, -1, 10, "示例", 1, "投资备注", C)
-    # 期货指定价 3000 开多 10 手
-    passorder(0, 1101, account, "rb2405.SF", 11, 3000, 10, "示例", 1, "投资备注", C)
-    # 股票最新价买入 100 股
-    passorder(23, 1101, account, "000001.SZ", 5, 0, 100, "示例", 1, "投资备注", C)
-    # 股票指定价 7 元买入 100 股
-    passorder(23, 1101, account, "000001.SZ", 11, 7, 100, "示例", 1, "投资备注", C)
-```
-
-账号组与 ETF 申购（部分参数可省略时的短签名）：
-
-```python
-passorder(23, 1202, 'testS', '000001.SZ', 5, -1, 50000, C)   # 账号组内所有账号买入 5 万元市值
-passorder(60, 1101, 'test', '510050.SH', 5, -1, 1, 2, C)     # 申购 1 个单位(900000股) 华夏上证50ETF
+passorder(23, 1202, 'testS', '000001.SZ', 5, -1, 50000, C)   # 账号组每户买入 5 万元
+passorder(60, 1101, 'test', '510050.SH', 5, -1, 1, 2, C)     # 申购 1 个单位 50ETF
 ```
 
 ### 6.2 algo_passorder — 算法下单（拆单）
@@ -2018,48 +1859,25 @@ def handlebar(C):
 
 （`position_callback` 参数名 `positonInfo` 为官方原文拼写。）
 
-通用示例（以 order_callback 为例，其余替换回调名与对象即可）：
-
 ```python
 #coding:gbk
-def init(ContextInfo):
-    ContextInfo.set_account(account)          # 必须先设置账号（策略交易界面运行）
+def init(C):
+    C.set_account(account)                     # 必须先设置账号（模型交易实盘生效）
 
-def after_init(ContextInfo):
-    # quickTrade=2 立即下单；编辑器界面运行不产生实际委托
-    passorder(23, 1101, account, "000001.SZ", 5, 0, 100, "示例", 2, "投资备注", ContextInfo)
+def after_init(C):
+    passorder(23, 1101, account, "000001.SZ", 5, 0, 100, "示例", 2, "投资备注", C)
 
-def order_callback(ContextInfo, orderInfo):
+def order_callback(C, orderInfo):
     print(orderInfo.m_strInstrumentID, orderInfo.m_nOrderStatus, orderInfo.m_strRemark)
 
-def deal_callback(ContextInfo, dealInfo):
+def deal_callback(C, dealInfo):
     print(dealInfo.m_strInstrumentID, dealInfo.m_dPrice, dealInfo.m_strRemark)
-```
 
-对象转 dict 的通用辅助（遍历 m_ 前缀属性）：
+def orderError_callback(C, orderArgs, errMsg):
+    print(orderArgs.opType, orderArgs.prType, orderArgs.modelVolume, errMsg)
 
-```python
-def show_data(data):
-    tdata = {}
-    for ar in dir(data):
-        if ar[:2] != 'm_':
-            continue
-        try:
-            tdata[ar] = data.__getattribute__(ar)
-        except:
-            tdata[ar] = '<CanNotConvert>'
-    return tdata
-```
-
-orderError_callback 触发示例（指定价但价格无效）：
-
-```python
-def after_init(ContextInfo):
-    passorder(23, 1101, account, "000001.SZ", 11, 0, 100, "示例", 2, "投资备注", ContextInfo)
-
-def orderError_callback(ContextInfo, orderArgs, errMsg):
-    print(orderArgs.opType, orderArgs.prType, orderArgs.modelVolume)
-    print(errMsg)   # 例：[函数交易] 函数: passorder, 证券 [SZ000001] 指定价 无效, 无法下单!
+def show_data(data):                           # 遍历 m_ 前缀属性转 dict
+    return {a: getattr(data, a, '<CanNotConvert>') for a in dir(data) if a.startswith('m_')}
 ```
 
 ---
@@ -2344,154 +2162,38 @@ def handlebar(C):
     passorder(32, 1101, account, '000001.SZ', 5, 0, 10000, 2, C)
 ```
 
-### 11.2 quickTrade 三种写法对比
+### 11.2 集合竞价 / 投资备注 / 止盈止损要点
 
-```python
-c = 0
-def init(C):
-    # 立即下单：最新价买 100 股并指定投资备注
-    passorder(23, 1101, account, s, 5, 0, 100, '1', 2, 'tzbz', C)
+- **集合竞价下单**：`run_time` 定时回调内判断 `'091500' <= time.strftime('%H%M%S') <= '092500'`，配合 `quickTrade=2` 下单。
+- **投资备注（`userOrderId`）**：仅 `passorder` / `algo_passorder` / `smart_algo_passorder` 支持（长度 `< 24`），在 `order_callback` / `deal_callback` / `get_trade_detail_data` 中对应 `m_strRemark`，用于与 `m_strOrderSysID` 匹配。
+- **涨停开板/止损监控**：`get_trade_detail_data(..., 'position')` 取 `m_dProfitRate`、`m_nCanUseVolume`；按板块计算涨停价（30/68 开头 `1.2`，其余 `1.1`），先判 `q['bidPrice'][2]` 非空避免无五档行情误触。
 
-def handlebar(C):
-    if not C.is_last_bar():
-        return                      # 历史 K 线不发实盘信号
-    global c
-    c += 1
-    if c == 1:
-        passorder(23, 1101, account, s, 11, 14.00, 100, 1, C)     # 指定价 14 元，最新K线立即下单
-        passorder(23, 1101, account, s, 5, -1, 100, 0, C)         # 最新价，K线走完下单
-        passorder(23, 1102, account, s, 5, 0, 1000, 2, C)         # 按金额 1000 元，立即下单
-```
-
-### 11.3 集合竞价下单（定时器 + 立即下单）
-
-```python
-import time
-c = 0
-s = '000001.SZ'
-def init(C):
-    C.run_time("myHandlebar", "5nSecond", "2019-10-14 13:20:00")
-def myHandlebar(C):
-    global c
-    now = time.strftime('%H%M%S')
-    if c == 0 and '092500' >= now >= '091500':
-        c += 1
-        passorder(23, 1101, account, s, 11, 14.00, 100, 2, C)
-def handlebar(C):
-    return
-```
-
-### 11.4 投资备注（userOrderId）用法
-
-有且只有 passorder / algo_passorder / smart_algo_passorder 支持投资备注（任意字符串，长度 < 24），用于匹配委托与成交：
-
-```python
-def init(C):
-    C.set_account(account)
-    passorder(23, 1101, account, '000001.SZ', 5, 0, 100, '', 2, get_new_note(), C)
-    orders = get_trade_detail_data(account, accountType, 'order')
-    print([o.m_strRemark for o in orders])       # 投资备注
-    print([o.m_strOrderSysID for o in orders])   # 委托号
-
-def order_callback(C, O):
-    print(O.m_strRemark, O.m_strOrderSysID)
-def deal_callback(C, D):
-    print(D.m_strRemark, D.m_strOrderSysID)
-```
-
-### 11.5 Level2 数据订阅
+### 11.3 Level2 数据订阅与查询
 
 ```python
 #coding:gbk
-def l2_quote_callback(data):
-    for s in data:
-        print('lv2快照', s, data[s])
-
 def init(C):
     C.stock = C.stockcode + '.' + C.market
-    C.sub_nums = []
-    for field, cb in [('l2quote', l2_quote_callback), ('l2quoteaux', cb2),
-                      ('l2transaction', cb3), ('l2order', cb4),
-                      ('l2transactioncount', cb5), ('l2orderqueue', cb6)]:
-        C.sub_nums.append(C.subscribe_quote(C.stock, field, result_type='dict', callback=cb))
+    C.sub_nums = [
+        C.subscribe_quote(C.stock, f, result_type='dict', callback=lambda d, f=f: print(f, d))
+        for f in ('l2quote', 'l2quoteaux', 'l2transaction', 'l2order', 'l2transactioncount', 'l2orderqueue')
+    ]
 
 def stop(C):
-    for num in C.sub_nums:          # 不再需要时反订阅释放资源
-        C.unsubscribe_quote(num)
+    for num in C.sub_nums: C.unsubscribe_quote(num)
+
+# 查询式：C.get_market_data_ex([], [C.stock], period='l2transaction', count=10)[C.stock]
 ```
 
-查询式取 L2（get_market_data_ex 定期查最新）：
-
-```python
-def handlebar(C):
-    if not C.is_last_bar():
-        return
-    df = C.get_market_data_ex([], [C.stock], period='l2transaction', count=10)[C.stock]
-    for t, row in df.to_dict('index').items():
-        print(t, row['price'], row['volume'], row['buyNo'], row['sellNo'], row['tradeFlag'])
-```
-
-### 11.6 止盈止损 / 涨停开板监控（handlebar + get_full_tick）
+### 11.4 Python 写入扩展数据（投研版）
 
 ```python
 def init(C):
-    C.sell_code = 24 if accountType == 'STOCK' else 34
-    C.spare_list = C.get_stock_list_in_sector('不卖品种')
-
-def handlebar(C):
-    if not C.is_last_bar():
-        return
-    holdings = get_trade_detail_data(account, accountType, 'position')
-    stock_list = [h.m_strInstrumentID + '.' + h.m_strExchangeID for h in holdings]
-    if not stock_list:
-        return
-    full_tick = C.get_full_tick(stock_list)
-    for h in holdings:
-        stock = h.m_strInstrumentID + '.' + h.m_strExchangeID
-        rate, volume = h.m_dProfitRate, h.m_nCanUseVolume
-        if volume < 100 or stock in C.spare_list:
-            continue
-        if rate < -0.1:                                   # 低于买入价 10% 止损
-            msg = f'{stock} 盈亏比例 {rate} 小于-10% 卖出 {volume}股'
-            passorder(C.sell_code, 1101, account, stock, 14, -1, volume, '减仓模型', 2, msg, C)
-            continue
-        if stock in full_tick:
-            q = full_tick[stock]
-            stop_price = round(q['lastClose'] * (1.2 if stock[:2] in ['30', '68'] else 1.1), 2)
-            ask3 = q['bidPrice'][2]
-            if not ask3:
-                continue                                  # 无五档行情时跳过
-            if q['high'] == stop_price and q['lastPrice'] < stop_price:   # 涨停后开板
-                passorder(C.sell_code, 1101, account, stock, 14, -1, volume,
-                          '减仓模型', 2, f'{stock} 涨停开板 卖出', C)
-```
-
-### 11.7 定时器统计市场涨跌（schedule_run）
-
-```python
-import datetime as dt
-
-def on_timer(C):
-    ticks = C.get_full_tick(globals().get("stock_list"))
-    up = [s for s in ticks if ticks[s]["lastPrice"] > ticks[s]["lastClose"] and ticks[s]["openInt"] != 1]
-    down = [s for s in ticks if ticks[s]["lastPrice"] < ticks[s]["lastClose"] and ticks[s]["openInt"] != 1]
-    print(f"{dt.datetime.now():%Y%m%d %H:%M:%S}: 涨{len(up)} 跌{len(down)}")
-
-def init(C):
-    globals()["stock_list"] = get_stock_list_in_sector("沪深京A股")
-    C.schedule_run(on_timer, '20231231235959', -1, dt.timedelta(seconds=60), 'my_timer')
-    # C.cancel_schedule_run('my_timer')   # 取消任务组
-```
-
-### 11.8 python 写入扩展数据（投研版）
-
-```python
-def init(C):
-    C.ext_name = create_extend_data('扩展数据', 'test', True)   # (父节点, 名称, 是否覆盖)
+    C.ext_name = create_extend_data('扩展数据', 'test', True)  # (父节点, 名称, 是否覆盖)
 
 def handlebar(C):
     if C.is_last_bar():
-        data = {'SH600177': 0.43, 'SZ000767': 0.18, ...}       # {市场+代码: 值}
+        data = {'SH600177': 0.43, 'SZ000767': 0.18}            # {市场+代码: 值}
         reset_extend_data_stock_list(C.ext_name, list(data.keys()))
         set_extend_data_value(C.ext_name, C.get_bar_timetag(C.barpos), data)
 ```
@@ -2502,34 +2204,17 @@ def handlebar(C):
 
 ### 12.1 三类行情数据
 
-1. **本地数据**：下载到本地的加密行情文件（历史数据），适合回测。对应 `get_market_data_ex(subscribe=False)`、`get_local_data`。
-2. **全推数据**：客户端启动后自动接收的全市场最新快照（含日线开高低收、成交量额与五档盘口，取决于行情源全推级别），只有最新值无历史，服务器即时转发增量。对应 `get_full_tick`（一次取出）、`subscribe_whole_quote`（回调增量）。受「交易中心」连接影响。
-3. **订阅数据**：向行情服务器订阅指定品种，支持四种基本周期（分笔/1分钟/5分钟/日线，有 L2 权限可订 L2），当日数据实时更新，历史需下载。有最大订阅数量限制（超限返回前值填充的重复数据），需 VIP 提升上限。对应 `subscribe_quote`、`get_market_data_ex(subscribe=True)`。受「行情中心」连接影响。
+1. **本地数据**：下载到本地的加密历史文件，适合回测（`get_market_data_ex(subscribe=False)`、`get_local_data`）。
+2. **全推数据**：客户端自动接收的全市场最新快照（免订阅、无数量限制、约 50ms 更新、无历史，受「交易中心」连接及全推级别影响），对应 `get_full_tick`、`subscribe_whole_quote`。
+3. **订阅数据**：向行情服务器订阅指定品种与 4 种基础周期（tick/1m/5m/1d 及 L2），当日实时更新、历史需下载，受最大订阅数限制（超限返前值填充重复数据，受「行情中心」连接影响），对应 `subscribe_quote`、`get_market_data_ex(subscribe=True)`。大股票池可用 `download_history_data` + 本地读 + `get_full_tick` 拼接替代；早期 `set_universe` / `get_history_data` / `get_market_data` 无法反订阅，已不推荐。
 
-### 12.2 行情函数选型对比
+### 12.2 常见陷阱与排错
 
-| 函数 | 说明 |
-|---|---|
-| download_history_data | 下载指定区间数据到本地；开始时间不填为增量下载 |
-| get_local_data | 取本地数据，盘中不更新，速度快，回测用【不推荐，用 get_market_data_ex(subscribe=False)】 |
-| get_full_tick | 取客户端缓存最新全推快照；无历史、免订阅、无数量限制、约 50ms 更新 |
-| subscribe_quote | 向服务器订阅，盘中实时更新；初次订阅耗时长，数量受限；unsubscribe_quote 释放 |
-| get_market_data_ex | 取订阅 + 本地数据；subscribe=False 纯本地。股票池大时可用 download_history_data + get_local_data + get_full_tick 拼接替代 |
-| set_universe / get_history_data / get_market_data | 早期股票池订阅接口，无订阅号无法反订阅，**已不推荐** |
-
-注意事项：
-
-- gmd 系列函数（get_market_data / get_market_data_ex）在 init 中只能读本地数据，不建议在 init 中调用。
-- 全推/订阅分笔默认可能只有最新价无五档，需在行情源设置中调高全推级别；passorder 对手价（prType=14）报「对手价无效」同此原因。
-- handlebar 由主图品种分笔驱动：主图为股票时约 3 秒一次；期货高频需求应把主图设为期货，或改用 subscribe/run_time。
-- 主力合约/过期合约相关函数（get_main_contract 历史模式、get_his_contract_list、get_st_status 等）需先在数据管理中补充「过期合约数据 / 历史主力合约 / 过期合约列表」。
-
-### 12.3 其他关键行为
-
-- 下单失败排查：确认在模型交易界面以实盘模式运行（模拟模式只显示信号）；确认 quickTrade 取值（默认 0 在日线周期全天不委托）；查看客户端左下角消息提示的报错。
-- 回测复权建议：等比前复权（front_ratio），避免配股增发造成价格异常波动。
-- `get_instrument_detail` 报「获取合约乘数和最小变动价位失败」：需下载过期合约列表数据。
-- 回测模式下 run_time 定时器无效；subscribe 订阅类盘中逻辑亦不适用于回测遍历。
+- `get_market_data*` 在 `init` 中仅能读本地数据，不建议在 `init` 中调用。
+- 全推/订阅仅含最新价无五档（或 `passorder` 对手价 `prType=14` 报「对手价无效」）时，需在行情源设置中调高全推级别。
+- `handlebar` 由主图分笔驱动（股票约 3s 一次）；期货高频需求应设主图为期货或改用 `subscribe` / `run_time`。
+- 主力合约历史模式、`get_his_contract_list`、`get_st_status` 及 `get_instrument_detail` 报「获取合约乘数和最小变动价位失败」时，须先在数据管理补充「过期合约数据 / 历史主力合约 / 过期合约列表」。
+- 下单失败先查：是否在模型交易以**实盘**模式运行、`quickTrade` 是否为 0（日线周期全天不委托）、左下角消息提示；回测建议等比前复权 `front_ratio`；回测模式下 `run_time` 与 `subscribe` 不生效。
 
 
 

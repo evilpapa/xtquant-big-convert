@@ -152,6 +152,15 @@ BIGQMT_ACCOUNT_TYPE = "STOCK"
 BIGQMT_CONFIG = {
     "transport": "serial",
     "serial": {"port": __QMT_SERIAL_PORT__, "baudrate": 921600},
+    # Windows 本机命名管道，搭配独立 bigqmt-pipe-bridge（仅模拟或获准）：
+    # "transport": "pipe",
+    # "pipe": {"name": "qmt_bridge"},
+    # Windows 窗口消息（WM_COPYDATA），搭配独立 bigqmt-copydata-bridge（仅模拟或获准）：
+    # "transport": "copydata",
+    # "copydata": {"window_name": "qmt_bridge"},
+    # Windows 同一登录会话内的本机 IPC（启用前确认部署环境许可）：
+    # "transport": "shm",
+    # "shm": {"namespace": "qmt_shm"},
     # "transport": "valkey",
     # "host": "127.0.0.1",
     # "port": 6379,

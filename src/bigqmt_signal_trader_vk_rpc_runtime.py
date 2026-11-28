@@ -86,80 +86,46 @@ if _qmt_injected:
 
 
 ACCOUNT_ID                                = ""
-# 账号类型：STOCK(股票) / CREDIT(信用/两融) / FUTURE(期货) / OPTION(期权)
-# 对应 xtconstant 枚举：SECURITY_ACCOUNT=2 / CREDIT_ACCOUNT=3 / FUTURE_ACCOUNT=1
-ACCOUNT_TYPE                              = "STOCK"
-# 这台机器上到底有没有 VK 可用。默认 True 只是为了不改变既有部署的行为；
-# VK_HOST/PORT 有默认值，无法据此判断是否显式配置了 VK（issue #147）。
-#
-# 设成 False 时 configure_runtime 干脆不发 VK 块，于是 config["valkey"] 为空，
-# 五个使用方（委托身份库、异步下载任务、全推快照缓存、exec 事件、身份回填）
-# 各自的 `if not vk_config: return None` 自然生效，一次都不会去连。
-#
-# 用在 QMT 无法加载 RESP 客户端的环境（issue #145），
-# transport=valkey 时这个开关被忽略 ——
-# 那种部署没有 VK 就没有 RPC。
-VK_ENABLED                            = True
-VK_HOST                               = os.environ.get("BIGQMT_VK_HOST") or "127.0.0.1"
-VK_PORT                               = int(os.environ.get("BIGQMT_VK_PORT") or 6379)
-VK_DB                                 = int(os.environ.get("BIGQMT_VK_DB") or 5)
-VK_USERNAME                           = os.environ.get("BIGQMT_VK_USERNAME") or ""
-VK_PASSWORD                           = os.environ.get("BIGQMT_VK_PASSWORD") or ""
-VK_URL                                = os.environ.get("BIGQMT_VK_URL")
-VK_PROTOCOL                           = os.environ.get("BIGQMT_VK_PROTOCOL") or 2
+ACCOUNT_TYPE                              = "STOCK" # 账号类型：STOCK(股票) / CREDIT(信用/两融) / FUTURE(期货) / OPTION(期权) 对应 xtconstant 枚举：SECURITY_ACCOUNT=2 / CREDIT_ACCOUNT=3 / FUTURE_ACCOUNT=1
+VK_ENABLED                                = True # 本机 VK 可用。默认 True 只是为了不改变既有部署的行为； 设成 False 时 configure_runtime 不发 VK 块，config["valkey"] 为空，五个使用方（委托身份库、异步下载任务、全推快照缓存、exec 事件、身份回填）各自的 `if not vk_config: return None` 自然生效，一次都不会去连。 用在 QMT 无法加载 RESP 客户端的环境（issue#145），transport=valkey 时这个开关被忽略 —— 那种部署没有 VK 就没有 RPC。
+VK_HOST                                   = os.environ.get("BIGQMT_VK_HOST") or "127.0.0.1"
+VK_PORT                                   = os.environ.get("BIGQMT_VK_PORT") or 6379
+VK_DB                                     = os.environ.get("BIGQMT_VK_DB") or 5
+VK_USERNAME                               = os.environ.get("BIGQMT_VK_USERNAME") or ""
+VK_PASSWORD                               = os.environ.get("BIGQMT_VK_PASSWORD") or ""
+VK_URL                                    = os.environ.get("BIGQMT_VK_URL")
+VK_PROTOCOL                               = os.environ.get("BIGQMT_VK_PROTOCOL") or 2
 RPC_ALLOW_ORDER_METHODS                   = False
-# 未指定策略名时委托带的 投资备注。QMT 会把它显示在 委托 列表的 报单来源 列
-# （issue #154），所以这不是内部字段。设为 "" 可让该列留空，和手动下单一样。
-RPC_DEFAULT_STRATEGY_NAME                 = None
+RPC_DEFAULT_STRATEGY_NAME                 = None # 未指定策略名时委托带的 投资备注。QMT 会把它显示在 委托 列表的 报单来源 列 （issue #154），所以这不是内部字段。设为 "" 可让该列留空，和手动下单一样。
 RPC_PROCESS_IN_LISTENER                   = True
 RPC_BACKGROUND_THREADS                    = False
-# "*" 展开为只读 RPC 方法。委托、撤单和持仓同步走队列，由 adjust 处理。
-RPC_LISTENER_METHODS                      = ("*",)
-# 将所选传输方式和对应配置传给传输工厂。
-RPC_TRANSPORT                             = "valkey"
+RPC_LISTENER_METHODS                      = ("*",)  # "*" 展开为只读 RPC 方法。委托、撤单和持仓同步走队列，由 adjust 处理。
+RPC_TRANSPORT                             = "valkey" # 将所选传输方式和对应配置传给传输工厂。
 RPC_SERIAL_CONFIG                         = {}
-# None 表示采用默认启用行为，也可显式传 True 或 False。
-RPC_NATIVE_XTDATA_ENABLED                 = None
+RPC_PIPE_CONFIG                           = {}
+RPC_SHM_CONFIG                            = {}
+RPC_NATIVE_XTDATA_ENABLED                 = None # None 表示采用默认启用行为，也可显式传 True 或 False。
 QUOTE_PUSH_CONFIG                         = {}
 SCHEDULE_ADJUST_ENABLED                   = True
-# 主策略线程通过 adjust 处理 RPC 队列的间隔。缩短间隔可减少排队等待。
-# 设为 3 秒以下时，用调度日志确认目标终端的 run_time 确实按该间隔触发。
-SCHEDULE_ADJUST_INTERVAL                  = "500nMilliSecond"
-# 每次 adjust 处理 RPC 的时间上限（#303）。
-# None 表示取调度间隔且至少 0.5 秒，0 表示不设上限。
-RPC_DRAIN_BUDGET_SECONDS                  = None
-# 提交或撤单后等待委托确认的时间（#396）。未设置时由处理器使用默认的 3 秒。
-# 显式设置 order_settle_timeout_seconds 才覆盖默认值。
-RPC_ORDER_SETTLE_TIMEOUT_SECONDS          = None
-# 队列模式可把符合条件的大型读取交给单独线程（#351），例如财务数据、
-# 全市场快照、逐笔或区间行情，以及超过标的数阈值的查询。
-# 这可减少 adjust 被占用的时间，重读取应答约多等 1～2 个调度周期。
-RPC_HEAVY_OFFLOAD                         = True
+SCHEDULE_ADJUST_INTERVAL                  = "500nMilliSecond"  # 主策略线程通过 adjust 处理 RPC 队列的间隔。缩短间隔可减少排队等待。设为 3 秒以下时，用调度日志确认目标终端的 run_time 确实按该间隔触发。
+RPC_DRAIN_BUDGET_SECONDS                  = None # 每次 adjust 处理 RPC 的时间上限（#303）。 None 表示取调度间隔且至少 0.5 秒，0 表示不设上限。
+RPC_ORDER_SETTLE_TIMEOUT_SECONDS          = None # 提交或撤单后等待委托确认的时间（#396）。未设置时由处理器使用默认的 3 秒。 显式设置 order_settle_timeout_seconds 才覆盖默认值。
+RPC_HEAVY_OFFLOAD                         = True # 队列模式可把符合条件的大型读取交给单独线程（#351），例如财务数据、全市场快照、逐笔或区间行情，以及超过标的数阈值的查询。这可减少 adjust 被占用的时间，重读取应答约多等 1～2 个调度周期。
 RPC_HEAVY_CODES_THRESHOLD                 = 20
 FULL_TICK_CACHE_ENABLED                   = False
 FULL_TICK_DEMAND_TTL_SECONDS              = 10
 FULL_TICK_CACHE_TTL_SECONDS               = 10
-# 标的列表刷新较快，全市场（SH/SZ/BJ/HK）刷新较慢，避免频繁读取约 5 万行行情。
-FULL_TICK_REFRESH_INTERVAL_SECONDS        = 0.5
+FULL_TICK_REFRESH_INTERVAL_SECONDS        = 0.5 # 标的列表刷新较快，全市场（SH/SZ/BJ/HK）刷新较慢，避免频繁读取约 5 万行行情。
 FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS = 3.0
-# 限制单轮刷新耗时，避免长时间占用策略线程。
-FULL_TICK_REFRESH_MAX_WALL_SECONDS        = 0.3
+FULL_TICK_REFRESH_MAX_WALL_SECONDS        = 0.3 # 限制单轮刷新耗时，避免长时间占用策略线程。
 FULL_TICK_MAX_REQUESTS                    = 8
-# 异步下载按标的分批推进，单轮受耗时预算限制。若单个标的下载较慢，应调小批量。
-# 默认关闭。完整大 QMT 内置的 xtdata SDK 可能无法连接行情服务，可通过终端的
-#「数据管理 / 补充数据」准备历史数据，再用 get_market_data_ex 或 get_local_data 读取。
-DOWNLOAD_JOBS_ENABLED                     = False
+DOWNLOAD_JOBS_ENABLED                     = False # 异步下载按标的分批推进，单轮受耗时预算限制。若单个标的下载较慢，应调小批量。默认关闭。完整大 QMT 内置的 xtdata SDK 可能无法连接行情服务，可通过终端的「数据管理 / 补充数据」准备历史数据，再用 get_market_data_ex 或 get_local_data 读取。
 DOWNLOAD_JOB_CHUNK_SIZE                   = 10
 DOWNLOAD_JOB_MAX_WALL_SECONDS             = 0.5
 DOWNLOAD_JOB_TTL_SECONDS                  = 3600
-# 推送委托与成交回报，让客户端实时触发 MiniQMT 风格的回调。
-EXEC_EVENTS_ENABLED                       = True
-# 将委托或成交原始字段打印到 QMT 面板，并随事件附上 raw_fields。
-# 每次回调都会输出，仅在排查 m_nDirection、m_nOffsetFlag 等字段时开启。
-EXEC_EVENTS_DEBUG_RAW_FIELDS              = False
-# QMT 分别在委托号生成前后触发回调，客户端可能收到两条「已报」事件（#161）。
-# 暂存无委托号事件并等待后续回调。设为 0 时立即发布每条事件。
-EXEC_EVENTS_HOLD_PRESYSID_SECONDS         = 0.8
+EXEC_EVENTS_ENABLED                       = True # 推送委托与成交回报，让客户端实时触发 MiniQMT 风格的回调。
+EXEC_EVENTS_DEBUG_RAW_FIELDS              = False # 将委托或成交原始字段打印到 QMT 面板，并随事件附上 raw_fields。每次回调都会输出，仅在排查 m_nDirection、m_nOffsetFlag 等字段时开启。
+EXEC_EVENTS_HOLD_PRESYSID_SECONDS         = 0.8 # QMT 分别在委托号生成前后触发回调，客户端可能收到两条「已报」事件（#161）。暂存无委托号事件并等待后续回调。设为 0 时立即发布每条事件。
 
 try:
     # 兼容未设置 BIGQMT_ACCOUNT_TYPE 的旧配置，仍读取账号和 VK 参数。
@@ -241,13 +207,17 @@ _report_account_type()
 VK_ENABLED = bool(BIGQMT_CONFIG.get("vk_enabled", BIGQMT_CONFIG.get("valkey_enabled", VK_ENABLED)))
 VK_ENABLED_EXPLICIT = "vk_enabled" in BIGQMT_CONFIG or "valkey_enabled" in BIGQMT_CONFIG
 # Keep direct runtime configuration in sync with the selected transport.
+_LOCAL_IPC_TRANSPORTS = ("serial", "pipe", "shm", "copydata")
 RPC_TRANSPORT                             = str(BIGQMT_CONFIG.get("transport", RPC_TRANSPORT)).lower()
 RPC_SERIAL_CONFIG                         = dict(BIGQMT_CONFIG.get("serial") or {})
+RPC_PIPE_CONFIG                           = dict(BIGQMT_CONFIG.get("pipe") or {})
+RPC_COPYDATA_CONFIG                       = dict(BIGQMT_CONFIG.get("copydata") or {})
+RPC_SHM_CONFIG                            = dict(BIGQMT_CONFIG.get("shm") or {})
 if BIGQMT_CONFIG.get("native_xtdata_enabled") is not None:
     RPC_NATIVE_XTDATA_ENABLED = bool(BIGQMT_CONFIG.get("native_xtdata_enabled"))
 VK_HOST                               = BIGQMT_CONFIG.get("host", VK_HOST)
-VK_PORT                               = int(BIGQMT_CONFIG.get("port", VK_PORT))
-VK_DB                                 = int(BIGQMT_CONFIG.get("db", VK_DB))
+VK_PORT                               = BIGQMT_CONFIG.get("port", VK_PORT)
+VK_DB                                 = BIGQMT_CONFIG.get("db", VK_DB)
 VK_USERNAME                           = BIGQMT_CONFIG.get("username", VK_USERNAME)
 VK_PASSWORD                           = BIGQMT_CONFIG.get("password", VK_PASSWORD)
 VK_URL                                = BIGQMT_CONFIG.get("url", VK_URL)
@@ -256,9 +226,7 @@ RPC_ALLOW_ORDER_METHODS                   = bool(BIGQMT_CONFIG.get("rpc_allow_or
 RPC_DEFAULT_STRATEGY_NAME                 = BIGQMT_CONFIG.get("rpc_default_strategy_name", RPC_DEFAULT_STRATEGY_NAME)
 RPC_PROCESS_IN_LISTENER                   = bool(BIGQMT_CONFIG.get("rpc_process_in_listener", RPC_PROCESS_IN_LISTENER and not RPC_ALLOW_ORDER_METHODS))
 RPC_BACKGROUND_THREADS                    = bool(BIGQMT_CONFIG.get("rpc_background_threads", RPC_BACKGROUND_THREADS))
-# The strategy side only honors an EXPLICIT rpc_background_threads on non-VK
-# transports (absent = historical default, receiver threads on). Remember
-# whether the local config named it so _apply_config can forward accordingly.
+# The strategy side only honors an EXPLICIT rpc_background_threads on non-VK transports (absent = historical default, receiver threads on). Remember whether the local config named it so _apply_config can forward accordingly.
 RPC_BACKGROUND_THREADS_EXPLICIT           = "rpc_background_threads" in BIGQMT_CONFIG
 RPC_LISTENER_METHODS                      = tuple(BIGQMT_CONFIG.get("rpc_listener_methods", RPC_LISTENER_METHODS))
 QUOTE_PUSH_CONFIG                         = dict(BIGQMT_CONFIG.get("quote_push", QUOTE_PUSH_CONFIG))
@@ -285,19 +253,18 @@ DOWNLOAD_JOB_MAX_WALL_SECONDS             = float(BIGQMT_CONFIG.get("download_jo
 DOWNLOAD_JOB_TTL_SECONDS                  = int(BIGQMT_CONFIG.get("download_job_ttl_seconds", DOWNLOAD_JOB_TTL_SECONDS))
 EXEC_EVENTS_ENABLED                       = bool(BIGQMT_CONFIG.get("exec_events_enabled", EXEC_EVENTS_ENABLED))
 EXEC_EVENTS_DEBUG_RAW_FIELDS              = bool(BIGQMT_CONFIG.get("exec_events_debug_raw_fields", EXEC_EVENTS_DEBUG_RAW_FIELDS))
-# issue #161: sysid-less order events are held this long waiting for their
-# sysid-bearing twin; 0 publishes every event immediately (old behaviour).
+# issue #161: sysid-less order events are held this long waiting for their sysid-bearing twin; 0 publishes every event immediately (old behaviour).
 EXEC_EVENTS_HOLD_PRESYSID_SECONDS         = float(BIGQMT_CONFIG.get("exec_events_hold_presysid_seconds", 0.8))
 
 
 def _vk_block():
-    """返回 VK 配置。串口模式返回空字典，使依赖 VK 的可选功能跳过初始化。"""
-    if RPC_TRANSPORT == "serial" or (not VK_ENABLED and RPC_TRANSPORT not in ("valkey", "", "default")):
+    """本地 IPC 模式不下发 VK 配置。"""
+    if RPC_TRANSPORT in _LOCAL_IPC_TRANSPORTS or (not VK_ENABLED and RPC_TRANSPORT not in ("valkey", "", "default")):
         return {}
     return {
         "host": VK_HOST,
-        "port": VK_PORT,
-        "db": VK_DB,
+        "port": int(VK_PORT),
+        "db": int(VK_DB),
         "username": VK_USERNAME,
         "password": VK_PASSWORD,
         "url": VK_URL,
@@ -330,12 +297,17 @@ def _apply_config(account_id):
         # config for the transport factory.
         "transport": RPC_TRANSPORT,
         # Native xtdata can be explicitly disabled.
-        "native_xtdata_enabled": (bool(RPC_NATIVE_XTDATA_ENABLED)
-                                  if RPC_NATIVE_XTDATA_ENABLED is not None
-                                  else True),
+        "native_xtdata_enabled": (RPC_TRANSPORT not in _LOCAL_IPC_TRANSPORTS
+                                  and RPC_NATIVE_XTDATA_ENABLED is not False),
     }
     if RPC_TRANSPORT == "serial":
         rpc_block["serial"] = dict(RPC_SERIAL_CONFIG)
+    elif RPC_TRANSPORT == "pipe":
+        rpc_block["pipe"] = dict(RPC_PIPE_CONFIG)
+    elif RPC_TRANSPORT == "copydata":
+        rpc_block["copydata"] = dict(RPC_COPYDATA_CONFIG)
+    elif RPC_TRANSPORT == "shm":
+        rpc_block["shm"] = dict(RPC_SHM_CONFIG)
     # 只转发显式配置的等待时间，避免把 None 传给处理器的 float()（#396）。
     if RPC_ORDER_SETTLE_TIMEOUT_SECONDS is not None:
         rpc_block["order_settle_timeout_seconds"] = float(RPC_ORDER_SETTLE_TIMEOUT_SECONDS)
@@ -348,7 +320,7 @@ def _apply_config(account_id):
         account_type=ACCOUNT_TYPE,
         position_sync_type="valkey" if RPC_TRANSPORT in ("valkey", "", "default") else "",
         enable_rpc=True,
-        schedule_adjust=SCHEDULE_ADJUST_ENABLED or RPC_TRANSPORT == "serial",
+        schedule_adjust=SCHEDULE_ADJUST_ENABLED or RPC_TRANSPORT in _LOCAL_IPC_TRANSPORTS,
         schedule_adjust_interval=SCHEDULE_ADJUST_INTERVAL,
         adjust_log_enabled=ADJUST_LOG_ENABLED,
         adjust_log_interval_seconds=ADJUST_LOG_INTERVAL_SECONDS,
@@ -387,18 +359,21 @@ def configure_runtime_account(account_id):
 
 def configure_runtime_vk(vk_config):
     global VK_ENABLED, VK_HOST, VK_PORT, VK_DB, VK_USERNAME, VK_PASSWORD, RPC_ALLOW_ORDER_METHODS, RPC_DEFAULT_STRATEGY_NAME, RPC_PROCESS_IN_LISTENER, RPC_BACKGROUND_THREADS, RPC_LISTENER_METHODS, SCHEDULE_ADJUST_ENABLED, SCHEDULE_ADJUST_INTERVAL, FULL_TICK_CACHE_ENABLED, FULL_TICK_DEMAND_TTL_SECONDS, FULL_TICK_CACHE_TTL_SECONDS, FULL_TICK_REFRESH_INTERVAL_SECONDS, FULL_TICK_MARKET_REFRESH_INTERVAL_SECONDS, FULL_TICK_REFRESH_MAX_WALL_SECONDS, FULL_TICK_MAX_REQUESTS, RPC_TRANSPORT, QUOTE_PUSH_CONFIG, DOWNLOAD_JOBS_ENABLED, DOWNLOAD_JOB_CHUNK_SIZE, DOWNLOAD_JOB_MAX_WALL_SECONDS, DOWNLOAD_JOB_TTL_SECONDS, EXEC_EVENTS_ENABLED, EXEC_EVENTS_DEBUG_RAW_FIELDS, EXEC_EVENTS_HOLD_PRESYSID_SECONDS, RPC_BACKGROUND_THREADS_EXPLICIT, RPC_DRAIN_BUDGET_SECONDS, RPC_HEAVY_OFFLOAD, RPC_HEAVY_CODES_THRESHOLD, VK_ENABLED_EXPLICIT, RPC_NATIVE_XTDATA_ENABLED, RPC_ORDER_SETTLE_TIMEOUT_SECONDS
-    global RPC_SERIAL_CONFIG, VK_URL, VK_PROTOCOL
+    global RPC_SERIAL_CONFIG, RPC_PIPE_CONFIG, RPC_COPYDATA_CONFIG, RPC_SHM_CONFIG, VK_URL, VK_PROTOCOL
     global ADJUST_LOG_ENABLED, ADJUST_LOG_INTERVAL_SECONDS
     vk_config = vk_config or {}
     RPC_SERIAL_CONFIG                         = dict(vk_config.get("serial") or {})
+    RPC_PIPE_CONFIG                           = dict(vk_config.get("pipe") or {})
+    RPC_COPYDATA_CONFIG                       = dict(vk_config.get("copydata") or {})
+    RPC_SHM_CONFIG                            = dict(vk_config.get("shm") or {})
     RPC_BACKGROUND_THREADS_EXPLICIT           = "rpc_background_threads" in vk_config
     VK_ENABLED_EXPLICIT = "vk_enabled" in vk_config or "valkey_enabled" in vk_config
     if vk_config.get("native_xtdata_enabled") is not None:
         RPC_NATIVE_XTDATA_ENABLED = bool(vk_config.get("native_xtdata_enabled"))
     VK_ENABLED = bool(vk_config.get("vk_enabled", vk_config.get("valkey_enabled", VK_ENABLED)))
     VK_HOST                   = vk_config.get("host",                         VK_HOST)
-    VK_PORT                   = int(vk_config.get("port",                     VK_PORT))
-    VK_DB                     = int(vk_config.get("db",                       VK_DB))
+    VK_PORT                   = vk_config.get("port",                         VK_PORT)
+    VK_DB                     = vk_config.get("db",                           VK_DB)
     VK_USERNAME               = vk_config.get("username",                     VK_USERNAME)
     VK_PASSWORD               = vk_config.get("password",                     VK_PASSWORD)
     VK_URL                    = vk_config.get("url",                          VK_URL)

@@ -1,141 +1,47 @@
-﻿# 大 QMT 信号下单包运行手册
+# 大 QMT 信号下单包运行手册
 
-更新时间：2026-07-01
+> 更新时间：2026-07-01（早期信号下单 dry-run 阶段运维记录；当前通用部署与 RPC 桥使用见 [USER_GUIDE.md](USER_GUIDE.md) 与 [DEPLOY_QUICKSTART.md](DEPLOY_QUICKSTART.md)）。
 
-## 1. 当前结论
+## 1. 当前状态与核心原则
 
-这个包已经具备大 QMT 运行入口和 QMT 适配层：
+本包定位为「**外部系统产出逐笔交易信号，大 QMT 只负责执行**」（非 `qmt_jq_trade` 的目标持仓同步脚本），包含策略入口 `bigqmt_signal_trader_strategy.py` 及行情/持仓/下单适配层，默认 `mode="dryrun"` 不下真实委托。
 
-- `bigqmt_signal_trader_strategy.py`：大 QMT 策略入口，响应 `init`、`handlebar/adjust`、委托回调、成交回调。
-- `BigQmtMarketDataProvider`：封装 `ContextInfo.get_full_tick()` 和 `ContextInfo.get_instrumentdetail()`。
-- `BigQmtPositionProvider`：封装 `get_trade_detail_data(account, 'STOCK', 'POSITION')`。
-- `BigQmtOrderGateway`：按 `qmt_jq_trade` 的参数形状调用 `passorder()`。
-- 默认模式仍是 `dryrun`，不会真实发委托。
+- **已完成**：本地单测 32 passed、QMT 目录导入与 `init/adjust/sync_positions` 模拟回调、fake `passorder` 参数验证、VK Stream 信号源/状态写回/持仓同步（迁移前已于本机 Redis db5 验证 dry-run）。
+- **未完成**：QMT「模型交易」真实实盘委托验证、将 miniQMT 切换为只写 VK 信号、真实账号启用 `passorder`。
+- **页面检查（2026-07-01 08:00）**：模型交易当前仅运行「网格策略」，本策略尚未挂入运行。
 
-截至 2026-07-01 凌晨，已完成：
+### 必须遵守的三条 QMT 运行规则
 
-- 本地单元测试：`32 tests OK`。
-- QMT `python` 目录导入测试通过。
-- 模拟 `init/adjust/sync_positions` 回调通过。
-- 模拟 `mode="bigqmt"` + fake `passorder` 参数测试通过。
-- VK Stream 信号源、VK 状态写回、VK 持仓同步已实现。
-- 迁移前在本机 Redis `127.0.0.1:6379 db=5` 验证过 dry-run 集成。
+1. **编辑器运行 ≠ 真实交易**：编辑器「运行」仅查 `init/handlebar` 语法与回调；实盘前必须进「模型交易」页面绑定资金账号，先用「模拟信号」观察，全部前置条件通过后再开「实盘交易」。
+2. **切勿勾选「启动本地 python」**：勾选后会作为独立脚本运行，不触发 `init/handlebar/order_callback/deal_callback` 且立即退出。
+3. **跳过历史 bar**：入口已通过 `if hasattr(ContextInfo, "is_last_bar") and not ContextInfo.is_last_bar(): return None` 防止历史回放阶段误消费实时信号。
 
-还没有完成：
+---
 
-- 没有在 QMT 页面里通过“模型交易”做真实实盘委托验证。
-- 没有把 miniQMT 的真实买卖指令切成只写 VK 信号。
-- 没有在真实账号上启用大 QMT `passorder` 实盘执行。
+## 2. 文件部署
 
-所以今天开盘可以先验证“大 QMT 是否能持续加载和触发回调”，以及 VK dry-run 链路是否能消费测试信号并写回状态。如果要真的由大 QMT 替代 miniQMT 下单，必须先完成 miniQMT 只写信号、单账户灰度和实盘风控确认。
-
-## 1.1 当前 QMT 页面检查结果
-
-2026-07-01 08:00 左右检查大 QMT“模型交易”页面：
-
-- 页面里当前运行/展示的策略名称是“网格策略”。
-- 没有看到 `bigqmt_signal_trader` 或 `bigqmt_signal_trader_vk_dryrun`。
-- “策略日志”页没有 `[bigqmt_signal_trader] init ok` 或 `[bigqmt_signal_trader] adjust ok`。
-
-结论：当前这个文件还没有真正挂到大 QMT 模型交易里运行。
-
-## 2. 官方文档里的关键点
-
-### 2.1 编辑器运行不等于真实交易
-
-大 QMT 编辑器里的“运行/回测/模型运行”主要用于公式、模型、信号验证。要真正把委托发送到交易柜台，需要进入“模型交易”页面，把策略加入模型交易实例并绑定资金账号。
-
-结论：
-
-- 编辑器“运行”：适合检查 `init/handlebar` 是否报错，不用于确认真实下单。
-- 模型交易“模拟信号”：适合开盘先观察回调、信号、价格、状态，不真实下单。
-- 模型交易“实盘交易”：只有确认信号源、幂等、风控都 OK 后才能打开。
-
-### 2.2 不要勾选“启动本地 python”
-
-官方文档说明，“启动本地 python”是把脚本作为独立 Python 进程运行。这个模式不会按大 QMT 回调机制触发 `init(ContextInfo)`、`handlebar(ContextInfo)`。
-
-本包是回调式策略入口，必须让 QMT 自己调用：
-
-- 不勾选：`init`、`handlebar`、`order_callback`、`deal_callback` 正常触发。
-- 勾选：脚本只会像普通 Python 文件一样执行 import，通常会马上结束，不会进入交易回调。
-
-### 2.3 必须跳过历史 bar
-
-QMT 加载策略时可能先跑历史 K 线，再进入最后一根实时 bar。入口已经加了保护：
-
-```python
-if hasattr(ContextInfo, "is_last_bar") and not ContextInfo.is_last_bar():
-    return None
-```
-
-这可以避免未来接入真实信号源后，在历史回放阶段误消费当前待处理信号。
-
-## 3. 文件部署
-
-大 QMT 运行目录：
-
-```text
-<QMT_PYTHON_DIR>
-```
-
-源代码目录：
-
-```text
-<REPO_ROOT>\src
-```
-
-部署命令：
+将 `<REPO_ROOT>\src` 中的 `bigqmt_signal_trader\`、`bigqmt_signal_trader_strategy.py`、`bigqmt_signal_trader_dryrun.py`、`bigqmt_signal_trader_vk_dryrun.py` 复制到 `<QMT_PYTHON_DIR>`，并清理 `__pycache__`：
 
 ```powershell
-Copy-Item -Path '<REPO_ROOT>\src\bigqmt_signal_trader\*' `
-  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader' `
-  -Recurse -Force
-
-Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_strategy.py' `
-  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_strategy.py' `
-  -Force
-
-Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_dryrun.py' `
-  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_dryrun.py' `
-  -Force
-
-Copy-Item -LiteralPath '<REPO_ROOT>\src\bigqmt_signal_trader_vk_dryrun.py' `
-  -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader_vk_dryrun.py' `
-  -Force
+Copy-Item -Path '<REPO_ROOT>\src\bigqmt_signal_trader\*' -Destination '<QMT_PYTHON_DIR>\bigqmt_signal_trader' -Recurse -Force
+foreach ($f in 'bigqmt_signal_trader_strategy.py','bigqmt_signal_trader_dryrun.py','bigqmt_signal_trader_vk_dryrun.py') {
+  Copy-Item -LiteralPath "<REPO_ROOT>\src\$f" -Destination "<QMT_PYTHON_DIR>\$f" -Force
+}
+Get-ChildItem -LiteralPath '<QMT_PYTHON_DIR>' -Recurse -Filter '__pycache__' -Directory -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
 ```
 
-清理缓存：
+---
 
-```powershell
-Get-ChildItem -LiteralPath '<QMT_PYTHON_DIR>\bigqmt_signal_trader' `
-  -Recurse -Filter '__pycache__' -Directory -ErrorAction SilentlyContinue |
-  Remove-Item -Recurse -Force
+## 3. 编辑器 Dry-Run 与 VK 链路验证
 
-Get-ChildItem -LiteralPath '<QMT_PYTHON_DIR>' `
-  -Filter '__pycache__' -Directory -ErrorAction SilentlyContinue |
-  Remove-Item -Recurse -Force
-```
+### 3.1 基础 Dry-Run 入口（纯 ASCII，避免编码问题）
 
-## 4. QMT 编辑器加载测试
-
-目的：只验证 QMT 能加载入口、能触发 `init/adjust`，不会真实下单。
-
-### 4.1 策略文件内容
-
-在 QMT 策略编辑器中新建一个策略，例如 `大QMT信号下单_dryrun`，内容使用下面这段。脚本必须保持 ASCII，避免 QMT 编辑器编码问题。
+在策略编辑器新建策略（周期 `1分钟`/`3分钟`、标的 `000300.SH`、不勾「启动本地 python」与自动交易），保存 → 编译 → 运行，期望输出 `[bigqmt_signal_trader] init ok` 与 `[bigqmt_signal_trader] adjust ok`：
 
 ```python
 #coding:gbk
 from bigqmt_signal_trader_strategy import (
-    adjust,
-    configure,
-    deal_callback,
-    handlebar,
-    init,
-    order_callback,
-    set_account_id,
-    sync_positions,
+    adjust, configure, deal_callback, handlebar, init, order_callback, set_account_id, sync_positions,
 )
 
 try:
@@ -145,216 +51,49 @@ except NameError:
 
 if ACCOUNT_ID:
     set_account_id(ACCOUNT_ID)
-
 configure(mode="dryrun", account_id=ACCOUNT_ID or "dryrun")
 ```
 
-### 4.2 QMT 页面设置
+### 3.2 VK Dry-Run 安全观察入口
 
-在策略编辑器右侧/基本信息里：
+`bigqmt_signal_trader_vk_dryrun.py` 默认使用测试账号 `bigqmt_probe`（`127.0.0.1:6379 db=5`，Stream `bigqmt:signals:bigqmt_probe`，Status `bigqmt:signal_status:bigqmt_probe:{signal_id}`，Position `bigqmt:positions:bigqmt_probe`，`DryRunOrderGateway`）。若 `<QMT_PYTHON_DIR>\bigqmt_signal_trader_qmt_config.py` 存在 `BIGQMT_CONFIG` 则覆盖 VK 连接（含密码勿提交）。
 
-- 运行周期：建议先选 `1分钟` 或 `3分钟`。
-- 标的：建议先用流动性稳定的指数或股票，例如 `000300.SH`。
-- 启动本地 python：不要勾选。
-- 自动交易/实盘交易：不要在编辑器测试阶段打开。
+> 切勿将 `ACCOUNT_ID` 设为真实资金账号，以免 dry-run 消费并 ack 真实待执行信号。
 
-点击顺序：
-
-1. 保存。
-2. 编译。
-3. 运行。
-
-期望输出：
-
-```text
-[bigqmt_signal_trader] init ok
-[bigqmt_signal_trader] adjust ok
-```
-
-如果只看到“开始运行/结束运行”，但没有 `init ok/adjust ok`：
-
-- 检查是否勾选了“启动本地 python”。
-- 检查是否真的导入了 `bigqmt_signal_trader_strategy.py`。
-- 检查 QMT 输出窗或 `XtClient_Formula_YYYYMMDD.log` 是否有 traceback。
-
-## 4.3 VK dry-run 入口
-
-已经新增安全观察入口：
-
-```text
-<QMT_PYTHON_DIR>\bigqmt_signal_trader_vk_dryrun.py
-```
-
-默认配置：
-
-```text
-ACCOUNT_ID = bigqmt_probe
-VK = 127.0.0.1:6379 db=5
-Stream = bigqmt:signals:bigqmt_probe
-Status = bigqmt:signal_status:bigqmt_probe:{signal_id}
-Position = bigqmt:positions:bigqmt_probe
-OrderGateway = DryRunOrderGateway
-```
-
-如果 QMT 的 `python` 目录存在本地私有配置文件，则 VK 连接会被覆盖：
-
-```text
-<QMT_PYTHON_DIR>\bigqmt_signal_trader_qmt_config.py
-```
-
-格式：
-
-```python
-# coding: utf-8
-BIGQMT_CONFIG = {
-    "host": "YOUR_VK_HOST",
-    "port": 6379,
-    "db": 5,
-    "username": "",
-    "password": "...",
-}
-```
-
-这个文件含 VK 密码，只放 QMT 本地目录，不提交到源码仓库，也不要贴进文档。
-
-这个入口只用于开盘观察 VK 链路，不会真实下单，也不会消费真实账号流。不要把 `ACCOUNT_ID` 改成真实资金账号，除非你明确知道 dry-run 会 ack 掉该账号的 VK 信号。
-
-写入一条测试信号：
+写入测试信号并核验状态（期望 `status = DRY_RUN`、`user_order_id = dryrun:bq:...`）：
 
 ```powershell
 cd <REPO_ROOT>
-python -B -c "import sys,datetime,json,valkey; sys.path.insert(0,'src'); from bigqmt_signal_trader.adapters.signal_vk import push_trade_signal; r=valkey.Valkey(host='127.0.0.1',port=6379,db=5); push_trade_signal(r, {'signal_id':'probe-001','account_id':'bigqmt_probe','action':'BUY','stock_code':'600000.SH','amount':100,'price_type':'FIX_PRICE','price':10.0,'created_at':'2026-07-01 09:31:00','expire_at':'2026-07-01 23:59:00','schema_version':1})"
-```
-
-运行后检查状态：
-
-```powershell
+python -B -c "import sys,valkey; sys.path.insert(0,'src'); from bigqmt_signal_trader.adapters.signal_vk import push_trade_signal; r=valkey.Valkey(host='127.0.0.1',port=6379,db=5); push_trade_signal(r, {'signal_id':'probe-001','account_id':'bigqmt_probe','action':'BUY','stock_code':'600000.SH','amount':100,'price_type':'FIX_PRICE','price':10.0,'created_at':'2026-07-01 09:31:00','expire_at':'2026-07-01 23:59:00','schema_version':1})"
 python -B -c "import valkey; r=valkey.Valkey(host='127.0.0.1',port=6379,db=5,decode_responses=True); print(r.hgetall('bigqmt:signal_status:bigqmt_probe:probe-001'))"
 ```
 
-期望状态里出现：
+---
 
-```text
-status = DRY_RUN
-user_order_id = dryrun:bq:...
-```
+## 4. 模型交易运行与实盘准入
 
-## 5. 模型交易页面运行
+1. **模拟信号阶段**：模型交易新建实例 → 选 dry-run 策略 → 绑定资金账号 → 标的 `000300.SH` / `1分钟` → 选「模拟信号」→ 启动。开盘观察 `init ok`、`adjust ok`、无 traceback、无真实委托（跑 VK dry-run 时可投递 `bigqmt_probe` 测试信号）。
+2. **大 QMT Adapter 装配测试**：将策略末尾改为 `configure(mode="bigqmt", account_id=ACCOUNT_ID or "dryrun")`；无真实 `SignalSource` 时仅验证行情/持仓/委托适配器可用，不发单。
+3. **开盘观察节奏（9:10 前 / 9:30–9:35 / 9:35 后）**：9:10 前完成部署、编译与模拟启动；9:30–9:35 核查 `init ok`/`adjust ok`、`XtClient_Formula_YYYYMMDD.log`、无真实委托及测试信号状态；稳定后再调整触发周期，保持观察。
+4. **切「实盘交易」必须全部满足**：
+   - 已验证 Stream 信号源、`StateStore.claim()` 与状态回写；
+   - 模拟信号已验证 `passorder` 参数、持仓与撤单查询；
+   - 已确认历史 bar 不触发下单；
+   - miniQMT 已停止对同账户真实下单（防双系统抢单）；
+   - dry-run 未 ack 真实账号的待实盘信号。
 
-目的：开盘后观察策略在真实行情驱动下是否持续触发，而不是只在编辑器里跑一次。
+---
 
-### 5.1 第一步只跑模拟信号
+## 5. 日志排查与参考
 
-进入 QMT 的“模型交易”页面：
-
-1. 新建模型交易实例。
-2. 选择上面的策略文件。
-3. 绑定资金账号。
-4. 标的使用 `000300.SH` 或其他稳定标的。
-5. 周期先用 `1分钟`。
-6. 运行方式先选择“模拟信号”或等价的非实盘模式。
-7. 确认“启动本地 python”没有勾选。
-8. 启动模型交易。
-
-开盘后观察：
-
-- 输出窗是否出现 `[bigqmt_signal_trader] init ok`。
-- 第一根实时 bar 后是否出现 `[bigqmt_signal_trader] adjust ok`。
-- 日志里是否没有 `Traceback`、`ModuleNotFoundError`、`run script failed`。
-- 委托页面不应该出现真实委托，因为当前是 dry-run 且空信号源。
-
-如果要验证 VK dry-run 链路，则选择 `bigqmt_signal_trader_vk_dryrun.py`，并向 `bigqmt:signals:bigqmt_probe` 写入测试信号。它只会写 VK 状态，不会真实委托。
-
-### 5.2 真实大 QMT adapter 连通模式
-
-如果只想确认大 QMT adapter 可以装配，但仍然没有真实信号源，可以把策略最后一行改成：
-
-```python
-configure(mode="bigqmt", account_id=ACCOUNT_ID or "dryrun")
-```
-
-注意：当前没有配置真实 `SignalSource`，所以即使是 `mode="bigqmt"`，也不会产生订单。它只会装配行情、持仓、委托 adapter，用于确认 QMT 环境里这些函数可用。
-
-### 5.3 真正实盘委托前置条件
-
-只有满足下面全部条件，才能考虑切到实盘交易：
-
-- 迁移前在 Redis db5 验证了 Stream 信号源、`StateStore.claim()` 和状态回写。
-- 已用模拟信号验证 `passorder` 参数、持仓查询、撤单查询全部正常。
-- 已确认历史 bar 不会触发下单。
-- 已确认 miniQMT 不再对同一账户重复真实下单，避免双系统抢单。
-- 已确认 dry-run 没有 ack 掉真实账号待实盘处理的信号。
-
-未满足这些条件时，不要切到“实盘交易”。
-
-## 6. 今日开盘观察清单
-
-日期：2026-07-01
-
-### 9:10 前
-
-- 确认 QMT 已登录。
-- 确认文件已部署到 `<QMT_PYTHON_DIR>`。
-- 在策略编辑器里编译成功。
-- 确认“启动本地 python”未勾选。
-- 在模型交易页面用“模拟信号”启动 `bigqmt_signal_trader_dryrun.py` 或 `bigqmt_signal_trader_vk_dryrun.py`。
-
-### 9:30 到 9:35
-
-- 看输出窗是否出现 `init ok` 和 `adjust ok`。
-- 看 `XtClient_Formula_20260701.log` 是否有 traceback。
-- 看策略是否持续运行，没有自动结束。
-- 看委托页面确认没有真实委托。
-- 如果跑 VK dry-run，向 `bigqmt:signals:bigqmt_probe` 写一条测试信号，确认状态 key 变成 `DRY_RUN`。
-
-### 9:35 后
-
-如果模拟信号稳定：
-
-- 可以把标的周期从 `1分钟` 调整到实际希望的触发周期。
-- 继续保持 dry-run 观察一段时间。
-- 不要直接改成实盘，除非真实信号源和状态存储已经接好。
-
-## 7. 日志排查
-
-QMT 公式日志：
-
-```text
-<QMT_USERDATA_LOG_DIR>\XtClient_Formula_YYYYMMDD.log
-```
-
-重点搜索：
-
-```text
-bigqmt_signal_trader
-Traceback
-ModuleNotFoundError
-SyntaxError
-run script failed
-passorder
-```
-
-常见问题：
+日志文件：`<QMT_USERDATA_LOG_DIR>\XtClient_Formula_YYYYMMDD.log`，重点搜索 `bigqmt_signal_trader` / `Traceback` / `ModuleNotFoundError` / `SyntaxError` / `run script failed` / `passorder`。
 
 | 现象 | 原因 | 处理 |
-|---|---|---|
-| 只开始运行/结束运行，没有回调日志 | 勾选了启动本地 python，或没有进入模型交易回调模式 | 取消勾选，使用模型交易运行 |
-| `No module named dataclasses` | QMT 内置 Python 版本低，不能依赖 dataclasses | 当前代码已移除 dataclasses，重新部署并清 `__pycache__` |
-| `__file__ is not defined` | QMT 编辑器脚本没有 `__file__` | 策略入口不要依赖 `__file__` |
-| 编码错误 | 编辑器保存编码和 `coding` 声明不一致 | 入口脚本用 `#coding:gbk`，内容保持 ASCII |
-| 启动后处理很多历史 bar | 未过滤历史 K 线 | 当前 `adjust` 已用 `is_last_bar()` 保护 |
+|------|------|------|
+| 仅开始/结束运行，无回调日志 | 勾了「启动本地 python」或未进模型交易 | 取消勾选，改用模型交易运行 |
+| `No module named dataclasses` | 旧版 QMT Python 不支持 `dataclasses` | 已移除依赖，重拷并清 `__pycache__` |
+| `__file__ is not defined` | QMT 编辑器脚本无 `__file__` | 入口勿依赖 `__file__` |
+| 编码错误 | 编辑器保存编码与声明不一致 | 文件头用 `#coding:gbk`，源码保持纯 ASCII |
+| 启动后处理大量历史 bar | 未过滤历史 K 线 | 已由 `is_last_bar()` 保护 |
 
-## 8. 当前不能误解的点
-
-- 当前包不是 `qmt_jq_trade` 的目标持仓同步脚本。
-- 当前包的设计是“外部系统产出逐笔交易信号，大 QMT 只执行”。
-- VK db5 链路已经具备，但当前安全入口默认使用 `bigqmt_probe` 测试账号流。
-- 编辑器里点“运行”不是实盘验证。
-- 真正实盘必须走模型交易页面，并且要显式接入信号源、幂等状态和账户切换流程。
-
-## 9. 官方文档参考
-
-- ThinkTrader 大 QMT 接口文档：`https://dict.thinktrader.net/innerApi/interface_operation.html`
-- 大 QMT Python API 文档：`https://qmt.ptradeapi.com/QMT_Python_API_Doc.html`
-- 本项目参考脚本：`<REPO_ROOT>\src\api\qmt_jq_trade`
-
+**参考链接**：[ThinkTrader 大 QMT 接口文档](https://dict.thinktrader.net/innerApi/interface_operation.html) · [大 QMT Python API 文档](https://qmt.ptradeapi.com/QMT_Python_API_Doc.html) · 参考脚本 `<REPO_ROOT>\src\api\qmt_jq_trade`。

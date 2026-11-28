@@ -25,7 +25,8 @@ BIGQMT_CONFIG = {
     "db": 5,
     "username": "",
     "password": "",
-    # 传输方式须与 QMT 端配置一致。
+    # 传输方式须与 QMT 端配置一致。使用 "shm" 时两端也须使用相同的槽位大小和 namespace。
+    # "shm": {"namespace": "qmt_shm"},
     "transport": "valkey",
 }
 

@@ -1,596 +1,203 @@
 # RPC API 参考
 
-本文档列出大 QMT RPC 服务对外暴露的全部方法、参数、返回值，以及每个方法在大 QMT 内部的实现来源与注意事项。
-
-> 方法集合的权威定义在 `../src/bigqmt_signal_trader/vk_rpc.py`：
-> `READ_METHODS`（只读白名单）、`ORDER_METHODS`（下单白名单）、`MARKET_DATA_METHODS`（转发给行情适配器）、`METHOD_ALIASES`（MiniQMT 风格别名）。
-
----
+本文档列出大 QMT RPC 服务对外暴露的方法、参数、返回值与大 QMT 实现边界。权威定义见 `src/bigqmt_signal_trader/vk_rpc.py`（`READ_METHODS` / `ORDER_METHODS` / `MARKET_DATA_METHODS` / `METHOD_ALIASES`）。
 
 ## 总览
 
 | 类别 | 方法数 | 说明 |
 |------|-------|------|
-| 系统 | 1 | `ping` |
-| 行情快照 | 2 | `get_ticks` / `get_instrument` |
-| 行情/K线/基本面（转发适配器）| 84 | 见下表 |
-| 账户/持仓/委托 | 6 | `get_asset` / `get_positions` / `query_stock_position` / `query_orders` / `query_trades` / `describe_trade_detail_fields` |
+| 系统 | 2 | `ping` / `get_request_outcome` |
+| 行情快照与订阅 | 5 | `get_ticks` / `get_instrument` / `subscribe_whole_quote` / `unsubscribe_whole_quote` / `quote_keepalive` |
+| 行情/K线/基本面（转发适配器） | 84 | 见第 3 节 |
+| 账户/持仓/委托/诊断 | 6 | `get_asset` / `get_positions` / `query_stock_position` / `query_orders` / `query_trades` / `describe_trade_detail_fields` |
 | 运维 | 2 | `reload_deployment` / `reload_status` |
-| 交易扩展查询（官方函数）| 13 | `get_value_by_order_id` / `get_last_order_id` / `get_ipo_data` / `get_new_purchase_limit` / `get_history_trade_detail_data` / 融资融券5个 / 期权持仓2个 / 港股通汇率 |
+| 官方交易扩展查询 | 13 | 订单辅助、新股、历史明细、融资融券（5）、期权持仓（2）、港股通汇率；另含备用 `query_credit_account` |
 | 持仓同步 | 1 | `sync_positions` |
-| 下单/撤单 | 2 | `submit_order` / `cancel_order`（默认关闭）|
-| **合计** | **117 只读 + 2 下单 = 119** | |
+| 下单/撤单 | 2 | `submit_order` / `cancel_order`（默认关闭） |
 
-另有 **12 个 MiniQMT 风格别名**（见末节），调用时自动映射到上表方法。
+另有 12 个 MiniQMT 风格别名（见第 7 节）。
 
 ---
 
 ## 1. 系统
 
-### `ping`
-- **参数**：无
-- **返回**：`{"pong": True, "account_id": "...", "account_type": "STOCK", "account_types": ["STOCK", ...], "server_time": "YYYY-MM-DD HH:MM:SS"}`——`account_types` 是这个账号可按哪些类型查（`BIGQMT_ACCOUNT_TYPE` 写成列表时不止一个，港股通）
-- **用途**：探活、确认 RPC 服务在线与归属账号。
-- **历史测量**：迁移 VK 之前，Redis RPC 的 p50 约 13ms。
-
-### `get_request_outcome`
-- **参数**：`request_id`(str, 必填)——当初那次下单请求的信封 `request_id`
-- **返回**：`{"request_id": ..., "state": ..., "response": ...}`，`state` 取值：
-  - `unknown`：服务端还没轮到它（仍在队列里——轮到时已过期限，会被拒绝——或已丢弃），**没下单**
-  - `dispatching`：`passorder` 正在跑
-  - `dispatched`：`passorder` 已返回，合同编号还在回找
-  - `settled`：已答复，`response` 就是调用方错过的那份回复
-  - `refused`：轮到执行时已过客户端期限，被拒绝，**没下单**
-- **用途**：`order_stock` 超时后问「那张单到底下没下」（#303）。只读、跑在收包线程，adjust
-  线程忙着也能答；客户端兼容层的 `order_stock` 超时后会自动问一次。服务端只记下单类请求，
-  保留 10 分钟。
+- **`ping()`**：无参数。返回 `{"pong": True, "account_id", "account_type", "account_types", "server_time"}`，其中 `account_types` 为服务端允许该账号查询的类型列表（如港股通配置）。
+- **`get_request_outcome(request_id)`**：只读、在收包线程直答（主线程忙时亦可达），服务端保留近 10 分钟下单类请求记录。返回 `{"request_id", "state", "response"}`，`state` 取值：`unknown`（未轮到或已丢弃，未下单）、`dispatching`（`passorder` 执行中）、`dispatched`（已返回、回找合同号中）、`settled`（已应答，`response` 为完整回复）、`refused`（已过客户端期限被拒，未下单）。客户端 `order_stock` 超时后自动调用此接口反查。
 
 ---
 
-## 2. 行情快照
+## 2. 行情快照与全推订阅
 
-### `get_ticks`
-- **别名**：`get_full_tick`
-- **参数**：
-  - `codes`（list[str]，必填）：股票代码列表，如 `["000001.SZ", "600000.SH"]`
-  - 或 `code`（str）：单个代码（`codes` 优先）
-  - 支持整市场快照：`codes=["SH"]` / `["SZ"]` / `["BJ"]` / `["HK"]`
-- **返回**：`dict`，key 为股票代码，value 含五档盘口：
-  ```python
-  {"000001.SZ": {
-      "lastPrice": 12.34, "open": 12.20, "high": 12.50, "low": 12.10,
-      "lastClose": 12.25, "volume": 12345600, "amount": 1.5e8,
-      "askPrice": [12.33, ...10档], "bidPrice": [12.32, ...10档],
-      "askVol":  [...], "bidVol": [...],
-      "pvolume": ..., "transactionNum": ..., "stockStatus": ...,
-      "time": 1719...（毫秒时间戳）, "stime": "20240701 15:00:00"
-  }}
-  ```
-- **实现**：默认透传 `ContextInfo.get_full_tick(code_list)`。部分完整大 QMT 版本会省略显式 `.SHO/.SZO` 合约；仅对这些缺失期权从 `get_market_data_ex(period="tick", count=1)` 取最新行补齐，股票/ETF 路径不变。
-- **注意**：整市场快照（`["SH"]`）数据量大，建议配合客户端 `full_tick_cache` 降载。
+- **`get_ticks`（别名 `get_full_tick`）**：参数 `codes: list[str]`（优先）或 `code: str`，支持市场令牌 `["SH"]` / `["SZ"]` / `["BJ"]` / `["HK"]`。返回 `{code: {lastPrice, open, high, low, lastClose, volume, amount, askPrice, bidPrice, askVol, bidVol, pvolume, transactionNum, stockStatus, time, stime}}`。实现走 `ContextInfo.get_full_tick`，若完整大 QMT 遗漏显式 `.SHO/.SZO` 期权合约，则自动以 `get_market_data_ex(period="tick", count=1)` 补齐。整市场快照建议配合客户端 `full_tick_cache`。
+- **`get_instrument`（别名 `get_instrument_detail` / `get_instrumentdetail`）**：参数 `code: str`，走 `ContextInfo.get_instrumentdetail(code)`，返回约 30 个合约字段。
 
-### `get_instrument`
-- **别名**：`get_instrument_detail` / `get_instrumentdetail`
-- **参数**：`code`（str，必填）：股票代码
-- **返回**：`dict`，合约详情（名称、上市日、合约乘数、最小变动价位等约 30 个字段）。
-- **实现**：`ContextInfo.get_instrumentdetail(code)`。
+### 全推行情订阅（对齐 MiniQMT `subscribe_whole_quote`）
+
+以下三接口管理生命周期，行情数据通过独立 VK pub/sub 通道（msgpack 优先、json 兜底）推送。同组合（`frozenset` 规范化）共享服务端订阅组；普通代码走 `ContextInfo.subscribe_whole_quote`，显式 `.SHO/.SZO` 期权逐只走 `ContextInfo.subscribe_quote(..., result_type="list")`。详见 [SUBSCRIBE_WHOLE_QUOTE_PUSH.md](SUBSCRIBE_WHOLE_QUOTE_PUSH.md)。
+
+| 方法 | 参数 | 返回与语义 |
+|------|------|-----------|
+| `subscribe_whole_quote` | `client_id`, `sub_id`, `codes` | 返回 `{"combo_key", "topic", "push_endpoint"}`；幂等，供服务端重启后客户端重放恢复 |
+| `unsubscribe_whole_quote` | `client_id`, `sub_id` | 返回 `{}`；移除 `(client_id, sub_id)` 引用，组合引用归零即退订大 QMT；未知 `sub_id` 为 no-op |
+| `quote_keepalive` | `client_id`, `sub_id` | 返回 `{}`；刷新 `last_seen`，默认每 3s 发一次，超 30s（10 周期）无心跳由 reaper 清理 |
 
 ---
 
-## 2.5 全推行情订阅（server 推送，对齐 miniqmt `subscribe_whole_quote`）
+## 3. 行情 / K 线 / 板块 / 日历 / 财务 / 期权 / 资金流 / 因子
 
-这三个方法只管理**订阅生命周期与心跳**；行情数据本身走独立的 server→client 推送通道（VK pub/sub，msgpack 编码、json 兜底），**不经过 RPC 响应**。多 client 订阅同一组合（`frozenset` 规范化）共享一个服务端订阅组：普通代码使用 `ContextInfo.subscribe_whole_quote`，显式 `.SHO/.SZO` 合约逐只使用 `ContextInfo.subscribe_quote(..., result_type="list")`。引用计数归零（全部退订或全部心跳超时）才退订组内全部大 QMT 句柄。详见 `docs/SUBSCRIBE_WHOLE_QUOTE_PUSH.md`。
+以下 84 个方法统一转发给 `BigQmtMarketDataProvider` 同名方法（`**kwargs` 展开）；兼容层 `BigQmtXtData` 对常用接口提供同名封装，其余走 `xtdata.call_method(name, **params)`。DataFrame / Series 经 `__bigqmt_type__` 序列化，客户端自动还原。
 
-### `subscribe_whole_quote`
-- **参数**：`client_id`（str，必填，client 进程级稳定 id）、`sub_id`（str，必填，client 侧订阅号）、`codes`（list[str]，必填）：市场代码（`["SH","SZ"]`）或品种代码列表。
-- **返回**：`{"combo_key": str, "topic": str, "push_endpoint": str}`。`topic` 即推送通道的过滤主题；（VK 推送时为空，client 本地推导 channel 名）。
-- **语义**：首个 client 订阅该组合时建立大 QMT 订阅；同组合后续 client 共享。幂等（重复 subscribe 不重复建订阅，用于 server 重启后 client 重放恢复）。
+### 3.1 品种、K 线与历史行情
 
-### `unsubscribe_whole_quote`
-- **参数**：`client_id`、`sub_id`（均 str，必填）。
-- **返回**：`{}`。
-- **语义**：移除该 `(client_id, sub_id)` 的引用；该组合最后一个 client 离开时退订大 QMT。未知 sub_id 为 no-op。
+| 方法 | 参数 | 返回 / 说明 |
+|------|------|-----------|
+| `get_instrument_type` | `code`, 可选 `variety_list` | 返回 `{"stock", "fund", "etf", "bond", "index"}` 布尔字典 |
+| `get_market_data` | `field_list`, `stock_list`, `period`（`1d`/`1m`/`5m`/`tick`）, `start_time`, `end_time`, `count`, `dividend_type`（`none`/`front`/`back`）, `fill_data` | `DataFrame` |
+| `get_market_data_ex` / `get_local_data` | 同上（`get_local_data` 另含可选 `data_dir`） | `dict[code -> DataFrame]` |
 
-### `quote_keepalive`
-- **参数**：`client_id`、`sub_id`（均 str，必填）。
-- **返回**：`{}`。
-- **语义**：刷新该订阅的 `last_seen`。client 每 `heartbeat_interval`（默认 3s）发送一次；server 端某 client 超过 `heartbeat_timeout_seconds`（默认 30s = 10 个心跳周期）无心跳则被 reaper 移除，组合清空后退订大 QMT。
+- **合成周期回落与 `__bigqmt_partial__`**：部分终端（如 2.0.8.0）的 `get_market_data2` 对 `1mon/1q/1hy/1y` 返空时，桥自动逐只回落 `ContextInfo.get_market_data`（仅 6 列 OHLCV，且无 `fill_data`），并在应答附加 `__bigqmt_partial__`（`reason`, `period`, `source`, `requested`/`served`/`missing`, `fill_data_dropped`, `padding_rows_dropped`），客户端写入 `DataFrame.attrs["bigqmt_partial"]` 并发去重警告。
+- **诊断参数 `synth_fallback_only=True`**：仅经 `call_method` / `client.call` 传入，强制合成周期跳过主路径直测回落（同时强制绕过 FormulaServer 直连）。
+
+### 3.2 板块与交易日历
+
+| 方法 | 参数 | 返回 / 大 QMT 实现说明 |
+|------|------|-----------------------|
+| `get_stock_list_in_sector` | `sector_name`, 可选 `real_timetag=-1` | `list[str]`（`ContextInfo`）。拼错不报错、返空；A 股用「上证A股/深证A股」，基金用「沪市基金/深市基金」 |
+| `get_sector_list` | 可选 `allow_fallback=False` | 原生 `xtdata` SDK 优先；大 QMT 连不上行情服务时**默认抛 `NotImplementedError`**，显式传 `allow_fallback=True` 才返回 13 个实测常用板块名 |
+| `get_sector_info` | `sector_name` | `ContextInfo.get_sector_info` |
+| `get_trading_dates` | `market`（如 `"SH"`）, `start_time`, `end_time`, `count` | `ContextInfo.get_trading_dates`（注：桩签名首参为 `stockcode`，A 股日历一致结果正确） |
+| `get_holidays` | 无 | 原生 SDK 不可用时从 `[去年1月1日, 今天]` 工作日减去 `get_trading_dates("SH")` 反推 |
+| `get_markets` | 无 | 合成固定集合 `["SH", "SZ", "BJ", "HK"]` |
+| `get_market_last_trade_date` | `market` | 由 `get_trading_dates(market, count=1)` 派生 |
+| `get_date_location` | `date` | 日期在交易日历中的位置 |
+
+### 3.3 数据下载、财务、ETF、期权、IPO 与除权因子
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `download_history_data` / `download_history_data2` | `stock_code` / `stock_list`, `period`, `start_time`, `end_time`, 可选 `incrementally` | 单合约 / 批量历史下载 |
+| `download_holiday_data` / `download_etf_info` | `incrementally` / 无 | 下载假日 / ETF 信息 |
+| `get_financial_data` / `download_financial_data` / `download_financial_data2` | `stock_list`, `table_list`, `start_time`, `end_time`, `report_type="report_time"` | 财务数据读写 |
+| `get_raw_financial_data` | `field_list`, `stock_list`, `start_time`, `end_time`, `report_type`, `data_type`（`dict`/`frame`） | 原始财务数据 |
+| `get_factor_data` / `get_his_index_data` | `field_list`, `stock_list`, `start_date`, `end_date` / `stock_code` | 因子库 / 历史指数权重 |
+| `get_etf_info` / `get_ETF_list` / `get_ipo_info` | 无 / `market`, `stock_code`, `type_list` / `start_time`, `end_time` | ETF 与 IPO 资料 |
+| `get_option_list` / `get_his_option_list` / `get_his_option_list_batch` | `undl_code`, `dedate`（或 `start_time`, `end_time`）, `opttype`, `isavailavle` | 期权与历史期权列表 |
+| `get_divid_factors` | `stock_code`, 可选 `start_time`, `end_time` | 除权除息因子（真区间：先试 SDK/3 参，不行则由日线 `preClose` 与前 `close` 差异逐日探测）。RPC 线格式为 `{毫秒时间戳: 7元列表}`；`xtdata.get_divid_factors()` 转为对齐 MiniQMT 的 8 列 `float64` DataFrame（索引 `YYYYMMDD`，列 `time/interest/stockBonus/stockGift/allotNum/allotPrice/gugai/dr`） |
+
+### 3.4 因子模型、龙虎榜、股东、期权定价与资金流
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `call_formula` / `subscribe_formula` | `formula_name`, `stock_code`, `period`, `start_time`, `end_time`, `count`, `dividend_type`, `extend_param` | VBA 公式调用 / 订阅 |
+| `unsubscribe_formula` / `get_formula_result` | `request_id`（另含时间/数量/超时参数） | 取消订阅 / 取公式结果 |
+| `gen_factor_index` | `data_name`, `formula_name`, `vars`, `sector_list`, `start_time`, `end_time`, `period`, `dividend_type` | 生成因子 |
+| `get_longhubang` / `get_turnover_rate` | `stock_list`（或 `stock_code`）, `start_time`, `end_time`, `count` | 龙虎榜 / 区间换手率（均返 DataFrame；区间换手率需先下载财务股本与日线） |
+| `get_top10_share_holder` / `get_holder_num` | `stock_list`, `data_name`（`holder`/`flow_holder`）, `start_time`, `end_time`, `report_type` | 十大股东 / 股东户数 |
+| `get_industry` / `get_his_st_data` | `industry_name` / `stock_code` | 行业成分股 / 历史 ST |
+| `bsm_price` / `bsm_iv` / `get_option_iv` | `opt_type`（`C`/`P`）, `target_price`, `strike_price`, `option_price`/`sigma`, `risk_free`, `days`, `dividend=0` / `opt_code` | B-S-M 定价、IV 反推与期权 IV |
+| `get_option_detail_data` / `get_option_detail_data_batch` | `stockcode` / `stockcodes` | 单合约 / 批量期权详情（批量返回 `{code: dict}`，单只失败返 `{}`） |
+| `get_option_undl_data` / `get_option_undl` | `undl_code_ref` / `opt_code` | 标的下所有期权 / 期权标的 |
+| `get_main_contract` / `get_his_contract_list` | `code_market` / `market` | 主力合约 / 历史合约 |
+| `get_north_finance_change` / `get_hkt_statistics` / `get_hkt_details` | `period` / `stock_code` | 北向资金 / 港股通统计与明细 |
+
+> **客户端本地期权分析扩展（不进 RPC 白名单）**：`xtdata.get_option_analytics(opt_code)` 与 `xtdata.get_option_chain_analytics(undl_code, dedate)` 基于合约详情与最新 `close`（或显式盘口中间价）计算 IV、Delta、Gamma、Vega（`vega`/`vega_1pct`）、Theta（年/日）、Rho（`rho`/`rho_1pct`）；无套利违约合约带 `analytics_error`，不改变原生 `get_option_iv` 语义。
+
+### 3.5 板块管理与基础查询（含大 QMT 2.1.19.0 实测订正）
+
+| 方法 | 参数 | 返回与实测说明 |
+|------|------|---------------|
+| `create_sector` | `sector_name`, `stock_list` | 创建/更新自定义板块（写操作） |
+| `get_stock_name` / `get_last_close` / `get_open_date` | `stock` | 名称 / 昨收（`PreClose`）/ 上市日 int `yyyymmdd`（`OpenDate`） |
+| `get_last_volume` / `get_float_caps` | `stock` / `stockcode` | **均为流通股本（股数，= `FloatVolume`）**，不是昨量也不是流通市值 |
+| `get_total_share` | `stockcode` | 总股本（= `TotalVolume`） |
+| `get_contract_expire_date` | `stock` | 字符串：股票/ETF 返回 `'99999999'`，缺失合约 `'0'` |
+| `get_weight_in_index` | `mtkindexcode`, `stockcode` | 指数权重（单位 `%`） |
+| `get_close_price` | `market`, `stock_code`, `real_timetag`, `period=86400000`, `divid_type=0` | 指定时点收盘价 |
+| `get_risk_free_rate` | `index=-1` | 无风险利率（%），实测恒返终端配置常数 `3.5`，非历史利率序列 |
+| `get_svol` / `get_bvol` | `stock` | **盘中窗口内外盘，非当日累计**（股票/ETF 实测 `svol+bvol` 等于末根 1m K 线量，收盘集合竞价落在单侧致另一侧为 0；当日口径需按 tick/K 线自行累计） |
+| `get_contract_multiplier` | `stockcode` | 合约乘数；无期货数据终端实测返 int32 哨兵 `2147483647`，客户端遇哨兵显式报错（可用 `get_instrument(code)['VolumeMultiple']` 替代） |
+| `get_stock_type` | `stock` | ❌ 恒返回 `0`，客户端显式报错，改用 `get_instrument_type` |
+| `get_turn_over_rate` | `stockcode` | ❌ 恒返回 `None`，客户端显式报错；自算可用 `get_ticks()[code]['pvolume'] / get_last_volume(code)`（注意 `pvolume` 单位为股，`volume` 为手相差 100 倍） |
 
 ---
 
-## 3. 行情 / K线 / 板块 / 日历 / 下载 / 财务 / 期权 / 龙虎榜 / 资金流 / 因子
+## 4. 账户、持仓、委托与运维
 
-下列 84 个方法统一通过 `_handle_market_data_method` **按方法名转发给 `BigQmtMarketDataProvider` 的同名方法**，参数字典直接 `**kwargs` 展开。调用方按下方签名传参即可。客户端兼容层对常用方法有显式封装，其余用 `xtdata.call_method(name, **params)`。
+本节及第 5、6 节的 `account_id` 均可选（默认服务端账号），亦支持可选 `account_type`（如 `"STOCK"` / `"CREDIT"` / `"FUTURE"` / `"HUGANGTONG"` / `"SHENGANGTONG"` 或 xtconstant 数字，仅在服务端配置列表允许时生效，否则回退默认并记日志）。
 
-### 3.1 品种/类型
+| 方法（含别名） | 参数 | 返回与说明 |
+|---------------|------|-----------|
+| `get_asset`（`query_stock_asset`） | `account_id` | `{"cash", "total_asset", "market_value", "account_id"}`（`ASSET`） |
+| `get_positions`（`query_stock_positions`） | `account_id` | `dict[code -> {...}]`（`POSITION`），上下文未绑定降级 `{}` |
+| `query_stock_position` | `account_id`, `stock_code` / `code` | 单股持仓 dict 或 `None` |
+| `query_orders`（`query_stock_orders`） | `account_id`, `strategy_name=""`, `cancelable_only=False` | `list[OrderSnapshot]`；默认 `strategy_name=""` 查全部（非空须与下单一致） |
+| `query_trades`（`query_stock_trades`） | `account_id`, `strategy_name=""` | 成交列表；`strategy_name` 优先取 DEAL 行 `m_strStrategyName`，缺失再回填过滤参数 |
+| `describe_trade_detail_fields` | `account_id`, `detail_types=["ORDER","DEAL"]` | 诊断 RPC：仅返回 `rows` 与属性名列表（不返回值），区分「终端未给」与「桥未转发」 |
+| `reload_deployment` / `reload_status` | `reason` / 无 | 排期至下一 `adjust` 拍清理 `bigqmt_signal_trader.*` 并重跑 `init()`（约 1s 短暂超时）；无法刷新顶层 `bigqmt_signal_trader_strategy.py` 与 `BIGQMT_VK_DRYRUN.py` |
 
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `get_instrument_type` | `code`（str），可选 `variety_list`（list）| 返回 `{"stock":bool,"fund":bool,"etf":bool,"bond":bool,"index":bool}`；传 `variety_list` 则只返回指定品种的 bool |
+### 4.5 官方交易查询函数（运行时注入全局）
 
-### 3.2 K线/历史行情
+由大 QMT 注入全局命名空间（不在 `ContextInfo` 桩中），无权限时降级为空列表：
 
-| 方法 | 参数 | 返回 |
-|------|------|------|
-| `get_market_data` | `field_list`(list) `stock_list`(list) `period`("1d"/"1m"/"5m"/"tick") `start_time` `end_time` `count`(int) `dividend_type`("none"/"front"/"back") `fill_data`(bool) | DataFrame（自动还原）|
-| `get_market_data_ex` | 同上 | `dict[code -> DataFrame]` |
-| `get_local_data` | 同上 + 可选 `data_dir` | `dict[code -> DataFrame]` |
+- **订单/新股/历史/汇率**：`get_value_by_order_id(order_id)`、`get_last_order_id`、`get_ipo_data`、`get_new_purchase_limit`、`get_history_trade_detail_data(detail_type, start_date, end_date)`、`get_hkt_exchange_rate`。
+- **融资融券**：`get_assure_contract`（担保品）、`get_enable_short_contract`（融券标的）、`get_unclosed_compacts`（未平仓）、`get_closed_compacts`（已平仓）、`get_debt_contract`（负债）。
+- **期权持仓**：`get_option_subject_position`、`get_comb_option`。
 
-> DataFrame / Series 在 RPC 协议层用 `__bigqmt_type__` 标记序列化，客户端 `xtquant_compat` 自动还原为 pandas 对象。
+**信用账户明细两条路径**（注意 `get_trade_detail_data` 的 `strAccountType='CREDIT'` 选账本，`strDatatype` 只能取 `ACCOUNT`/`POSITION`/`POSITION_STATISTICS`/`ORDER`/`DEAL`/`TASK`，切勿传 `'CREDIT'`）：
 
-**合成周期回落与「这一份不全」标记（#237）**
+| 方式 | RPC | 大 QMT 实现 | 特点与字段差异 |
+|------|-----|------------|---------------|
+| **终端缓存（默认主路径）** | `query_credit_detail` | `get_trade_detail_data(accId, 'CREDIT', 'ACCOUNT')` → `CCreditAccountDetail` | 同步、无限流、无需重启；总负债字段为 `m_dTotalDebit` |
+| 查柜台（备用） | `query_credit_account(wait_seconds=1.5)` | `query_credit_account` + `credit_account_callback` → `CCreditDetail` | 异步、30s 限流（超频返旧值标 `stale=true`）；总负债字段为 `m_dTotalDebt`；需真重启策略使入口回调生效 |
 
-部分终端构建（实测某券商 **2.0.8.0**）上，凡是走 C++ `context.get_market_data2`
-的路径对 `1mon/1q/1hy/1y` 恒返回 0 行，而同一进程里 `ContextInfo.get_market_data`
-给得出来。主路径（含 #219 的 11 列重试）全空且周期属于合成周期时，桥会**逐只代码**
-改走 `ContextInfo.get_market_data` 取数。
-
-它只服务 `open/high/low/close/volume/amount` 六列，签名里也没有 `fill_data`（是
-`skip_paused`）。所以这种应答**不是**调用方要的那一份，桥会在每个代码的 DataFrame
-外层加一个 `__bigqmt_partial__`：
-
-| 字段 | 含义 |
-|------|------|
-| `reason` | `synth_period_primary_empty`（主路径空）或 `synth_rescue_only`（诊断参数强制）|
-| `period` | 触发的周期 |
-| `source` | 真正应答的终端函数，如 `ContextInfo.get_market_data` |
-| `requested` / `served` / `missing` | 请求的列 / 实际给出的列 / **缺的列** |
-| `fill_data_dropped` | `true` = 调用方的 `fill_data` 没送达终端 |
-| `padding_rows_dropped` | 丢掉的 `count` 补齐行数（四价相同、量额为 0 的假 bar）|
-
-客户端 `xtquant_compat` 把它还原到 `DataFrame.attrs["bigqmt_partial"]`，并按
-（原因, 周期, 来源, 缺列）去重发一条 `warnings.warn`。旧客户端会直接忽略这个键，
-应答形状不变。
-
-**诊断参数 `synth_fallback_only`（只读）**
-
-正常终端上主路径从不返回空，回落路径因此**够不到**，也就无法证明它还活着。
-`synth_fallback_only=True` 让合成周期**跳过主路径**、直接走回落（其他周期忽略此参数；
-回落取不到数据时返回诚实的空应答，绝不拿主路径的结果顶替）。它刻意不在客户端
-`xtdata.get_market_data_ex` 的公开签名里——诊断走 `xtdata.call_method` / `client.call`：
-
-```python
-from xtquant import xtdata
-xtdata.call_method("get_market_data_ex", field_list=[], stock_list=["600519.SH"],
-                   period="1mon", count=10, synth_fallback_only=True)
-```
-
-FormulaServer 直连不认这个参数，带上它会强制回落到 RPC 桥（否则「回落通了」会
-是假象——回落根本没跑）。
-
-### 3.3 板块
-
-| 方法 | 参数 | 返回 | Big QMT 实现说明 |
-|------|------|------|----------------|
-| `get_stock_list_in_sector` | `sector_name`(str) 可选 `real_timetag`(int,默认-1) | `list[str]` 代码列表 | `ContextInfo.get_stock_list_in_sector` |
-| `get_sector_list` | 无 | `list[str]` 板块名 | ⚠️ 见下方说明 |
-| `get_sector_info` | `sector_name`(str) | 板块详情 | `ContextInfo.get_sector_info` |
-
-**`get_sector_list` 在大 QMT 的实现说明（重要）**：
-板块列表是**全局数据**，原生 `xtdata` SDK 的 `get_sector_list()`（SDK 第 784 行）才有，`ContextInfo` 没有此方法。但大 QMT（完整交易端）进程里，原生 `xtdata` SDK 的 `get_client()` **连不上行情服务**（报「无法连接行情服务」，因为没有 MiniQMT 进程写 `~/.xtquant/*/xtdata.cfg`）。
-
-因此适配器按优先级降级：
-1. 原生 `xtdata` SDK（MiniQMT 环境）→ 真实板块列表
-2. `ContextInfo.get_sector_list`（不存在，跳过）
-3. 两者都拿不到时**直接抛 `NotImplementedError`**，不再静默返回兜底清单（#143）。要那 13 个常用板块名请显式传 `allow_fallback=True`，它们可继续驱动 `get_stock_list_in_sector(name)`。
-
-**兜底清单里的名字都在大 QMT 2.1.19.0 上实测过**（2026-09-11）。A 股的两半拼作 `上证A股` / `深证A股`（2318 / 2902 只，合计等于 `沪深A股` 的 5220），`沪市A股` / `深市A股` 返回 0；基金则相反，`沪市基金` / `深市基金` 有数据，`上证基金` / `深证基金` 返回 0。拼法没有规律，`get_stock_list_in_sector` 拼错也不报错、只给空列表，所以看到空结果先核对名字。完整对照表见 README「板块」一节。
-
-### 3.4 交易日历 / 节假日
-
-| 方法 | 参数 | 返回 | Big QMT 实现 |
-|------|------|------|-------------|
-| `get_trading_dates` | `market`(str 如 "SH") `start_time` `end_time` `count`(int) | `list` 日期（`YYYYMMDD` 字符串或毫秒时间戳）| `ContextInfo.get_trading_dates` ✅ |
-| `get_holidays` | 无 | `list[str]` 假日（`YYYYMMDD`）| ⚠️ fallback 见下 |
-| `get_markets` | 无 | `list[str]` = `["SH","SZ","BJ","HK"]` | 合成（Big QMT/xtdata 均无此函数）|
-| `get_market_last_trade_date` | `market`(str) | 最后一交易日（`YYYYMMDD`）| 由 `get_trading_dates(market,count=1)` 派生 |
-
-**`get_trading_dates` 参数说明（重要）**：
-`ContextInfo` 桩签名是 `get_trading_dates(stockcode, ...)`，`xtdata` SDK 签名是 `get_trading_dates(market, ...)`——**第一参数语义不同**。本系统所有调用方传的都是 market（如 `"SH"`），走 ContextInfo 时 QMT 内部会从 stockcode 推 market，A 股日历各市场基本一致，故结果正确。
-
-**`get_holidays` 在大 QMT 的实现说明（重要）**：
-节假日列表同样是全局数据，只有原生 `xtdata` SDK 的 `get_holidays()`（SDK 第 1197 行）有。大 QMT 进程连不上 SDK 行情服务时，适配器**从交易日历反推**：取 `[去年1月1日, 今天]` 区间内所有工作日（周一至周五），凡是 `get_trading_dates("SH")` 里**没有的**就是假日。比 SDK 慢但结果正确。
-
-### 3.5 数据下载
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `download_history_data` | `stock_code` `period` `start_time` `end_time` 可选 `incrementally` | 下载单合约历史 |
-| `download_history_data2` | `stock_list`(list) `period` `start_time` `end_time` 可选 `incrementally` | 批量下载 |
-| `download_holiday_data` | `incrementally`(bool) | 下载假日数据 |
-| `download_etf_info` | 无 | 下载 ETF 信息 |
-
-### 3.6 财务 / ETF / 期权 / IPO
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `get_financial_data` | `stock_list`(list) `table_list`(list) `start_time` `end_time` `report_type`("report_time") | 财务数据 |
-| `download_financial_data` | 同上 + `incrementally` | 下载财务 |
-| `download_financial_data2` | `stock_list` `table_list` `start_time` `end_time` | 批量下载财务 |
-| `get_etf_info` | 无 | ETF 信息 |
-| `get_ipo_info` | `start_time` `end_time` | IPO 信息 |
-| `get_option_list` | `undl_code` `dedate` `opttype` `isavailavle`(bool) | 期权列表 |
-| `get_his_option_list` | `undl_code` `dedate` | 历史期权 |
-| `get_his_option_list_batch` | `undl_code` `start_time` `end_time` | 批量历史期权 |
-| `get_divid_factors` | `stock_code` 可选 `start_time`/`end_time` | 除权除息因子 |
-
-**`get_divid_factors` 说明**：
-
-- **区间是真的区间**（#165 起）。`ContextInfo` 桩只收单个日期，服务端先试原生 SDK 和 3 参形状，都不行才由日线 `preClose` 与前一根 `close` 的差定位除权日、逐日探测。以前把区间塌成 `end_time` 单日查，区间几乎必然返回空。
-- **线上格式**是大 QMT 原生的 `dict{毫秒时间戳: [每股红利, 每股送转, 每转赠, 配股, 配股价, 是否股改, 复权系数]}`，走原始 RPC（含 `getDividFactors` 别名）拿到的就是它。
-- **`xtdata.get_divid_factors()` 返回 DataFrame**，对齐真 miniQMT 实测的形状：索引是除权日 `YYYYMMDD`（毫秒戳按上海时间折算），八列 `time`（当天毫秒戳）/ `interest` / `stockBonus` / `stockGift` / `allotNum` / `allotPrice` / `gugai` / `dr`，全部 float64，后七列与上面 7 个位置一一对应。之前客户端把 dict 原样透传，`df["dr"]` 直接 KeyError。
-
-### 3.7 因子 / 模型
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `call_formula` | `formula_name` `stock_code` `period` `start_time` `end_time` `count` `dividend_type` `extend_param`(dict) | 调用公式 |
-| `subscribe_formula` | 同上 | 订阅公式 |
-| `unsubscribe_formula` | `request_id` | 取消订阅 |
-| `get_formula_result` | `request_id` `start_time` `end_time` `count` `timeout_second` | 取公式结果 |
-| `gen_factor_index` | `data_name` `formula_name` `vars` `sector_list`(list) `start_time` `end_time` `period` `dividend_type` | 生成因子 |
-
-### 3.8 龙虎榜 / 股东 / 换手率 / 行业
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `get_longhubang` | `stock_list`(list) `start_time` `end_time` `count`(int) | 龙虎榜明细（DataFrame）|
-| `get_top10_share_holder` | `stock_list`(list) `data_name`("holder"/"flow_holder") `start_time` `end_time` `report_type`("report_time"/"announce_time") | 十大股东 |
-| `get_holder_num` | `stock_list`(list) `start_time` `end_time` `report_type` | 股东户数 |
-| `get_turnover_rate` | `stock_code`(list) `start_time` `end_time`（均 8 位 YYYYMMDD）| 区间换手率（DataFrame）|
-| `get_industry` | `industry_name`(str) | 行业成分股 |
-| `get_his_st_data` | `stock_code`(str) | 历史 ST 状态 |
-
-### 3.9 期权定价 / 隐含波动率
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `bsm_price` | `opt_type`("C"/"P") `target_price`(数值或 list) `strike_price` `risk_free` `sigma` `days` `dividend`(默认0) | B-S-M 期权定价（可批量）|
-| `bsm_iv` | `opt_type` `target_price` `strike_price` `option_price` `risk_free` `days` `dividend` | 隐含波动率反推 |
-| `get_option_iv` | `opt_code`(str) | 单只期权隐含波动率 |
-| `get_option_detail_data` | `stockcode`(str) | 期权合约详情 |
-| `get_option_detail_data_batch` | `stockcodes`(list) | 一次 RPC 批量获取期权详情；服务端循环调用原生单合约接口，返回 `{代码: 详情}`，单个失败返回空字典 |
-| `get_option_undl_data` | `undl_code_ref`(str，空=全市场) | 标的下所有期权 |
-| `get_option_undl` | `opt_code`(str) | 期权的标的代码 |
-
-客户端另提供不依赖 QMT 原生 IV 返回值的本地分析层：
-
-- `xtdata.get_option_analytics(opt_code, ...)`：用合约详情与期权/标的价格计算 IV、Delta、Gamma、Vega、Theta、Rho；默认以一次 `get_market_data_ex(field_list=["close"], count=1)` 补齐两个价格，也可显式传盘口中间价。
-- `xtdata.get_option_chain_analytics(undl_code, dedate, ...)`：整条到期月份批量计算。缺价或违反无套利边界的合约带 `analytics_error`，其余合约继续返回。
-
-这是客户端纯数学扩展，不加入 RPC 白名单，也不改变 `get_option_iv` 的原生兼容语义。利率与波动率均用小数；结果同时给出 `vega`/`rho`（每 1.00 变化）及 `vega_1pct`/`rho_1pct`（每 1 个百分点），Theta 同时给出年/日口径。
-
-### 3.10 财务扩展 / 因子库
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `get_raw_financial_data` | `field_list`(list) `stock_list`(list) `start_time` `end_time` `report_type` `data_type`("dict"/"frame") | 原始财务（未字段对齐）|
-| `get_factor_data` | `field_list`(list) `stock_list`(list) `start_date` `end_date` | 因子库数据 |
-| `get_his_index_data` | `stock_code`(str) | 历史指数权重 |
-
-### 3.11 期货 / 合约 / 资金流
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `get_main_contract` | `code_market`(str) | 主力合约 |
-| `get_his_contract_list` | `market`(str) | 历史合约列表 |
-| `get_date_location` | `date` | 日期在交易日历的位置 |
-| `get_ETF_list` | `market` `stock_code` `type_list`(list) | ETF 列表 |
-| `get_north_finance_change` | `period` | 北向资金流入流出 |
-| `get_hkt_statistics` | `stock_code` | 港股通统计 |
-| `get_hkt_details` | `stock_code` | 港股通明细 |
-
-### 3.12 板块管理 / 基础查询
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `create_sector` | `sector_name` `stock_list`(list) | 创建/更新自定义板块（写操作）|
-| `get_stock_name` | `stock` | 股票名称（如「平安银行」）|
-| `get_stock_type` | `stock` | ❌ 对任何代码都返回 `0`，客户端包装显式报错，改用 `get_instrument_type` |
-| `get_last_close` | `stock` | 昨收价（= `get_instrument` 的 `PreClose`）|
-| `get_last_volume` | `stock` | **最新流通股本，不是「昨量」**（= `FloatVolume`）|
-| `get_open_date` | `stock` | 上市日期，int `yyyymmdd`（= `OpenDate`）|
-| `get_contract_expire_date` | `stock` | 到期日，**返回字符串**：股票/ETF `'99999999'`，终端里没有的合约 `'0'` |
-| `get_contract_multiplier` | `stockcode` | 合约乘数。⚠️ 实测返回 int32 哨兵 `2147483647`（见下）|
-| `get_float_caps` | `stockcode` | **流通股本（股数），不是流通市值**（= `FloatVolume`，与 `get_last_volume` 同值）|
-| `get_total_share` | `stockcode` | 总股本（= `TotalVolume`，与流通股本确实不同）|
-| `get_turn_over_rate` | `stockcode` | ❌ 对任何代码都返回 `None`，客户端包装显式报错。区间版 `get_turnover_rate` 需先下载财务数据（股本）+ 日线，本终端未下载（见下）|
-| `get_weight_in_index` | `mtkindexcode` `stockcode` | 指数中的绝对权重，**单位 %** |
-| `get_svol` | `stock` | 内盘成交量。⚠️ **盘中窗口量，不是当日累计**（见下）|
-| `get_bvol` | `stock` | 外盘成交量，语义同 `get_svol`。⚠️ 股票收盘后为 `0` 是集合竞价所致，不是答不了（见下）|
-| `get_risk_free_rate` | `index`(int, 默认-1) | 无风险利率（%）。实测恒为 `3.5`，不随 `index` 变 |
-| `get_close_price` | `market` `stock_code` `real_timetag` `period`(默认86400000) `divid_type`(默认0) | 指定时点收盘价 |
-
-**客户端怎么调（issue #262）**：上表每个方法在兼容层 `BigQmtXtData` 上都有同名
-包装，直接 `xtdata.get_open_date("600519.SH")` 即可，参数名同上表。没有同名包装
-的方法走万能入口 `xtdata.call_method("<name>", **params)` / `xt_trader.client.call("<name>", params)`。
-
-**实测记录（2026-09-09 收盘后，大 QMT 2.1.19.0，非交易时段）**——上表几处订正的
-依据，和两个「答不了」的判据。⚠️ `get_svol` / `get_bvol` 是**盘中窗口量**，同一组代码
-在盘中重测会是另一批数字；其余几行（股本、上市日期、到期日）与时段无关。
-
-| 方法 | 600519.SH | 510300.SH | 601398.SH |
-|------|-----------|-----------|-----------|
-| `get_open_date` | `20010827` | `20120528` | `20061027` |
-| `get_last_close` | `1309.3` | `4.624` | — |
-| `get_last_volume` | `1250081601.0` | `23468887700.0` | `269612212539.0` |
-| `get_float_caps` | `1250081601` | `23468887700` | `269612212539` |
-| `get_total_share` | `1250081601` | `23468887700` | **`356406257089`** |
-| `get_contract_expire_date` | `'99999999'` | `'99999999'` | `'99999999'` |
-| `get_svol` / `get_bvol` | `688` / `0` | `59408` / `0` | `32586` / `0` |
-| `get_turn_over_rate` | `None` | `None` | `None` |
-| `get_contract_multiplier` | `2147483647` | `2147483647` | `2147483647` |
-| `get_weight_in_index('000300.SH', ·)` | `5.801` | — | `0.806` |
-
-- `get_last_volume` / `get_float_caps` 与 `get_instrument` 的 `FloatVolume` **逐位相同**，
-  而同一天 601398.SH 的成交量是 2154432 手 —— 差五个数量级，所以「昨量」「流通市值」
-  两个旧标注都是错的。`get_total_share` 在 601398.SH 上确实给出不同的数（总股本
-  3564 亿股 vs 流通 2696 亿股），说明它是对的。
-- **`get_svol` / `get_bvol` 是盘中窗口的内外盘，不是当日累计** —— 上表 `bvol` 那一排 0
-  差点被读成「这个方法答不了」，换一批代码就露馅了：
-
-  | 代码 | `get_svol` | `get_bvol` | 末根 1m K 线 | 当日成交量 |
-  |------|-----------|-----------|--------------|-----------|
-  | 601398.SH | `32586` | `0` | **`32586`** | 2154432 |
-  | 510300.SH | `59408` | `0` | **`59408`** | — |
-  | 000001.SZ | `5177` | `0` | **`5177`** | — |
-  | 511990.SH | `0` | **`22883`** | **`22883`** | 751400 |
-  | 204001.SH（GC001）| `43226876` | **`1506858`** | `5565745` | 2093850077 |
-  | 131810.SZ（R-001）| `2898199` | **`2404676`** | `539882` | 263843386 |
-
-  股票/ETF 上 `svol + bvol` **逐位等于最后一根 1 分钟 K 线的成交量**
-  （`get_market_data_ex(['volume'], [code], period='1m')` 的末根）。收盘后那根是 15:00
-  集合竞价：一个价位撮合、没有主动方，所以整根落进单侧、另一侧为 0 —— 落哪一侧不固定
-  （511990.SH 落在外盘）。逆回购连续交易到 15:30，两侧都非零，但 `svol + bvol` 既不等于
-  末根 K 线也不等于当日量（204001.SH：44733734 vs 5565745 vs 2093850077，约是尾盘几分钟
-  的量），**具体窗口没能定死**。结论只有一条能确定：`svol + bvol ≠ 日成交量`，两个都不是
-  当日内外盘，要当日口径请自己按 tick / K 线累计。
-- `get_turn_over_rate` 对 5 个代码 × 3 种代码格式全部 `None`，收盘后重测仍是 `None`（不是
-  非交易时段才空）。区间版 `get_turnover_rate` 同一次运行返回空 DataFrame，而它按官方文档
-  （docs/BIGQMT_INNER_PYTHON_API_REFERENCE.md）**需先下载财务数据（股本）与日线数据**，本
-  终端两样都没下过 —— 所以没能区分「stub 坏了」和「缺基础数据」；有这些数据的终端值得先
-  `xtdata.call_method("get_turn_over_rate", stockcode=...)` 试一次。自己算的公式是
-  `get_ticks()[code]['pvolume'] / get_last_volume(code)`：`pvolume` 是**股**、和流通股本
-  同单位，`['volume']` 是**手**，用它会小 100 倍（600519.SH：3222611 股 / 1250081601 股
-  = 0.258%，用 32226 手算出来是 0.00258%）。
-- `get_contract_multiplier` 对股票 / ETF / 期权 / 期货代码一律返回 `2147483647`
-  （int32 上限 = 「没有值」）。这台终端本身没有期货行情：`get_instrument('IF2612.IF')`
-  `('cu2610.SF')` 全是 `{}`，`get_his_contract_list('IF')` 是 0 条，所以**没能区分
-  「这个 stub 坏了」和「这台终端没订阅期货」**。客户端包装回读答案，对上哨兵才报错，
-  有期货数据的终端能正常返回时照常放行；另一条通道是 `get_instrument(code)['VolumeMultiple']`。
-- `get_risk_free_rate` 传 `index` = -1/0/1/100/5000 都返回 `3.5`，所以它给的是终端里的
-  一个设置值，不是随 K 线走的 CGB10Y 序列。当期权定价的常数可以，当历史利率序列不行。
+- `query_credit_account` 返回 `{"rows", "count", "query_issued", "not_issued_reason", "fresh", "stale", "age_seconds", "seq", "error", "callback_bound"}`；`callback_bound=false` 可能是入口未捕获函数/未重启，也可能是终端确实无此函数（`probe_capabilities` 的 `global_namespace["query_credit_account"]` 可区分）。
+- 体检脚本：`python tools/credit_api_report.py`（脱敏只读探测所有两融接口）。
 
 ---
 
-## 4. 账户 / 持仓 / 委托
-
-下列方法的 `account_id` 参数均可选（不传则用服务端配置的账号）。也接受 `account`（对象/dict）。
-
-所有交易类方法（本节、第 5 节下单撤单、第 6 节账户扩展查询）还接受可选的 `account_type`
-（`"STOCK"` / `"CREDIT"` / `"FUTURE"` / `"HUGANGTONG"` / `"SHENGANGTONG"` / ...，或 xtconstant 的数字）：
-客户端 `StockAccount(id, "HUGANGTONG")` 的类型就是这样传来的。服务端只在该账号配置允许时按它查
-（`BIGQMT_ACCOUNT_TYPE` 或 `BIGQMT_ACCOUNT_TYPE_MAP` 的值写成列表），否则按配置的默认类型答并记一次日志。
-
-### `get_asset`
-- **别名**：`query_stock_asset`
-- **参数**：`account_id`(str, 可选)
-- **返回**：`{"cash":..., "total_asset":..., "market_value":..., "account_id":...}`
-- **实现**：`get_trade_detail_data(account, type, "ASSET")`。
-
-### `get_positions`
-- **别名**：`query_stock_positions`
-- **参数**：`account_id`(str, 可选)
-- **返回**：`dict[code -> {stock_code, stock_name, volume, available, cost, ...}]`
-- **实现**：`get_trade_detail_data(account, type, "POSITION")`。
-- **容错**：QMT 上下文未绑定时报错，适配器降级为返回 `{}`。
-
-### `query_stock_position`
-- **参数**：`account_id`(可选) `stock_code`(str, 必填) 或 `code`
-- **返回**：单个持仓 dict（同上 value 结构），无持仓返回 `None`。
-
-### `query_orders`
-- **参数**：`account_id`(可选) `strategy_name`(str, 默认 `""` 返回全部) `cancelable_only`(bool)
-- **返回**：`list[OrderSnapshot]`，每项含 `order_sys_id`/`user_order_id`/`stock_code`/`action`/`volume`/`traded_volume`/`status`/`price` 等。
-- **实现**：`get_trade_detail_data(account, type, "ORDER", strategy)`。
-- **strategy_name 陷阱（重要）**：`get_trade_detail_data` 按 `strategy_name` 过滤委托——下单时用的 strategy_name 必须和查询时一致。默认传 `""` 返回全部委托（不按 strategy_name 过滤）。如需过滤，显式传 `strategy_name`。
-- **容错**：QMT 上下文未绑定时报错，降级为 `[]`。
-
-### `query_trades`
-- **参数**：`account_id`(可选) `strategy_name`(str, 默认 `""` 返回全部)
-- **返回**：成交明细 `list`。
-- **strategy_name 陷阱**：同 `query_orders`，默认 `""` 返回全部成交。
-- **strategy_name 取值**（issue #133）：优先取 DEAL 行自己的 `m_strStrategyName`，
-  取不到才回填查询过滤参数。以前只有后一半，所以不过滤查全部（默认）时
-  这个字段恒为空字符串。
-
-### `reload_deployment` / `reload_status`
-- **参数**：`reload_deployment` 接 `reason`(str, 可选)；`reload_status` 无参数
-- **返回**：`{"scheduled": True, "version_before": "...", "note": "..."}`；
-  `reload_status` 返回 `{"ok": ..., "pending": ..., "modules_purged": N,
-  "version_before": ..., "version_after": ..., "seconds": ..., "error": ""}`
-- **用途**：同步了包代码之后，**不重启策略**就让它生效。做法是把所有
-  `bigqmt_signal_trader.*` 从 `sys.modules` 里清掉、重新绑定策略模块在 import
-  时持有的引用、再跑一次 `init()` 重建对象图。
-- **只是「已排期」**：执行它要调 `reset_app()`，那会停掉正在应答这个请求的 RPC
-  服务，所以回复必须先发出去。真正的重载在下一个 adjust tick 上做，
-  轮询 `reload_status` 看结果。期间会有约 1 秒查询超时（服务正在重建）。
-- **刷新不了的**：`bigqmt_signal_trader_strategy.py` 和 `BIGQMT_VK_DRYRUN.py`
-  —— QMT 自己 exec 这两个文件，**模块没法 reload 自己所在的模块**。改这两个
-  仍然要重启策略。
-- **客户端**：`xt_trader.reload_deployment("why")` / `xt_trader.reload_status()`
-
-### `describe_trade_detail_fields`
-- **参数**：`account_id`(可选) `detail_types`(list, 默认 `["ORDER", "DEAL"]`)
-- **返回**：`{"ORDER": {"rows": n, "attributes": [...], "error": ""}, "DEAL": {...}}`
-- **用途**：诊断工具，不属于 MiniQMT 接口。某个字段为空时，它回答“是终端没给，
-  还是桥没转发”—— 这两种从客户端看完全一样，而每次分辨都要一次
-  部署 + 重启（#113、#130、#133）。
-- **只返回属性名，不返回值**：委托/成交行里有价格、数量、柜台编号，
-  而这条 RPC 和其他一样走公共通道。
-- **客户端**：`xt_trader.describe_trade_detail_fields(account)`
-
----
-
-## 4.5 官方交易查询函数（Big QMT 运行时注入）
-
-这些函数和 `passorder` 一样由 Big QMT 进程在运行时注入全局命名空间，**不在 ContextInfo 桩里**。函数名严格按官方文档（`trading_function.html`）。无对应权限（如两融账户）时降级为空列表。
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `get_value_by_order_id` | `order_id`（必填）| 按 order_id 查委托详情 |
-| `get_last_order_id` | `account_id`(可选) | 最近委托号 |
-| `get_ipo_data` | `account_id`(可选) | 新股数据 |
-| `get_new_purchase_limit` | `account_id`(可选) | 新股申购额度 |
-| `get_history_trade_detail_data` | `account_id`(可选) `detail_type`("DEAL"/"ORDER") `start_date` `end_date` | 历史成交明细 |
-| `get_assure_contract` | `account_id`(可选) | 融资标的（担保品）合约 |
-| `get_enable_short_contract` | `account_id`(可选) | 融券标的合约 |
-| `get_unclosed_compacts` | `account_id`(可选) | 未平仓合约（负债）|
-| `get_closed_compacts` | `account_id`(可选) | 已平仓合约 |
-| `get_debt_contract` | `account_id`(可选) | 负债合约 |
-| `get_option_subject_position` | `account_id`(可选) | 期权标的持仓 |
-| `get_comb_option` | `account_id`(可选) | 组合期权 |
-| `get_hkt_exchange_rate` | 无 | 港股通汇率 |
-
-> **融资融券查询的正确方式**：`get_trade_detail_data(accountID, strAccountType, strDatatype, strategyName)` 有**两个轴**，别混在一起：
->
-> - **`strDatatype`（查什么数据）** 只有 6 个合法值：`ACCOUNT` / `POSITION` / `POSITION_STATISTICS` / `ORDER` / `DEAL` / `TASK`。**别往这里传 `"CREDIT"`** —— 负债合约、担保标的、可融券这些要用上表的独立函数。
-> - **`strAccountType`（查哪本账）** 才是填 `'CREDIT'` 的地方。官方 `strDatatype` 说明里写着 `ACCOUNT：账号对象**或信用账号对象**` —— 所以信用账户明细就是 `get_trade_detail_data(accId, 'CREDIT', 'ACCOUNT')`，返回 `CCreditAccountDetail`。`query_credit_detail` 走的正是这条（#201 之前它错调了已弃用的 `get_debt_contract`，两融账户因此恒为空）。
->
-> **信用账户明细有两份，字段名还不一样**：
->
-> | | RPC | 大 QMT | 对象 | 特点 |
-> |---|---|---|---|---|
-> | **终端缓存（默认用这条）** | `query_credit_detail` | `get_trade_detail_data(accId,'CREDIT','ACCOUNT')` | `CCreditAccountDetail`（3.14，标注「非查柜台」）| 同步、无限流、不用重启 |
-> | 查柜台（备用） | `query_credit_account` | `query_credit_account` + `credit_account_callback` | `CCreditDetail`（3.15）| 异步、权威；官方建议 30s 一次；要重启策略 |
->
-> **先用同步那条。** 维护者实测确认 `get_trade_detail_data('<信用账号>', 'credit', 'account', '')` 在大 QMT 里直接取得到信用账户信息，返回 list，取 `[0]`；账号类型和数据类型大小写都不敏感（`'credit'` / `'CREDIT'` 均可）。异步那条只是备用：3.14 那份官方标注「非查柜台」，是终端本地缓存，万一换一家券商的终端不填它，那就只剩查柜台这一条路。不需要的话完全不用理会 `query_credit_account`，不调它就什么都不会发生。
->
-> 总负债在缓存那份叫 `m_dTotalDebit`，在柜台那份叫 `m_dTotalDebt` —— 只差一个字母，别看错。
-
-### `query_credit_account`（备用，一般用不上）
-- **什么时候才需要它**：`query_credit_detail` 在你的终端上取不到时。同步那条是主路径，实测可用；这条是为「终端不填 3.14 那份缓存」的券商准备的后路。
-- **参数**：`account_id`(可选) `wait_seconds`(可选，默认 1.5，上限 10)
-- **返回**：`{"rows": [...], "count": n, "query_issued": bool, "not_issued_reason": str, "fresh": bool, "stale": bool, "age_seconds": float|null, "seq": int, "error": str, "callback_bound": bool}`
-- **为什么不是裸列表**：大 QMT 那边 `query_credit_account(accId, seq, ContextInfo)` 立刻返回，结果只从 `credit_account_callback` 出来。桥替你发查询、等回调、缓存结果，所以这条 RPC 本身是同步的 —— 但**空列表有好几种成因**（没绑上 / 被限流 / 发了没等到回调 / 真没数据），只回一个 `[]` 分不开。看 `query_issued`、`fresh`、`callback_bound`，别只看 `rows`。
-- **限流**：官方参考 6.13 写明「只能有一个查询」「建议 30s 一次，不可频繁调用」。桥按 30 秒最小间隔挡住过密的查询，直接返回上一次的结果并标 `stale=true`，不会替你去打柜台。
-- **`callback_bound=false` 有两种成因，别白重启一次**：
-  - **桥自己没捕获到它。** QMT 只往被挂载的入口文件的命名空间注入全局函数，入口必须用 `capture_qmt_injected_funcs(globals())` 从策略模块的唯一名单里捕获。入口文件曾经手抄过一份名单并漏了 `query_credit_account`，桥于是拿不到它 —— 而终端明明有。**这类情况下 `global_namespace` 也会是 `False`，所以不能据此断言终端没有这个函数**（#202 就是这么误判的）。改入口文件后必须**真重启策略**，`reload_deployment()` 刷不了入口。
-  - **这台终端确实没有这个函数** —— 那就只能走同步那条。
-
-  两者从桥这边分不开。**判断方法：在大 QMT 的策略里直接写一行 `query_credit_account(accId, int(time.time()), ContextInfo)` 配 `credit_account_callback`,能打印出维持担保比例就说明终端有,问题在桥。**
-  - **有这个函数但没重启策略** —— `credit_account_callback` 定义在入口文件命名空间里（QMT 只往被挂载的那个文件回调），而入口文件 `reload_deployment()` 刷不了，必须真重启。
-
-  `probe_capabilities` 的 `global_namespace["query_credit_account"]` 分得开这两种，体检报告也会直接告诉你是哪一种。
-- **客户端**：`xt_trader.query_credit_account(account, wait_seconds=None)`
-
-> **体检工具**：`python tools/credit_api_report.py` 把上面每个两融接口都只读调一遍，导出一份可以直接贴到 issue 的报告（账号打码、金额不带原值、持仓代码不进报告）。维护者没有两融账户，两融那一片只能靠有两融账户的用户跑一次回报。
-
----
-
-## 5. 持仓同步
+## 5. 持仓同步与下单撤单
 
 ### `sync_positions`
-- **参数**：`account_id`(可选) `reason`(str, 默认 "rpc")
-- **返回**：`AccountSnapshot`（含 asset + positions）
-- **用途**：主动触发把当前持仓快照写入 VK（key `bigqmt:positions:{account_id}`），供客户端缓存。
-- **注意**：属 `LISTENER_DEFERRED_METHODS`，在 VK 传输 + listener 模式下会延迟到 adjust 线程执行（避免阻塞收包线程）。
+- 参数：`account_id`（可选）、`reason="rpc"`。主动将 `AccountSnapshot` 写入 VK `bigqmt:positions:{account_id}`；属 `LISTENER_DEFERRED_METHODS`，在 `adjust` 线程执行。
+
+### `submit_order`（别名 `order_stock` / `order_stock_async`，默认关闭）
+- 参数：`stock_code`、`action`（`BUY`/`SELL`）或 `order_type`（23/24 等）、`volume`/`order_volume`、`price`、`price_type`（默认 `LIMIT`/11，另有 `LATEST`/5、对手价 44 等）、可选 `account_id` / `strategy_name` / `signal_id` / `remark`/`order_remark` / `wait_settlement`。
+- 返回：`{"order_sys_id", "user_order_id"}`；内部调用 `passorder(..., quicktrade=2)`。
+- **两融/期权/可转债类型**：直接传 MiniQMT 常量即可（`CREDIT_FIN_BUY`=27 … `CREDIT_DIRECT_CASH_REPAY`=32，专项两融 40–45 自动转 70–75；ETF 期权 50–59、期货 0–15、可转债转股/回售 80–83 原样透传）。无买卖方向的类型（直接还款 32/45、行权/锁定 56–59）无需传 `action`。
+  - **直接还款（32）**：金额（整数元）必须传 `order_volume`，`price` 传 `0`（会被忽略）；通常不在委托列表中，到期查不到不报错（`order_sys_id=None`，`order_stock` 返 `-1` 不抛异常，以 `query_credit_detail` 核对）。
+- **异步影子结算（`wait_settlement=False`）**：立即应答但服务端仍监控至期限，若终端弹窗拦截未入库则补推 `on_order_error(source="settlement")`。
+- **超时拒绝**：服务端按收包时刻计龄，轮到执行已过客户端期限（留 1s 余量，最多期限的 1/4）则拒绝并返回 `RequestExpired`（明确未下单，撤单不受此限）。`passorder` 串行 ~200ms/笔，高并发请降并发或调大超时。
+
+### `cancel_order`（别名 `cancel_order_stock` / `cancel_order_stock_sysid`，默认关闭）
+- 参数：`order_sys_id` / `order_sysid` / `order_id`（必填），可选 `user_order_id`、`market`。
 
 ---
 
-## 6. 下单 / 撤单（默认关闭）
+## 6. MiniQMT 风格别名
 
-> ⚠️ 默认 `rpc_allow_order_methods=False`，调用会被 `PermissionError` 拒绝。确认账号/风控/接入方后，在配置里设 `"rpc_allow_order_methods": True` 开启。
-
-### `submit_order`
-- **别名**：`order_stock` / `order_stock_async`
-- **参数**：
-  - `stock_code`(str, 必填)
-  - `action`(str)：`"BUY"` / `"SELL"`；或 `order_type`（`23`/`STOCK_BUY`/`BUY` 买，`24`/`STOCK_SELL`/`SELL` 卖）
-  - `volume`(int, 必填) 或 `order_volume`
-  - `price`(float)
-  - `price_type`(str, 默认 `"LIMIT"`)：`LIMIT`(11)/`LATEST`(5)/对手价(44) 等
-  - `account_id`(可选) `strategy_name` `signal_id` `remark`/`order_remark`
-- **返回**：`{"order_sys_id":..., "user_order_id":...}`
-- **实现**：`passorder(op_type, combo_type, account, code, price_type, price, volume, ..., quicktrade=2)`。
-- **信用 / 期权类型**：`order_type` 传 MiniQMT 常量即可（`CREDIT_FIN_BUY`=27 融资买入 …
-  `CREDIT_DIRECT_CASH_REPAY`=32 直接还款，专项 40-45 出去时改成大 QMT 的 70-75；ETF 期权
-  50-59、期货 0-15、可转债转股/回售 80-83（普通户 80/81，信用户 82/83）原样透传）。有方向的类型不用传 `action`，桥按类型定；**直接还款（32/45）、
-  行权/锁定（56-59）没有买卖方向**，也不用传（#314）——记账方向记 `SELL`，`passorder` 收到的仍
-  是原始 opType。归还融资按 MiniQMT 写法：`order_stock(acc, 任一代码占位, CREDIT_DIRECT_CASH_REPAY,
-  还款金额, FIX_PRICE, 0, strategy, remark)`——**金额走 `order_volume`（整数元），`price` 被
-  passorder 忽略**（#330：把金额放 price、volume 传可用资金，还的是 volume 那个数）。直接还款
-  在委托列表里通常**没有行**，结算到期查不到不算失败：`order_sys_id` 为 None、不设
-  `server_error`，`order_stock` 返回 -1 且不抛，`message` 提示用 `query_credit_detail` 核对。
-- **`wait_settlement=False`**（`order_stock_async` 用）：立即回复，但服务端仍以影子结算盯到期限；
-  到期委托列表里没有这张单就推一条 `order_error`（`source="settlement"`）——终端在下单前拦下的
-  单（资金不足弹窗）只有这一条信号（#345）。
-- **期限**：信封里的 `timeout_seconds`（客户端 `call` 自动带上）是调用方等多久。服务端按自己
-  收到请求的时刻计龄，轮到执行时已过期限（留 1s 余量，最多期限的 1/4）的下单请求**拒绝
-  而不执行**，`error` 以 `RequestExpired` 开头并明确写「没下单」（#303）。下单在 QMT 策略
-  线程上串行跑（每笔约 200ms），并发数 × 每笔耗时超过超时就会撞上这条——降并发或加大
-  超时。撤单不受此限。
-
-### `cancel_order`
-- **别名**：`cancel_order_stock` / `cancel_order_stock_sysid`
-- **参数**：`order_sys_id` 或 `order_sysid` 或 `order_id`（必填）可选 `user_order_id` `market`
-- **返回**：撤单结果。
+| 别名 | 目标方法 | 别名 | 目标方法 |
+|------|---------|------|---------|
+| `get_full_tick` | `get_ticks` | `query_stock_orders` | `query_orders` |
+| `get_instrument_detail` / `get_instrumentdetail` | `get_instrument` | `query_stock_trades` | `query_trades` |
+| `getDividFactors` | `get_divid_factors` | `order_stock` / `order_stock_async` | `submit_order` |
+| `query_stock_asset` | `get_asset` | `cancel_order_stock` / `cancel_order_stock_sysid` | `cancel_order` |
+| `query_stock_positions` | `get_positions` | | |
 
 ---
 
-## 7. MiniQMT 风格别名
+## 7. 大 QMT 能力边界与错误约定
 
-旧代码若用 MiniQMT 方法名，调用时自动映射（无需改业务代码）：
+| 能力 | 大 QMT（完整交易端） | MiniQMT / `xtdata` SDK |
+|------|---------------------|------------------------|
+| 行情快照 / K 线 / 合约详情 / 板块内股票 / 交易日历 | ✅ `ContextInfo` | ✅ `xtdata` |
+| 龙虎榜 / 股东 / 换手率 / 期权定价 / 北向港股通 / 基础查询 | ✅ `ContextInfo` | ❌ `xtdata` 无 |
+| **板块完整列表**（`get_sector_list`）/ **原始节假日**（`get_holidays`） | ⚠️ 需 fallback（或同机运行 MiniQMT 连行情服务） | ✅ `xtdata` |
+| `get_markets` / `get_market_last_trade_date` | 合成 / 日历派生 | 无 |
+| 交易（下单 / 撤单 / 持仓） | ✅ `passorder` + `get_trade_detail_data` | ✅ `XtQuantTrader` |
 
-| 别名（MiniQMT）| 映射到 |
-|----------------|--------|
-| `get_full_tick` | `get_ticks` |
-| `get_instrument_detail` / `get_instrumentdetail` | `get_instrument` |
-| `getDividFactors` | `get_divid_factors` |
-| `query_stock_asset` | `get_asset` |
-| `query_stock_positions` | `get_positions` |
-| `query_stock_orders` | `query_orders` |
-| `query_stock_trades` | `query_trades` |
-| `order_stock` / `order_stock_async` | `submit_order` |
-| `cancel_order_stock` / `cancel_order_stock_sysid` | `cancel_order` |
-
-> 客户端用 `xtquant_compat` 时，`xt_trader.query_stock_positions(acc)`、`xtdata.get_full_tick([...])` 等调用会自动走别名映射，最终命中上表方法。
-
----
-
-## 8. 大 QMT 环境的能力边界（重要）
-
-核对 QMT 官方文档（`trading_function.html` / `data_function.html`）、ContextInfo IDE 桩（`_PyContextInfo.py`）、原生 xtdata SDK（`bin.x64/.../xtquant/xtdata.py`）三处后，确认：
-
-| 能力 | 大 QMT（完整交易端）| MiniQMT / xtdata SDK |
-|------|--------------------|---------------------|
-| 行情快照（`get_full_tick`）| ✅ ContextInfo | ✅ xtdata |
-| K线（`get_market_data_ex` 等）| ✅ ContextInfo | ✅ xtdata |
-| 合约详情（`get_instrumentdetail`）| ✅ ContextInfo | ✅ xtdata |
-| 板块内股票（`get_stock_list_in_sector`）| ✅ ContextInfo | ✅ xtdata |
-| 交易日历（`get_trading_dates`）| ✅ ContextInfo | ✅ xtdata |
-| 龙虎榜/股东/换手率（`get_longhubang` 等）| ✅ ContextInfo | ❌ xtdata 无 |
-| 期权定价（`bsm_price`/`bsm_iv`/`get_option_iv`）| ✅ ContextInfo | ❌ xtdata 无 |
-| 北向资金/港股通（`get_north_finance_change` 等）| ✅ ContextInfo | ❌ xtdata 无 |
-| 基础查询（`get_stock_name`/`get_float_caps` 等）| ✅ ContextInfo | ❌ xtdata 无 |
-| **板块列表**（`get_sector_list`）| ⚠️ fallback 常用板块 | ✅ xtdata（需连行情服务）|
-| **节假日**（`get_holidays`）| ⚠️ 从日历反推 | ✅ xtdata（需连行情服务）|
-| `get_markets` | 合成 4 市场 | 无此函数 |
-| `get_market_last_trade_date` | 从日历派生 | 无此函数 |
-| 交易（下单/撤单/查持仓）| ✅ passorder + get_trade_detail_data | ✅ XtQuantTrader |
-
-**结论**：除「板块完整列表」「节假日原始数据」在大 QMT 端只能 fallback 外，其余 API 在大 QMT 环境下均能返回真实数据。需要原始板块/假日数据时，需额外跑一个 MiniQMT 进程（让 `xtdata.get_client()` 能连上）。
-
----
-
-## 9. 错误约定
-
-RPC 响应统一为 `{"ok": bool, "data": ..., "error": "..."}`：
-- `ok=True`：`data` 为方法返回值（DataFrame/Series 已序列化，客户端自动还原）。
-- `ok=False`：`error` 为错误信息。常见：
-  - `rpc method is not allowed: X` —— 方法不在白名单（`rpc_listener_methods` 配置）。
-  - `order rpc methods are disabled` —— 下单未开启。
-  - `RequestExpired: queued Xs on the server, past the client's Ys timeout; NOT dispatched` ——
-    轮到执行时已过调用方的超时，**没有下单**（#303）；可安全重试，最好降并发或加大超时。
-  - `ContextInfo.X is not available` —— 该 ContextInfo 方法在当前 QMT 版本不存在。
-  - `无法连接行情服务` —— 原生 xtdata SDK 连不上（仅 sector_list/holidays 的 SDK 路径）。
+**响应格式**：统一 `{"ok": bool, "data": ..., "error": "..."}`。常见错误：
+- `rpc method is not allowed: X`：未在白名单（`rpc_listener_methods`）。
+- `order rpc methods are disabled`：`rpc_allow_order_methods` 未开启。
+- `RequestExpired: queued Xs ...; NOT dispatched`：排队已超客户端期限，未下单，可安全重试。
+- `ContextInfo.X is not available`：当前 QMT 版本无该方法。
+- `无法连接行情服务`：原生 `xtdata` SDK 未连上（仅 `get_sector_list`/`get_holidays` SDK 路径）。

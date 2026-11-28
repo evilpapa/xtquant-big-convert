@@ -113,7 +113,8 @@ class StrategyIOGuard:
         importing = caller.f_code.co_filename == "<frozen importlib._bootstrap_external>"
         if importing and event == "open":
             flags = args[2]
-            if not flags & (os.O_ACCMODE | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+            access_mask = getattr(os, "O_ACCMODE", os.O_WRONLY | os.O_RDWR)
+            if not flags & (access_mask | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
                 return
         if importing and event == "os.listdir":
             return
@@ -265,6 +266,10 @@ def run_strategy(code, method, params, timeout):
 
 
 def main():
+    # The subprocess test harness and tools consume UTF-8 output on Windows too.
+    for stream in (sys.stdout, sys.stderr):
+        if not stream.isatty():
+            stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("strategy", nargs="?", type=Path, help="已有单文件，省略则从当前源码临时构建")
     parser.add_argument("--rpc", metavar="METHOD", help="运行一个指定的 RPC，省略则执行内置检查")

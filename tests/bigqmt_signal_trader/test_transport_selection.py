@@ -15,10 +15,17 @@ class RemovedTransportTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown rpc transport"):
             build_transport("zmq")
 
-    def test_pipe_is_removed_and_has_no_drain(self):
-        with self.assertRaisesRegex(ValueError, "unknown rpc transport"):
-            build_transport("pipe")
-        self.assertFalse(transport_supports_drain("pipe"))
+    def test_pipe_factory_is_lazy_and_drains_on_adjust(self):
+        transport = build_transport("pipe", {"pipe": {"name": "test_pipe"}})
+        self.assertEqual(transport.port, r"\\.\pipe\test_pipe")
+        self.assertTrue(transport_supports_drain("pipe"))
+        self.assertFalse(_resolve_background_threads("pipe", True))
+
+    def test_copydata_factory_is_lazy_and_drains_on_adjust(self):
+        transport = build_transport("copydata", {"copydata": {"window_name": "test_window"}})
+        self.assertEqual(transport.port, "BigQmtCopyData:test_window")
+        self.assertTrue(transport_supports_drain("copydata"))
+        self.assertFalse(_resolve_background_threads("copydata", True))
 
 
 class BackgroundThreadResolutionTest(unittest.TestCase):
@@ -31,13 +38,11 @@ class BackgroundThreadResolutionTest(unittest.TestCase):
         self.assertFalse(_resolve_background_threads(None, False))
 
 
-    def test_drainless_transports_ignore_the_override(self):
-        # shm has no drain_request_queue: without the receiver thread requests
-        # would never be picked up, so even an explicit False cannot turn it
-        # off here.
-        self.assertTrue(_resolve_background_threads("shm", None))
-        self.assertTrue(_resolve_background_threads("shm", False))
-        self.assertTrue(_resolve_background_threads("shm", True))
+    def test_shm_always_drains_on_adjust(self):
+        self.assertTrue(transport_supports_drain("shm"))
+        for configured in (None, False, True):
+            with self.subTest(configured=configured):
+                self.assertFalse(_resolve_background_threads("shm", configured))
 
 
 if __name__ == "__main__":

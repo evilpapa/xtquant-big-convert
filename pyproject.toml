@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "xtquant-big-convert"
 version = "0.5.3"
-description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (VK and serial)"
+description = "Big QMT RPC bridge and MiniQMT-compatible adapter layer (VK, serial, Windows named pipes, WM_COPYDATA and SHM)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -43,6 +43,8 @@ dev = [
 [project.scripts]
 bigqmt-init = "bigqmt_signal_trader.init_config:main"
 bigqmt-serial-bridge = "bigqmt_signal_trader.serial_vk_bridge:main"
+bigqmt-pipe-bridge = "bigqmt_signal_trader.pipe_vk_bridge:main"
+bigqmt-copydata-bridge = "bigqmt_signal_trader.copydata_vk_bridge:main"
 
 [project.urls]
 Homepage = "https://github.com/litaolemo/xtquant_big_convert"
